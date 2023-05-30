@@ -40,7 +40,7 @@ struct RoleInstance {
 }
 
 
-async fn get_goalstate_rest() -> Result<Goalstate, Box<dyn std::error::Error>>
+async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
 {
     let url = "http://168.63.129.16/machine/?comp=goalstate";
 
@@ -114,7 +114,7 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
 
 #[tokio::main]
 async fn main() {
-    let rest_call = get_goalstate_rest().await;
+    let rest_call = get_goalstate().await;
     
     if let Err(ref err) = rest_call {
         return;
