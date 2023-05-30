@@ -7,6 +7,7 @@ use serde::{Deserialize};
 use serde_xml_rs::from_str;
 
 use std::process::Command;
+use std::fmt::Error;
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct Goalstate {
@@ -54,7 +55,8 @@ async fn get_goalstate_rest() -> Result<Goalstate, Box<dyn std::error::Error>>
     let response = request.send().await?;
 
     if !response.status().is_success() {
-        println!("Request failed with status code: {}", response.status());
+        println!("Get request failed with status code: {}", response.status());
+        return Err(Box::from("Failed Get Call"));
     }
 
     let body = response.text().await?;
@@ -96,20 +98,16 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
     let post_request = post_request.replace("$CONTAINER_ID", &goalstate.container.container_id);
     let post_request = post_request.replace("$INSTANCE_ID", &goalstate.container.role_instance_list.role_instance.instance_id);
 
-    println!("{}", post_request);
-
     let response = client.post(url)
     .headers(headers)
     .body(post_request)
     .send()
     .await?;
 
-    println!("{:?}", response);
-
-    let response_text = response.text().await?;
-    println!("");
-    println!("{}", response_text);
-
+    if !response.status().is_success() {
+        println!("Post request failed with status code: {}", response.status());
+        return Err(Box::from("Failed Post Call"));
+    }
 
     Ok(())
 }
@@ -119,20 +117,19 @@ async fn main() {
     let rest_call = get_goalstate_rest().await;
     
     if let Err(ref err) = rest_call {
-        eprintln!("Get API call failed: {}", err);
+        return;
     }
 
     let goalstate: Goalstate = rest_call.unwrap();
 
     println!("Get request completed successfully!");
-    println!("");
 
-    let post_call = post_goalstate(goalstate).await; //this condition will never be met
+    let post_call = post_goalstate(goalstate).await;
     if let Err(ref err) = post_call {
-        eprintln!("Post API call failed: {}", err);
+        return;
     }
 
-    create_user("tom".to_string());
+    create_user("test_user".to_string());
 }
 
 fn create_user(username: String) {
@@ -140,12 +137,4 @@ fn create_user(username: String) {
     .arg(username)
     .output()
     .expect("Failed to execute useradd command.");
-}
-
-fn set_password(password: String)
-{
-    let set_password = Command::new("passwd")
-    .arg(password)
-    .output()
-    .expect("Failed to execute passwd command.");
 }
