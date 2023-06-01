@@ -111,26 +111,6 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    let rest_call = get_goalstate().await;
-    
-    if let Err(ref _err) = rest_call {
-        return;
-    }
-
-    let goalstate: Goalstate = rest_call.unwrap();
-
-    println!("Get request completed successfully!");
-
-    let post_call = post_goalstate(goalstate).await;
-    if let Err(ref _err) = post_call {
-        return;
-    }
-
-    create_user("test_user", "pass");
-}
-
 fn create_user(username: &str, password: &str) {
     let _create_user = Command::new("useradd")
     .arg(username.to_string())
@@ -149,4 +129,25 @@ fn create_user(username: &str, password: &str) {
     .expect("Failed to execute chpasswd command");
 
     return;
+}
+
+
+#[tokio::main]
+async fn main() {
+    let rest_call = get_goalstate().await;
+    
+    if let Err(ref _err) = rest_call {
+        return;
+    }
+
+    let goalstate: Goalstate = rest_call.unwrap();
+
+    println!("Get request completed successfully!");
+
+    let post_call = post_goalstate(goalstate).await;
+    if let Err(ref _err) = post_call {
+        return;
+    }
+
+    create_user("test_user", "pass");
 }
