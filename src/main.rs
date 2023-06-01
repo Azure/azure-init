@@ -7,7 +7,6 @@ use serde::{Deserialize};
 use serde_xml_rs::from_str;
 
 use std::process::Command;
-use std::fmt::Error;
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct Goalstate {
@@ -116,7 +115,7 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
 async fn main() {
     let rest_call = get_goalstate().await;
     
-    if let Err(ref err) = rest_call {
+    if let Err(ref _err) = rest_call {
         return;
     }
 
@@ -125,16 +124,29 @@ async fn main() {
     println!("Get request completed successfully!");
 
     let post_call = post_goalstate(goalstate).await;
-    if let Err(ref err) = post_call {
+    if let Err(ref _err) = post_call {
         return;
     }
 
-    create_user("test_user".to_string());
+    create_user("test_user", "pass");
 }
 
-fn create_user(username: String) {
-    let create_user = Command::new("useradd")
-    .arg(username)
+fn create_user(username: &str, password: &str) {
+    let _create_user = Command::new("useradd")
+    .arg(username.to_string())
     .output()
     .expect("Failed to execute useradd command.");
+
+    let output = Command::new("echo")
+    .arg(format!("{}:{}", username, password))
+    .stdout(std::process::Stdio::piped())
+    .spawn()
+    .expect("Failed to execute echo command");
+
+    let _set_password = Command::new("chpasswd")
+    .stdin(output.stdout.unwrap())
+    .status()
+    .expect("Failed to execute chpasswd command");
+
+    return;
 }
