@@ -111,7 +111,10 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+
 fn create_user(username: &str, password: &str) {
+
+    //check that useradd/echo/chpasswd exists before calling (like with FreeBSD)
     let _create_user = Command::new("useradd")
     .arg(username.to_string())
     .output()
@@ -129,6 +132,41 @@ fn create_user(username: &str, password: &str) {
     .expect("Failed to execute chpasswd command");
 
     return;
+}
+
+fn set_hostname(hostname: &str){
+    let _set_hostname = Command::new("hostnamectl")
+    .arg("set-hostname")
+    .arg(hostname)
+    .status()
+    .expect("Failed to execute hostnamectl set-hostname");
+
+    return;
+}
+
+async fn get_imds() -> Result<(), Box<dyn std::error::Error>>
+{
+    let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+
+    let client = Client::new();
+
+    let mut headers = HeaderMap::new();
+
+    headers.insert("Metadata", HeaderValue::from_static("true"));
+
+    let request = client.get(url).headers(headers);
+    let response = request.send().await?;
+
+    if !response.status().is_success() {
+        println!("Get IMDS request failed with status code: {}", response.status());
+        println!("{:?}", response.text().await);
+        return Err(Box::from("Failed Get Call"));
+    }
+
+    let body = response.text().await?;
+    println!("{}", body);
+
+    Ok(())
 }
 
 
@@ -150,4 +188,8 @@ async fn main() {
     }
 
     create_user("test_user", "pass");
+
+    set_hostname("cadetest-0003");
+
+    get_imds().await;
 }
