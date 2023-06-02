@@ -112,24 +112,41 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
 }
 
 
-fn create_user(username: &str, password: &str) {
-
+fn create_user(username: &str) {
     //check that useradd/echo/chpasswd exists before calling (like with FreeBSD)
     let _create_user = Command::new("useradd")
     .arg(username.to_string())
+    .arg("--comment")
+    .arg("Provisioning agent created this user based on username provided in IMDS")
+    .arg("--groups")
+    .arg("adm,audio,cdrom,dialout,dip,floppy,lxd,netdev,plugdev,sudo,video")
+    .arg("-m")
     .output()
     .expect("Failed to execute useradd command.");
 
-    let output = Command::new("echo")
-    .arg(format!("{}:{}", username, password))
-    .stdout(std::process::Stdio::piped())
-    .spawn()
-    .expect("Failed to execute echo command");
+    let _set_password = Command::new("passwd")
+    .arg("-d")
+    .arg(username.to_string())
+    .output()
+    .expect("Failed to execute passwd command");
 
-    let _set_password = Command::new("chpasswd")
-    .stdin(output.stdout.unwrap())
-    .status()
-    .expect("Failed to execute chpasswd command");
+    create_ssh_directory(username);
+
+    return;
+}
+
+fn create_ssh_directory(username: &str){
+    let mut file_path = "/home/".to_string();
+    file_path.push_str(username);
+    file_path.push_str("/.ssh");
+
+    let _create_ssh_directory = Command::new("mkdir")
+    .arg(file_path)
+    .output()
+    .expect("Failed to execute mkdir command");
+
+    // done last to ensure that everything in there is assigned to the user
+    // chown -R username:<user> /home/username/.ssh
 
     return;
 }
@@ -144,7 +161,7 @@ fn set_hostname(hostname: &str){
     return;
 }
 
-async fn get_imds() -> Result<(), Box<dyn std::error::Error>>
+async fn set_ssh_keys() -> Result<(), Box<dyn std::error::Error>>
 {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
 
@@ -164,7 +181,32 @@ async fn get_imds() -> Result<(), Box<dyn std::error::Error>>
     }
 
     let body = response.text().await?;
-    println!("{}", body);
+
+    let public_key_start_index = match body.find("publicKeys") {
+        Some(index) => index + "publicKeys".len() + 1,
+        None => return Err(Box::from("Failed to find publicKeys")),
+    };
+    let public_key_end_index = match body[public_key_start_index..].find("]") {
+        Some(index) => public_key_start_index + index,
+        None => return Err(Box::from("Failed to find publicKeys")),
+    };
+
+    let key_text:&str = &body[public_key_start_index..public_key_end_index];
+
+    let mut keys: Vec<String> = Vec::new();
+    let mut start_index = 0;
+    while let Some(key_index) = key_text[start_index..].find("ssh-rsa"){
+        let key_index = start_index + key_index;
+        let quote_index = match key_text[key_index..].find('"'){
+            Some(index) => index + key_index,
+            None => break,
+        };
+        let key = key_text[key_index..quote_index].to_owned();
+        keys.push(key);
+        start_index = quote_index;
+    }
+
+    println!("{:?}", keys);
 
     Ok(())
 }
@@ -180,16 +222,14 @@ async fn main() {
 
     let goalstate: Goalstate = rest_call.unwrap();
 
-    println!("Get request completed successfully!");
-
     let post_call = post_goalstate(goalstate).await;
     if let Err(ref _err) = post_call {
         return;
     }
 
-    create_user("test_user", "pass");
+    create_user("test_user");
 
     set_hostname("cadetest-0003");
 
-    get_imds().await;
+    set_ssh_keys().await;
 }
