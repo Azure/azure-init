@@ -6,11 +6,14 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize};
 use serde_xml_rs::from_str;
 use serde_json;
-use serde_json::Value;
 
 use std::process::Command;
 use std::fs::File;
 use std::io::Write;
+
+//////////////////////////////////
+//          XML STRUCTS
+//////////////////////////////////
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct Goalstate {
@@ -42,6 +45,10 @@ struct RoleInstance {
     instance_id: String,
 }
 
+//////////////////////////////////
+//          JSON STRUCTS
+//////////////////////////////////
+
 #[derive(Debug, Deserialize, PartialEq)]
 struct Data {
     #[serde(rename = "compute")]
@@ -61,35 +68,6 @@ struct PublicKeys {
     #[serde(rename = "path")]
     path: String,
 }
-
-async fn get_ssh_keys() -> Result<Vec<String>, Box<dyn std::error::Error>>
-{
-    let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
-    let client = Client::new();
-    let mut headers = HeaderMap::new();
-
-    headers.insert("Metadata", HeaderValue::from_static("true"));
-
-    let request = client.get(url).headers(headers);
-    let response = request.send().await?;
-
-    if !response.status().is_success() {
-        println!("Get IMDS request failed with status code: {}", response.status());
-        println!("{:?}", response.text().await);
-        return Err(Box::from("Failed Get Call"));
-    }
-
-    let body = response.text().await?;
-
-    let key_data:Vec<String> = Vec::new();
-
-    let data: Data = serde_json::from_str(&body).unwrap(); //could be cleaned if this works
-    println!("{:?}", data.compute.public_keys);
-    println!("{:?}", key_data);
-
-    Ok(key_data)
-}
-
 
 async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
 {
@@ -200,7 +178,7 @@ async fn create_ssh_directory(username: &str, home_path: String){
     .output()
     .expect("Failed to execute mkdir command");
 
-    set_ssh_keys(username, file_path.clone()).await;
+    set_ssh_keys(file_path.clone()).await;
 
     let _transfer_ssh_ownership = Command::new("chown")
     .arg("-hR")
@@ -217,7 +195,7 @@ async fn create_ssh_directory(username: &str, home_path: String){
 
     let _set_permissions_value = Command::new("chmod")
     .arg("-R")
-    .arg("700")                     // 600 does allow me to access the folder even as the owner
+    .arg("700")                     // 600 does not allow me to access the folder even as the owner
     .arg(file_path.clone())
     .output()
     .expect("Failed to execute chmod command");
@@ -225,7 +203,31 @@ async fn create_ssh_directory(username: &str, home_path: String){
     return;
 }
 
-async fn set_ssh_keys(username: &str, file_path: String){
+async fn get_ssh_keys() -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>>
+{
+    let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+    let client = Client::new();
+    let mut headers = HeaderMap::new();
+
+    headers.insert("Metadata", HeaderValue::from_static("true"));
+
+    let request = client.get(url).headers(headers);
+    let response = request.send().await?;
+
+    if !response.status().is_success() {
+        println!("Get IMDS request failed with status code: {}", response.status());
+        println!("{:?}", response.text().await);
+        return Err(Box::from("Failed Get Call"));
+    }
+
+    let body = response.text().await?;
+
+    let data: Data = serde_json::from_str(&body).unwrap(); //could be cleaned if this works
+
+    Ok(data.compute.public_keys)
+}
+
+async fn set_ssh_keys(file_path: String){
     let keys = get_ssh_keys().await;
     match keys {
         Ok(keys) => {
@@ -233,7 +235,7 @@ async fn set_ssh_keys(username: &str, file_path: String){
             authorized_keys_path.push_str("/authorized_keys");
             let mut authorized_keys = File::create(authorized_keys_path).unwrap();
             for key in keys{
-                writeln!(authorized_keys, "{}", key).unwrap();
+                writeln!(authorized_keys, "{}", key.data).unwrap();
             }
             return;
         },
@@ -272,7 +274,7 @@ async fn main() {
         return;
     }
 
-    create_user("test_user").await;
+    create_user("test_user").await;  //add to deserializer
 
-    set_hostname("cadetest-0003");
+    set_hostname("cadetest-0003");  //this should be done elsewhere
 }
