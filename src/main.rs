@@ -5,6 +5,8 @@ use reqwest::header::HeaderMap;
 
 use serde::{Deserialize};
 use serde_xml_rs::from_str;
+use serde_json;
+use serde_json::Value;
 
 use std::process::Command;
 use std::fs::File;
@@ -38,6 +40,54 @@ struct RoleInstanceList {
 struct RoleInstance {
     #[serde(rename = "InstanceId")]
     instance_id: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct Data {
+    #[serde(rename = "compute")]
+    compute: Compute
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct Compute {
+    #[serde(rename = "publicKeys")]
+    public_keys: Vec<PublicKeys>
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct PublicKeys {
+    #[serde(rename = "keyData")]
+    data: String,
+    #[serde(rename = "path")]
+    path: String,
+}
+
+async fn get_ssh_keys() -> Result<Vec<String>, Box<dyn std::error::Error>>
+{
+    let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+    let client = Client::new();
+    let mut headers = HeaderMap::new();
+
+    headers.insert("Metadata", HeaderValue::from_static("true"));
+
+    let request = client.get(url).headers(headers);
+    let response = request.send().await?;
+
+    if !response.status().is_success() {
+        println!("Get IMDS request failed with status code: {}", response.status());
+        println!("{:?}", response.text().await);
+        return Err(Box::from("Failed Get Call"));
+    }
+
+    let body = response.text().await?;
+
+    let key_data:Vec<String> = Vec::new();
+
+    let data: Data = serde_json::from_str(&body).unwrap(); //could be cleaned if this works
+    println!("{:?}", data.compute.public_keys);
+    println!("{:?}", key_data);
+
+    Ok(key_data)
 }
 
 
@@ -205,52 +255,6 @@ fn set_hostname(hostname: &str){
     return;
 }
 
-async fn get_ssh_keys() -> Result<Vec<String>, Box<dyn std::error::Error>>
-{
-    let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
-    let client = Client::new();
-    let mut headers = HeaderMap::new();
-
-    headers.insert("Metadata", HeaderValue::from_static("true"));
-
-    let request = client.get(url).headers(headers);
-    let response = request.send().await?;
-
-    if !response.status().is_success() {
-        println!("Get IMDS request failed with status code: {}", response.status());
-        println!("{:?}", response.text().await);
-        return Err(Box::from("Failed Get Call"));
-    }
-
-    let body = response.text().await?;
-
-    let public_key_start_index = match body.find("publicKeys") {
-        Some(index) => index + "publicKeys".len() + 1,
-        None => return Err(Box::from("Failed to find publicKeys")),
-    };
-    let public_key_end_index = match body[public_key_start_index..].find("]") {
-        Some(index) => public_key_start_index + index,
-        None => return Err(Box::from("Failed to find publicKeys")),
-    };
-
-    let key_text:&str = &body[public_key_start_index..public_key_end_index];
-
-    let mut keys: Vec<String> = Vec::new();
-    let mut start_index = 0;
-    while let Some(key_index) = key_text[start_index..].find("ssh-rsa"){
-        let key_index = start_index + key_index;
-        let quote_index = match key_text[key_index..].find('"'){
-            Some(index) => index + key_index,
-            None => break,
-        };
-        let key = key_text[key_index..quote_index].to_owned();
-        keys.push(key);
-        start_index = quote_index;
-    }
-
-    println!("{:?}", keys);
-    Ok(keys)
-}
 
 
 #[tokio::main]
