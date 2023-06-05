@@ -187,7 +187,7 @@ async fn create_ssh_directory(username: &str, home_path: String){
     .output()
     .expect("Failed to execute chown command");
 
-    let _transfer_ssh_o = Command::new("chgrp")
+    let _transfer_ssh_group = Command::new("chgrp")
     .arg(username)
     .arg(file_path.clone())
     .output()
@@ -233,10 +233,15 @@ async fn set_ssh_keys(file_path: String){
         Ok(keys) => {
             let mut authorized_keys_path = file_path;
             authorized_keys_path.push_str("/authorized_keys");
-            let mut authorized_keys = File::create(authorized_keys_path).unwrap();
+            let mut authorized_keys = File::create(authorized_keys_path.clone()).unwrap();
             for key in keys{
                 writeln!(authorized_keys, "{}", key.data).unwrap();
             }
+            let _set_permissions_value = Command::new("chmod")
+            .arg("600")
+            .arg(authorized_keys_path.clone())
+            .spawn()
+            .expect("Failed to execute chmod command");
             return;
         },
         Err(error) => {
@@ -257,8 +262,6 @@ fn set_hostname(hostname: &str){
     return;
 }
 
-
-
 #[tokio::main]
 async fn main() {
     let rest_call = get_goalstate().await;
@@ -276,5 +279,5 @@ async fn main() {
 
     create_user("test_user").await;  //add to deserializer
 
-    set_hostname("cadetest-0003");  //this should be done elsewhere
+    set_hostname("test-hostname-set");  //this should be done elsewhere
 }
