@@ -7,6 +7,8 @@ use serde::{Deserialize};
 use serde_xml_rs::from_str;
 
 use std::process::Command;
+use std::fs::File;
+use std::io::Write;
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct Goalstate {
@@ -112,16 +114,20 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
 }
 
 
-fn create_user(username: &str) {
-    //check that useradd/echo/chpasswd exists before calling (like with FreeBSD)
+async fn create_user(username: &str) {
+    let mut home_path = "/home/".to_string();
+    home_path.push_str(username);
+
     let _create_user = Command::new("useradd")
     .arg(username.to_string())
     .arg("--comment")
     .arg("Provisioning agent created this user based on username provided in IMDS")
     .arg("--groups")
     .arg("adm,audio,cdrom,dialout,dip,floppy,lxd,netdev,plugdev,sudo,video")
+    .arg("-d")
+    .arg(home_path.clone())
     .arg("-m")
-    .output()
+    .status()
     .expect("Failed to execute useradd command.");
 
     let _set_password = Command::new("passwd")
@@ -130,26 +136,64 @@ fn create_user(username: &str) {
     .output()
     .expect("Failed to execute passwd command");
 
-    create_ssh_directory(username);
+    create_ssh_directory(username, home_path).await;
 
     return;
 }
 
-fn create_ssh_directory(username: &str){
-    let mut file_path = "/home/".to_string();
-    file_path.push_str(username);
+async fn create_ssh_directory(username: &str, home_path: String){
+    let mut file_path = home_path;
     file_path.push_str("/.ssh");
 
     let _create_ssh_directory = Command::new("mkdir")
-    .arg(file_path)
+    .arg(file_path.clone())
     .output()
     .expect("Failed to execute mkdir command");
 
-    // done last to ensure that everything in there is assigned to the user
-    // chown -R username:<user> /home/username/.ssh
+    set_ssh_keys(username, file_path.clone()).await;
+
+    let _transfer_ssh_ownership = Command::new("chown")
+    .arg("-hR")
+    .arg(username)
+    .arg(file_path.clone())
+    .output()
+    .expect("Failed to execute chown command");
+
+    let _transfer_ssh_o = Command::new("chgrp")
+    .arg(username)
+    .arg(file_path.clone())
+    .output()
+    .expect("Failed to execute chgrp command");
+
+    let _set_permissions_value = Command::new("chmod")
+    .arg("-R")
+    .arg("700")                     // 600 does allow me to access the folder even as the owner
+    .arg(file_path.clone())
+    .output()
+    .expect("Failed to execute chmod command");
 
     return;
 }
+
+async fn set_ssh_keys(username: &str, file_path: String){
+    let keys = get_ssh_keys().await;
+    match keys {
+        Ok(keys) => {
+            let mut authorized_keys_path = file_path;
+            authorized_keys_path.push_str("/authorized_keys");
+            let mut authorized_keys = File::create(authorized_keys_path).unwrap();
+            for key in keys{
+                writeln!(authorized_keys, "{}", key).unwrap();
+            }
+            return;
+        },
+        Err(error) => {
+            // handle the error
+            return;
+        }
+    }
+}
+
 
 fn set_hostname(hostname: &str){
     let _set_hostname = Command::new("hostnamectl")
@@ -161,12 +205,10 @@ fn set_hostname(hostname: &str){
     return;
 }
 
-async fn set_ssh_keys() -> Result<(), Box<dyn std::error::Error>>
+async fn get_ssh_keys() -> Result<Vec<String>, Box<dyn std::error::Error>>
 {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
-
     let client = Client::new();
-
     let mut headers = HeaderMap::new();
 
     headers.insert("Metadata", HeaderValue::from_static("true"));
@@ -207,8 +249,7 @@ async fn set_ssh_keys() -> Result<(), Box<dyn std::error::Error>>
     }
 
     println!("{:?}", keys);
-
-    Ok(())
+    Ok(keys)
 }
 
 
@@ -227,9 +268,7 @@ async fn main() {
         return;
     }
 
-    create_user("test_user");
+    create_user("test_user").await;
 
     set_hostname("cadetest-0003");
-
-    set_ssh_keys().await;
 }
