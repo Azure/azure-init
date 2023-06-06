@@ -1,41 +1,8 @@
 use tokio;
-use std::process::Command;
 
 use lib::imds;
 use lib::goalstate;
-
-async fn create_user(username: &str) {
-    let mut home_path = "/home/".to_string();
-    home_path.push_str(username);
-
-    let _create_user = Command::new("useradd")
-    .arg(username.to_string())
-    .arg("--comment")
-    .arg("Provisioning agent created this user based on username provided in IMDS")
-    .arg("--groups")
-    .arg("adm,audio,cdrom,dialout,dip,floppy,lxd,netdev,plugdev,sudo,video")
-    .arg("-d")
-    .arg(home_path.clone())
-    .arg("-m")
-    .status()
-    .expect("Failed to execute useradd command.");
-
-    let _set_password = Command::new("passwd")
-    .arg("-d")
-    .arg(username.to_string())
-    .output()
-    .expect("Failed to execute passwd command");
-
-    imds::create_ssh_directory(username, home_path).await;
-}
-
-fn set_hostname(hostname: &str){
-    let _set_hostname = Command::new("hostnamectl")
-    .arg("set-hostname")
-    .arg(hostname)
-    .status()
-    .expect("Failed to execute hostnamectl set-hostname");
-}
+use lib::distro;
 
 #[tokio::main]
 async fn main() {
@@ -52,7 +19,11 @@ async fn main() {
         return;
     }
 
-    create_user("test_user").await;  //add to deserializer
+    let username = "test_user";
+    let mut home_path = "/home/".to_string();
+    home_path.push_str(username);
 
-    set_hostname("test-hostname-set");  //this should be done elsewhere
+    distro::create_user(username).await;  //add to deserializer
+    let _create_directory = imds::create_ssh_directory(username, home_path).await;
+    distro::set_hostname("test-hostname-set");  //this should be done elsewhere
 }
