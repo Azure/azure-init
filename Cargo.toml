@@ -1,5 +1,5 @@
 [package]
-name = "rest_call"
+name = "azure-provisioning-agent"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,3 +18,11 @@ rustfmt = "0.10.0"
 
 [profile.dev]
 incremental = true
+
+[lib]
+name = "lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "azure-provisioning-agent"
+path = "src/main.rs"
