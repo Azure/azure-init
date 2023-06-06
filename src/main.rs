@@ -6,6 +6,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize};
 use serde_xml_rs::from_str;
 use serde_json;
+use serde_json::Value;
 
 use std::process::Command;
 use std::fs::File;
@@ -50,21 +51,9 @@ struct RoleInstance {
 //////////////////////////////////
 
 #[derive(Debug, Deserialize, PartialEq)]
-struct Data {
-    #[serde(rename = "compute")]
-    compute: Compute
-}
-
-#[derive(Debug, Deserialize, PartialEq)]
-struct Compute {
-    #[serde(rename = "publicKeys")]
-    public_keys: Vec<PublicKeys>
-}
-
-#[derive(Debug, Deserialize, PartialEq)]
 struct PublicKeys {
     #[serde(rename = "keyData")]
-    data: String,
+    key_data: String,
     #[serde(rename = "path")]
     path: String,
 }
@@ -76,7 +65,6 @@ async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-provisioning-agent"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
 
@@ -91,6 +79,12 @@ async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
     let body = response.text().await?;
 
     let goalstate: Goalstate = from_str(&body)?;
+    
+    let data: Value = serde_xml_rs::from_str(&body).unwrap();
+    println!("{}", data);
+    let content = String::deserialize(&data["Container"]["ContainerId"]).unwrap();
+    println!("{}", content);
+
     Ok(goalstate)
 }
 
@@ -101,7 +95,6 @@ async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-provisioning-agent"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
     headers.insert("Content-Type", HeaderValue::from_static("text/xml;charset=utf-8"));
@@ -165,8 +158,6 @@ async fn create_user(username: &str) {
     .expect("Failed to execute passwd command");
 
     create_ssh_directory(username, home_path).await;
-
-    return;
 }
 
 async fn create_ssh_directory(username: &str, home_path: String){
@@ -199,8 +190,6 @@ async fn create_ssh_directory(username: &str, home_path: String){
     .arg(file_path.clone())
     .output()
     .expect("Failed to execute chmod command");
-
-    return;
 }
 
 async fn get_ssh_keys() -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>>
@@ -222,9 +211,11 @@ async fn get_ssh_keys() -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>>
 
     let body = response.text().await?;
 
-    let data: Data = serde_json::from_str(&body).unwrap(); //could be cleaned if this works
+    let data: Value = serde_json::from_str(&body).unwrap();
+    let content = Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"]).unwrap();
+    println!("{:?}", content);
 
-    Ok(data.compute.public_keys)
+    Ok(content)
 }
 
 async fn set_ssh_keys(file_path: String){
@@ -235,7 +226,7 @@ async fn set_ssh_keys(file_path: String){
             authorized_keys_path.push_str("/authorized_keys");
             let mut authorized_keys = File::create(authorized_keys_path.clone()).unwrap();
             for key in keys{
-                writeln!(authorized_keys, "{}", key.data).unwrap();
+                writeln!(authorized_keys, "{}", key.key_data).unwrap();
             }
             let _set_permissions_value = Command::new("chmod")
             .arg("600")
@@ -244,7 +235,7 @@ async fn set_ssh_keys(file_path: String){
             .expect("Failed to execute chmod command");
             return;
         },
-        Err(error) => {
+        Err(_error) => {
             // handle the error
             return;
         }
@@ -258,8 +249,6 @@ fn set_hostname(hostname: &str){
     .arg(hostname)
     .status()
     .expect("Failed to execute hostnamectl set-hostname");
-
-    return;
 }
 
 #[tokio::main]
