@@ -1,10 +1,9 @@
-
 use reqwest;
-use reqwest::Client;
-use reqwest::header::HeaderValue;
 use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
+use reqwest::Client;
 
-use serde::{Deserialize};
+use serde::Deserialize;
 use serde_xml_rs::from_str;
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -37,14 +36,16 @@ pub struct RoleInstance {
     instance_id: String,
 }
 
-pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
-{
+pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
     let url = "http://168.63.129.16/machine/?comp=goalstate";
 
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-    headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-provisioning-agent"));
+    headers.insert(
+        "x-ms-agent-name",
+        HeaderValue::from_static("azure-provisioning-agent"),
+    );
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
 
     let request = client.get(url).headers(headers);
@@ -61,17 +62,25 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
     Ok(goalstate)
 }
 
-pub async fn report_health(goalstate: Goalstate) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn report_health(
+    goalstate: Goalstate,
+) -> Result<(), Box<dyn std::error::Error>> {
     let url = "http://168.63.129.16/machine/?comp=health";
 
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-    headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-provisioning-agent"));
+    headers.insert(
+        "x-ms-agent-name",
+        HeaderValue::from_static("azure-provisioning-agent"),
+    );
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
-    headers.insert("Content-Type", HeaderValue::from_static("text/xml;charset=utf-8"));
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/xml;charset=utf-8"),
+    );
 
-    let post_request = 
+    let post_request =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
     <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
         <GoalStateIncarnation>$GOAL_STATE_INCARNATION</GoalStateIncarnation>\n\
@@ -88,18 +97,31 @@ pub async fn report_health(goalstate: Goalstate) -> Result<(), Box<dyn std::erro
         </Container>\n\
     </Health>";
 
-    let post_request = post_request.replace("$GOAL_STATE_INCARNATION", &goalstate.incarnation);
-    let post_request = post_request.replace("$CONTAINER_ID", &goalstate.container.container_id);
-    let post_request = post_request.replace("$INSTANCE_ID", &goalstate.container.role_instance_list.role_instance.instance_id);
+    let post_request =
+        post_request.replace("$GOAL_STATE_INCARNATION", &goalstate.incarnation);
+    let post_request = post_request
+        .replace("$CONTAINER_ID", &goalstate.container.container_id);
+    let post_request = post_request.replace(
+        "$INSTANCE_ID",
+        &goalstate
+            .container
+            .role_instance_list
+            .role_instance
+            .instance_id,
+    );
 
-    let response = client.post(url)
-    .headers(headers)
-    .body(post_request)
-    .send()
-    .await?;
+    let response = client
+        .post(url)
+        .headers(headers)
+        .body(post_request)
+        .send()
+        .await?;
 
     if !response.status().is_success() {
-        println!("Post request failed with status code: {}", response.status());
+        println!(
+            "Post request failed with status code: {}",
+            response.status()
+        );
         return Err(Box::from("Failed Post Call"));
     }
 

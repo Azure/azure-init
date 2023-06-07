@@ -7,7 +7,9 @@ pub async fn create_user(username: &str) {
     let _create_user = Command::new("useradd")
     .arg(username.to_string())
     .arg("--comment")
-    .arg("Provisioning agent created this user based on username provided in IMDS")
+    .arg(
+      "Provisioning agent created this user based on username provided in IMDS",
+    )
     .arg("--groups")
     .arg("adm,audio,cdrom,dialout,dip,floppy,lxd,netdev,plugdev,sudo,video")
     .arg("-d")
@@ -17,16 +19,16 @@ pub async fn create_user(username: &str) {
     .expect("Failed to execute useradd command.");
 
     let _set_password = Command::new("passwd")
-    .arg("-d")
-    .arg(username.to_string())
-    .output()
-    .expect("Failed to execute passwd command");
+        .arg("-d")
+        .arg(username.to_string())
+        .output()
+        .expect("Failed to execute passwd command");
 }
 
-pub fn set_hostname(hostname: &str){
+pub fn set_hostname(hostname: &str) {
     let _set_hostname = Command::new("hostnamectl")
-    .arg("set-hostname")
-    .arg(hostname)
-    .status()
-    .expect("Failed to execute hostnamectl set-hostname");
+        .arg("set-hostname")
+        .arg(hostname)
+        .status()
+        .expect("Failed to execute hostnamectl set-hostname");
 }
