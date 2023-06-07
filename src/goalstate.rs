@@ -61,7 +61,7 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>>
     Ok(goalstate)
 }
 
-pub async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn report_health(goalstate: Goalstate) -> Result<(), Box<dyn std::error::Error>> {
     let url = "http://168.63.129.16/machine/?comp=health";
 
     let client = Client::new();
@@ -74,18 +74,18 @@ pub async fn post_goalstate(goalstate: Goalstate) -> Result<(), Box<dyn std::err
     let post_request = 
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
     <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
-    <GoalStateIncarnation>$GOAL_STATE_INCARNATION</GoalStateIncarnation>\n\
-    <Container>\n\
-    <ContainerId>$CONTAINER_ID</ContainerId>\n\
-    <RoleInstanceList>\n\
-    <Role>\n\
-    <InstanceId>$INSTANCE_ID</InstanceId>\n\
-    <Health>\n\
-    <State>Ready</State>\n\
-    </Health>\n\
-    </Role>\n\
-    </RoleInstanceList>\n\
-    </Container>\n\
+        <GoalStateIncarnation>$GOAL_STATE_INCARNATION</GoalStateIncarnation>\n\
+        <Container>\n\
+            <ContainerId>$CONTAINER_ID</ContainerId>\n\
+            <RoleInstanceList>\n\
+                <Role>\n\
+                    <InstanceId>$INSTANCE_ID</InstanceId>\n\
+                    <Health>\n\
+                        <State>Ready</State>\n\
+                    </Health>\n\
+                </Role>\n\
+            </RoleInstanceList>\n\
+        </Container>\n\
     </Health>";
 
     let post_request = post_request.replace("$GOAL_STATE_INCARNATION", &goalstate.incarnation);

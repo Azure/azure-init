@@ -6,16 +6,16 @@ use lib::distro;
 
 #[tokio::main]
 async fn main() {
-    let rest_call = goalstate::get_goalstate().await;
+    let get_goalstate = goalstate::get_goalstate().await;
     
-    if let Err(ref _err) = rest_call {
+    if let Err(ref _err) = get_goalstate {
         return;
     }
 
-    let goalstate: goalstate::Goalstate = rest_call.unwrap();
+    let goalstate: goalstate::Goalstate = get_goalstate.unwrap();
 
-    let post_call = goalstate::post_goalstate(goalstate).await;
-    if let Err(ref _err) = post_call {
+    let report_health = goalstate::report_health(goalstate).await;
+    if let Err(ref _err) = report_health {
         return;
     }
 
