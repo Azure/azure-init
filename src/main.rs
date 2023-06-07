@@ -6,17 +6,16 @@ use lib::imds;
 
 #[tokio::main]
 async fn main() {
-    let get_goalstate = goalstate::get_goalstate().await;
-
-    if let Err(ref _err) = get_goalstate {
-        return;
+    let mut vm_goalstate = goalstate::get_goalstate().await;
+    match vm_goalstate {
+        Ok(vm_goalstate) => vm_goalstate,
+        Err(err) => return,
     }
 
-    let goalstate: goalstate::Goalstate = get_goalstate.unwrap();
-
-    let report_health = goalstate::report_health(goalstate).await;
-    if let Err(ref _err) = report_health {
-        return;
+    let mut report_health = goalstate::report_health(vm_goalstate).await;
+    match report_health {
+        Ok(report_health) => report_health,
+        Err(err) => return,
     }
 
     let username = "test_user";

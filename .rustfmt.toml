@@ -5,8 +5,3 @@ max_width=80
 tab_spaces=4
 use_field_init_shorthand=true
 
-# Unstable feature flags
-unstable_features = true
-imports_layout = "Vertical"
-imports_granularity = "Crate"
-group_imports="StdExternalCrate" 
