@@ -40,7 +40,6 @@ pub async fn get_ssh_keys(
     let data: Value = serde_json::from_str(&body).unwrap();
     let content =
         Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"]).unwrap();
-    println!("{:?}", content);
 
     Ok(content)
 }

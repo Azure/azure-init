@@ -1,4 +1,3 @@
-
 use std::fs;
 use std::fs::create_dir;
 use std::fs::File;
@@ -10,7 +9,11 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::imds::PublicKeys;
 
-pub async fn set_ssh_keys(keys: Vec<PublicKeys>, username: String, file_path: String) {
+pub async fn set_ssh_keys(
+    keys: Vec<PublicKeys>,
+    username: String,
+    file_path: String,
+) {
     let mut authorized_keys_path = file_path;
     authorized_keys_path.push_str("/authorized_keys");
 
