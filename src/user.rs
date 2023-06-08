@@ -76,3 +76,28 @@ pub async fn create_ssh_directory(
 
     Ok(())
 }
+
+#[tokio::test]
+
+async fn test_create_ssh_directory() {
+    // Set up a temporary directory for testing
+    let username = "test_user";
+    let file_path = "/test_ssh_directory/".to_owned();
+    create_dir(file_path.clone());
+
+    // Call the function being tested
+    create_ssh_directory(username, file_path.clone()).await.unwrap();
+    
+    
+    // Check if the directory exists
+    assert!(std::path::PathBuf::from(file_path.clone()).exists());
+
+    // Check if the directory is actually a directory
+    assert!(std::path::PathBuf::from(file_path.clone()).is_dir());
+
+    let mut ssh_path: String = file_path.clone();
+    ssh_path.push_str("/.ssh");
+
+    fs::remove_dir(ssh_path);
+    fs::remove_dir(file_path);
+}
