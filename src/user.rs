@@ -1,8 +1,8 @@
 use std::fs;
 use std::fs::create_dir;
 use std::fs::File;
-use std::io::Write;
 use std::io::BufRead;
+use std::io::Write;
 
 use nix::unistd::{Gid, Uid};
 use std::ffi::CString;
@@ -85,9 +85,10 @@ async fn test_create_ssh_directory() {
     create_dir(file_path.clone()).unwrap();
 
     // Call the function being tested
-    create_ssh_directory(username, file_path.clone()).await.unwrap();
-    
-    
+    create_ssh_directory(username, file_path.clone())
+        .await
+        .unwrap();
+
     // Check if the directory exists
     assert!(std::path::PathBuf::from(file_path.clone()).exists());
 
@@ -107,14 +108,22 @@ async fn test_set_ssh_keys() {
     let file_path = "/AzureProvAgent_test_ssh_directory/".to_owned();
     create_dir(file_path.clone()).unwrap();
 
-    create_ssh_directory(username, file_path.clone()).await.unwrap();
-    
+    create_ssh_directory(username, file_path.clone())
+        .await
+        .unwrap();
+
     let test_key_data = "test key data".to_owned();
     let test_path = "/test_path/key".to_owned();
-    
-    let key1 = PublicKeys {key_data: test_key_data.clone(), path: test_path.clone()};
-    let key2 = PublicKeys {key_data: test_key_data.clone(), path: test_path.clone()};
-    let mut keys:Vec<PublicKeys> = Vec::new();
+
+    let key1 = PublicKeys {
+        key_data: test_key_data.clone(),
+        path: test_path.clone(),
+    };
+    let key2 = PublicKeys {
+        key_data: test_key_data.clone(),
+        path: test_path.clone(),
+    };
+    let mut keys: Vec<PublicKeys> = Vec::new();
     keys.push(key1);
     keys.push(key2);
 

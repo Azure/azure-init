@@ -100,7 +100,7 @@ pub async fn report_health(
     Ok(())
 }
 
-fn build_report_health_file(goalstate: Goalstate) -> String{
+fn build_report_health_file(goalstate: Goalstate) -> String {
     let post_request =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
     <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
@@ -123,16 +123,15 @@ fn build_report_health_file(goalstate: Goalstate) -> String{
     let post_request = post_request
         .replace("$CONTAINER_ID", &goalstate.container.container_id);
     let post_request = post_request.replace(
-    "$INSTANCE_ID",
-    &goalstate
-        .container
-        .role_instance_list
-        .role_instance
-        .instance_id,
+        "$INSTANCE_ID",
+        &goalstate
+            .container
+            .role_instance_list
+            .role_instance
+            .instance_id,
     );
     return post_request;
 }
-
 
 #[tokio::test]
 async fn test_build_report_health_file() {
@@ -189,7 +188,14 @@ fn test_parsing_goalstate() {
     </Goalstate>";
     let goalstate: Goalstate = from_str(goalstate_str).unwrap();
     assert_eq!(goalstate.container.container_id, "2".to_owned());
-    assert_eq!(goalstate.container.role_instance_list.role_instance.instance_id, "test_user_instance_id".to_owned());
+    assert_eq!(
+        goalstate
+            .container
+            .role_instance_list
+            .role_instance
+            .instance_id,
+        "test_user_instance_id".to_owned()
+    );
     assert_eq!(goalstate.version, "example_version".to_owned());
     assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
 }
