@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json;
 use serde_json::Value;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct PublicKeys {
     #[serde(rename = "keyData")]
     pub key_data: String,
