@@ -171,3 +171,25 @@ async fn test_build_report_health_file() {
     let actual_output = build_report_health_file(goalstate);
     assert_eq!(actual_output, expected_output);
 }
+
+#[test]
+fn test_parsing_goalstate() {
+    let goalstate_str = "
+    <Goalstate>
+        <Container>
+            <ContainerId>2</ContainerId>
+            <RoleInstanceList>
+                <RoleInstance>
+                    <InstanceId>test_user_instance_id</InstanceId>
+                </RoleInstance>
+            </RoleInstanceList>
+        </Container>
+        <Version>example_version</Version>
+        <Incarnation>test_goal_incarnation</Incarnation>
+    </Goalstate>";
+    let goalstate: Goalstate = from_str(goalstate_str).unwrap();
+    assert_eq!(goalstate.container.container_id, "2".to_owned());
+    assert_eq!(goalstate.container.role_instance_list.role_instance.instance_id, "test_user_instance_id".to_owned());
+    assert_eq!(goalstate.version, "example_version".to_owned());
+    assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
+}
