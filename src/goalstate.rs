@@ -133,10 +133,15 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
     return post_request;
 }
 
-#[tokio::test]
-async fn test_build_report_health_file() {
-    let goalstate_str = "
-        <Goalstate>
+#[cfg(test)]
+mod tests {
+    use crate::goalstate::Goalstate;
+    use crate::goalstate::build_report_health_file;
+
+    #[test]
+    fn test_parsing_goalstate() {
+        let goalstate_str =
+        "<Goalstate>
             <Container>
                 <ContainerId>2</ContainerId>
                 <RoleInstanceList>
@@ -148,54 +153,55 @@ async fn test_build_report_health_file() {
             <Version>example_version</Version>
             <Incarnation>test_goal_incarnation</Incarnation>
         </Goalstate>";
-    let goalstate: Goalstate = from_str(goalstate_str).unwrap();
+        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str).unwrap();
+        assert_eq!(goalstate.container.container_id, "2".to_owned());
+        assert_eq!(
+            goalstate
+                .container
+                .role_instance_list
+                .role_instance
+                .instance_id,
+            "test_user_instance_id".to_owned()
+        );
+        assert_eq!(goalstate.version, "example_version".to_owned());
+        assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
+    }
+    
+    #[tokio::test]
+    async fn test_build_report_health_file() {
+        let goalstate_str = "
+            <Goalstate>
+                <Container>
+                    <ContainerId>2</ContainerId>
+                    <RoleInstanceList>
+                        <RoleInstance>
+                            <InstanceId>test_user_instance_id</InstanceId>
+                        </RoleInstance>
+                    </RoleInstanceList>
+                </Container>
+                <Version>example_version</Version>
+                <Incarnation>test_goal_incarnation</Incarnation>
+            </Goalstate>";
+        let goalstate: Goalstate =  serde_xml_rs::from_str(goalstate_str).unwrap();
 
-    let expected_output =
-    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
-    <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
-        <GoalStateIncarnation>test_goal_incarnation</GoalStateIncarnation>\n\
-        <Container>\n\
-            <ContainerId>2</ContainerId>\n\
-            <RoleInstanceList>\n\
-                <Role>\n\
-                    <InstanceId>test_user_instance_id</InstanceId>\n\
-                    <Health>\n\
-                        <State>Ready</State>\n\
-                    </Health>\n\
-                </Role>\n\
-            </RoleInstanceList>\n\
-        </Container>\n\
-    </Health>";
+        let expected_output =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+        <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+            <GoalStateIncarnation>test_goal_incarnation</GoalStateIncarnation>\n\
+            <Container>\n\
+                <ContainerId>2</ContainerId>\n\
+                <RoleInstanceList>\n\
+                    <Role>\n\
+                        <InstanceId>test_user_instance_id</InstanceId>\n\
+                        <Health>\n\
+                            <State>Ready</State>\n\
+                        </Health>\n\
+                    </Role>\n\
+                </RoleInstanceList>\n\
+            </Container>\n\
+        </Health>";
 
-    let actual_output = build_report_health_file(goalstate);
-    assert_eq!(actual_output, expected_output);
-}
-
-#[test]
-fn test_parsing_goalstate() {
-    let goalstate_str = "
-    <Goalstate>
-        <Container>
-            <ContainerId>2</ContainerId>
-            <RoleInstanceList>
-                <RoleInstance>
-                    <InstanceId>test_user_instance_id</InstanceId>
-                </RoleInstance>
-            </RoleInstanceList>
-        </Container>
-        <Version>example_version</Version>
-        <Incarnation>test_goal_incarnation</Incarnation>
-    </Goalstate>";
-    let goalstate: Goalstate = from_str(goalstate_str).unwrap();
-    assert_eq!(goalstate.container.container_id, "2".to_owned());
-    assert_eq!(
-        goalstate
-            .container
-            .role_instance_list
-            .role_instance
-            .instance_id,
-        "test_user_instance_id".to_owned()
-    );
-    assert_eq!(goalstate.version, "example_version".to_owned());
-    assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
+        let actual_output = build_report_health_file(goalstate);
+        assert_eq!(actual_output, expected_output);
+    }
 }
