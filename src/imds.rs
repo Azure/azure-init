@@ -88,7 +88,8 @@ mod tests {
 
         let public_keys = get_ssh_keys(file_body).unwrap();
 
-        assert_eq!(1, 1);
+        assert_eq!(public_keys[0].key_data, "ssh-rsa test_key1".to_string());
+        assert_eq!(public_keys[1].key_data, "ssh-rsa test_key2".to_string());
     }
 
     #[test]
