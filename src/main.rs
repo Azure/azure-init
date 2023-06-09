@@ -25,8 +25,8 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let test_user_username_REMOVE = imds::get_username(imds_body.clone());
-    let test_user_username = match test_user_username_REMOVE {
+    let test_user_username_remove = imds::get_username(imds_body.clone());
+    let test_user_username = match test_user_username_remove {
         Ok(test_user_username) => test_user_username,
         Err(_err) => return,
     };

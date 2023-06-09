@@ -135,13 +135,12 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::goalstate::Goalstate;
     use crate::goalstate::build_report_health_file;
+    use crate::goalstate::Goalstate;
 
     #[test]
     fn test_parsing_goalstate() {
-        let goalstate_str =
-        "<Goalstate>
+        let goalstate_str = "<Goalstate>
             <Container>
                 <ContainerId>2</ContainerId>
                 <RoleInstanceList>
@@ -153,7 +152,8 @@ mod tests {
             <Version>example_version</Version>
             <Incarnation>test_goal_incarnation</Incarnation>
         </Goalstate>";
-        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str).unwrap();
+        let goalstate: Goalstate =
+            serde_xml_rs::from_str(goalstate_str).unwrap();
         assert_eq!(goalstate.container.container_id, "2".to_owned());
         assert_eq!(
             goalstate
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(goalstate.version, "example_version".to_owned());
         assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
     }
-    
+
     #[tokio::test]
     async fn test_build_report_health_file() {
         let goalstate_str = "
@@ -182,7 +182,8 @@ mod tests {
                 <Version>example_version</Version>
                 <Incarnation>test_goal_incarnation</Incarnation>
             </Goalstate>";
-        let goalstate: Goalstate =  serde_xml_rs::from_str(goalstate_str).unwrap();
+        let goalstate: Goalstate =
+            serde_xml_rs::from_str(goalstate_str).unwrap();
 
         let expected_output =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\

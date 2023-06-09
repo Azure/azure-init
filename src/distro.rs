@@ -33,12 +33,11 @@ pub fn set_hostname(hostname: &str) {
         .expect("Failed to execute hostnamectl set-hostname");
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::distro::set_hostname;
     use std::process::Command;
-    
+
     #[test]
     fn test_set_hostname() {
         let hostname = "hostname1";

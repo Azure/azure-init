@@ -15,8 +15,7 @@ pub struct PublicKeys {
     pub path: String,
 }
 
-pub async fn query_imds(
-) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
     let client = Client::new();
     let mut headers = HeaderMap::new();
@@ -40,8 +39,8 @@ pub async fn query_imds(
     Ok(imds_body)
 }
 
-
-pub fn get_ssh_keys(imds_body: String
+pub fn get_ssh_keys(
+    imds_body: String,
 ) -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body).unwrap();
     let public_keys =
@@ -50,11 +49,13 @@ pub fn get_ssh_keys(imds_body: String
     Ok(public_keys)
 }
 
-pub fn get_username(imds_body: String
+pub fn get_username(
+    imds_body: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body).unwrap();
     let username =
-        String::deserialize(&data["compute"]["osProfile"]["adminUsername"]).unwrap();
+        String::deserialize(&data["compute"]["osProfile"]["adminUsername"])
+            .unwrap();
 
     Ok(username)
 }
