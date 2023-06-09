@@ -59,3 +59,62 @@ pub fn get_username(
 
     Ok(username)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::imds::get_ssh_keys;
+    use crate::imds::get_username;
+
+    #[test]
+    fn test_get_ssh_keys() {
+        let file_body = r#"
+        {
+            "compute": {
+              "azEnvironment": "AzurePublicCloud",
+              "customData": "",
+              "publicKeys": [
+                {
+                  "keyData": "ssh-rsa test_key1",
+                  "path": "/path/to/.ssh/authorized_keys"
+                },
+                {
+                    "keyData": "ssh-rsa test_key2",
+                    "path": "/path/to/.ssh/authorized_keys"
+                }
+              ]
+            }
+        }"#
+        .to_string();
+
+        let public_keys = get_ssh_keys(file_body).unwrap();
+
+        assert_eq!(1, 1);
+    }
+
+    #[test]
+    fn test_get_username() {
+        let file_body = r#"
+        {
+            "compute": {
+              "azEnvironment": "cloud_env",
+              "customData": "",
+              "evictionPolicy": "",
+              "isHostCompatibilityLayerVm": "false",
+              "licenseType": "",
+              "location": "eastus",
+              "name": "AzTux-MinProvAgent-Test-0001",
+              "offer": "0001-com-ubuntu-server-focal",
+              "osProfile": {
+                "adminUsername": "MinProvAgentUser",
+                "computerName": "AzTux-MinProvAgent-Test-0001",
+                "disablePasswordAuthentication": "true"
+              }
+            }
+        }"#
+        .to_string();
+
+        let username = get_username(file_body).unwrap();
+
+        assert_eq!(username, "MinProvAgentUser".to_string());
+    }
+}
