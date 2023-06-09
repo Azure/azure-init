@@ -28,3 +28,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "azure-provisioning-agent"
 path = "src/main.rs"
+
+[[bin]]
+name = "functional_testing"
+path = "src/create_user_test.rs"
