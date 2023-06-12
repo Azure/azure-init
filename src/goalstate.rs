@@ -51,15 +51,16 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
     let request = client.get(url).headers(headers);
     let response = request.send().await?;
 
-    if !response.status().is_success() {
-        println!("Get request failed with status code: {}", response.status());
-        return Err(Box::from("Failed Get Call"));
+    if response.status().is_success() {
+        let body = response.text().await?;
+
+        let goalstate: Goalstate = from_str(&body)?;
+        return Ok(goalstate);
     }
 
-    let body = response.text().await?;
+    println!("Get request failed with status code: {}", response.status());
 
-    let goalstate: Goalstate = from_str(&body)?;
-    Ok(goalstate)
+    return Err(Box::from("Failed Get Call"));
 }
 
 pub async fn report_health(
@@ -136,7 +137,7 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Goalstate, build_report_health_file};
+    use super::{build_report_health_file, Goalstate};
 
     #[test]
     fn test_parsing_goalstate() {
@@ -152,8 +153,8 @@ mod tests {
             <Version>example_version</Version>
             <Incarnation>test_goal_incarnation</Incarnation>
         </Goalstate>";
-        let goalstate: Goalstate =
-            serde_xml_rs::from_str(goalstate_str).expect("Failed to parse the goalstate XML.");
+        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+            .expect("Failed to parse the goalstate XML.");
         assert_eq!(goalstate.container.container_id, "2".to_owned());
         assert_eq!(
             goalstate
@@ -182,8 +183,8 @@ mod tests {
                 <Version>example_version</Version>
                 <Incarnation>test_goal_incarnation</Incarnation>
             </Goalstate>";
-        let goalstate: Goalstate =
-            serde_xml_rs::from_str(goalstate_str).expect("Failed to parse the goalstate XML.");
+        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+            .expect("Failed to parse the goalstate XML.");
 
         let expected_output =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\

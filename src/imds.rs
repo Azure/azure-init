@@ -47,7 +47,7 @@ pub fn get_ssh_keys(
         .expect("Failed to parse the IMDS JSON.");
     let public_keys =
         Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"])
-        .expect("Failed to deserialize the public ssh keys.");
+            .expect("Failed to deserialize the public ssh keys.");
 
     Ok(public_keys)
 }
@@ -89,8 +89,8 @@ mod tests {
         }"#
         .to_string();
 
-        let public_keys = get_ssh_keys(file_body).expect(
-            "Failed to obtain ssh keys from the JSON file.");
+        let public_keys = get_ssh_keys(file_body)
+            .expect("Failed to obtain ssh keys from the JSON file.");
 
         assert_eq!(public_keys[0].key_data, "ssh-rsa test_key1".to_string());
         assert_eq!(public_keys[1].key_data, "ssh-rsa test_key2".to_string());
@@ -118,7 +118,8 @@ mod tests {
         }"#
         .to_string();
 
-        let username = get_username(file_body).expect("Failed to get username.");
+        let username =
+            get_username(file_body).expect("Failed to get username.");
 
         assert_eq!(username, "MinProvAgentUser".to_string());
     }
