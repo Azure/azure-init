@@ -31,4 +31,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "functional_tests"
-path = "src/functional_tests.rs"
+path = "tests/functional_tests.rs"
