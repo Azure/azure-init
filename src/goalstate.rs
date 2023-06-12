@@ -89,15 +89,16 @@ pub async fn report_health(
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        println!(
-            "Post request failed with status code: {}",
-            response.status()
-        );
-        return Err(Box::from("Failed Post Call"));
+    if response.status().is_success() {
+        return Ok(());
     }
 
-    Ok(())
+    println!(
+        "Post request failed with status code: {}",
+        response.status()
+    );
+    
+    return Err(Box::from("Failed Post Call"));
 }
 
 fn build_report_health_file(goalstate: Goalstate) -> String {
