@@ -62,8 +62,7 @@ pub fn get_username(
 
 #[cfg(test)]
 mod tests {
-    use crate::imds::get_ssh_keys;
-    use crate::imds::get_username;
+    use super::{get_ssh_keys, get_username};
 
     #[test]
     fn test_get_ssh_keys() {

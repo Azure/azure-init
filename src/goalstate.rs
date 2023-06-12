@@ -135,8 +135,7 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::goalstate::build_report_health_file;
-    use crate::goalstate::Goalstate;
+    use super::{Goalstate, build_report_health_file};
 
     #[test]
     fn test_parsing_goalstate() {

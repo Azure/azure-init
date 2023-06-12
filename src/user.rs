@@ -79,10 +79,7 @@ pub async fn create_ssh_directory(
 
 #[cfg(test)]
 mod tests {
-    use crate::user::create_ssh_directory;
-    use crate::user::set_ssh_keys;
-    use crate::user::File;
-    use crate::user::PublicKeys;
+    use super::{create_ssh_directory, set_ssh_keys, File, PublicKeys};
     use std::fs;
     use std::fs::create_dir;
     use std::io::BufRead;

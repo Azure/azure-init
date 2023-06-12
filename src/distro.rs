@@ -35,7 +35,7 @@ pub fn set_hostname(hostname: &str) {
 
 #[cfg(test)]
 mod tests {
-    use crate::distro::set_hostname;
+    use super::set_hostname;
     use std::process::Command;
 
     #[test]

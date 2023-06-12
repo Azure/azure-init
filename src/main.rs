@@ -1,9 +1,6 @@
 use tokio;
 
-use lib::distro;
-use lib::goalstate;
-use lib::imds;
-use lib::user;
+use lib::{distro, goalstate, imds, user};
 
 #[tokio::main]
 async fn main() {
