@@ -43,9 +43,11 @@ pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
 pub fn get_ssh_keys(
     imds_body: String,
 ) -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body).unwrap();
+    let data: Value = serde_json::from_str(&imds_body)
+        .expect("Failed to parse the IMDS JSON.");
     let public_keys =
-        Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"]).unwrap();
+        Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"])
+        .expect("Failed to deserialize the public ssh keys.");
 
     Ok(public_keys)
 }
@@ -53,10 +55,11 @@ pub fn get_ssh_keys(
 pub fn get_username(
     imds_body: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body).unwrap();
+    let data: Value = serde_json::from_str(&imds_body)
+        .expect("Failed to parse the IMDS JSON.");
     let username =
         String::deserialize(&data["compute"]["osProfile"]["adminUsername"])
-            .unwrap();
+            .expect("Failed to deserialize the admin username.");
 
     Ok(username)
 }
@@ -86,7 +89,8 @@ mod tests {
         }"#
         .to_string();
 
-        let public_keys = get_ssh_keys(file_body).unwrap();
+        let public_keys = get_ssh_keys(file_body).expect(
+            "Failed to obtain ssh keys from the JSON file.");
 
         assert_eq!(public_keys[0].key_data, "ssh-rsa test_key1".to_string());
         assert_eq!(public_keys[1].key_data, "ssh-rsa test_key2".to_string());
@@ -114,7 +118,7 @@ mod tests {
         }"#
         .to_string();
 
-        let username = get_username(file_body).unwrap();
+        let username = get_username(file_body).expect("Failed to get username.");
 
         assert_eq!(username, "MinProvAgentUser".to_string());
     }

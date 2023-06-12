@@ -97,7 +97,7 @@ pub async fn report_health(
         "Post request failed with status code: {}",
         response.status()
     );
-    
+
     return Err(Box::from("Failed Post Call"));
 }
 
@@ -153,7 +153,7 @@ mod tests {
             <Incarnation>test_goal_incarnation</Incarnation>
         </Goalstate>";
         let goalstate: Goalstate =
-            serde_xml_rs::from_str(goalstate_str).unwrap();
+            serde_xml_rs::from_str(goalstate_str).expect("Failed to parse the goalstate XML.");
         assert_eq!(goalstate.container.container_id, "2".to_owned());
         assert_eq!(
             goalstate
@@ -183,7 +183,7 @@ mod tests {
                 <Incarnation>test_goal_incarnation</Incarnation>
             </Goalstate>";
         let goalstate: Goalstate =
-            serde_xml_rs::from_str(goalstate_str).unwrap();
+            serde_xml_rs::from_str(goalstate_str).expect("Failed to parse the goalstate XML.");
 
         let expected_output =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
