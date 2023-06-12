@@ -25,18 +25,19 @@ pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
     let request = client.get(url).headers(headers);
     let response = request.send().await?;
 
-    if !response.status().is_success() {
-        println!(
-            "Get IMDS request failed with status code: {}",
-            response.status()
-        );
-        println!("{:?}", response.text().await);
-        return Err(Box::from("Failed Get Call"));
+    if response.status().is_success() {
+        let imds_body = response.text().await?;
+
+        return Ok(imds_body);
     }
 
-    let imds_body = response.text().await?;
+    println!(
+        "Get IMDS request failed with status code: {}",
+        response.status()
+    );
+    println!("{:?}", response.text().await);
 
-    Ok(imds_body)
+    return Err(Box::from("Failed Get Call"));
 }
 
 pub fn get_ssh_keys(
