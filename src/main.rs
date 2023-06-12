@@ -25,19 +25,18 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let test_user_username_remove = imds::get_username(imds_body.clone());
-    let _test_user_username = match test_user_username_remove {
-        Ok(test_user_username) => test_user_username,
+    let username = imds::get_username(imds_body.clone());
+    let username = match username {
+        Ok(username) => username,
         Err(_err) => return,
     };
 
-    let username = "test_user";
     let mut file_path = "/home/".to_string();
-    file_path.push_str(username);
+    file_path.push_str(username.as_str());
 
-    distro::create_user(username).await;
+    distro::create_user(username.as_str()).await;
     let _create_directory =
-        user::create_ssh_directory(username, file_path.clone()).await;
+        user::create_ssh_directory(username.as_str(), file_path.clone()).await;
 
     let get_ssh_key_result = imds::get_ssh_keys(imds_body);
     let keys = match get_ssh_key_result {
