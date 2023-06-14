@@ -32,19 +32,3 @@ pub fn set_hostname(hostname: &str) {
         .status()
         .expect("Failed to execute hostnamectl set-hostname");
 }
-
-#[cfg(test)]
-mod tests {
-    use super::set_hostname;
-    use std::process::Command;
-
-    #[test]
-    fn test_set_hostname() {
-        let hostname = "hostname1";
-        set_hostname(hostname);
-        let output = Command::new("hostname").output().unwrap();
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(output_str.trim(), hostname);
-        set_hostname("test-hostname-set");
-    }
-}
