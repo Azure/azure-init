@@ -51,15 +51,16 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
     let request = client.get(url).headers(headers);
     let response = request.send().await?;
 
-    if !response.status().is_success() {
-        println!("Get request failed with status code: {}", response.status());
-        return Err(Box::from("Failed Get Call"));
+    if response.status().is_success() {
+        let body = response.text().await?;
+
+        let goalstate: Goalstate = from_str(&body)?;
+        return Ok(goalstate);
     }
 
-    let body = response.text().await?;
+    println!("Get request failed with status code: {}", response.status());
 
-    let goalstate: Goalstate = from_str(&body)?;
-    Ok(goalstate)
+    return Err(Box::from("Failed Get Call"));
 }
 
 pub async fn report_health(
@@ -80,6 +81,28 @@ pub async fn report_health(
         HeaderValue::from_static("text/xml;charset=utf-8"),
     );
 
+    let post_request = build_report_health_file(goalstate);
+
+    let response = client
+        .post(url)
+        .headers(headers)
+        .body(post_request)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    println!(
+        "Post request failed with status code: {}",
+        response.status()
+    );
+
+    return Err(Box::from("Failed Post Call"));
+}
+
+fn build_report_health_file(goalstate: Goalstate) -> String {
     let post_request =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
     <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
@@ -109,21 +132,78 @@ pub async fn report_health(
             .role_instance
             .instance_id,
     );
+    return post_request;
+}
 
-    let response = client
-        .post(url)
-        .headers(headers)
-        .body(post_request)
-        .send()
-        .await?;
+#[cfg(test)]
+mod tests {
+    use super::{build_report_health_file, Goalstate};
 
-    if !response.status().is_success() {
-        println!(
-            "Post request failed with status code: {}",
-            response.status()
+    #[test]
+    fn test_parsing_goalstate() {
+        let goalstate_str = "<Goalstate>
+            <Container>
+                <ContainerId>2</ContainerId>
+                <RoleInstanceList>
+                    <RoleInstance>
+                        <InstanceId>test_user_instance_id</InstanceId>
+                    </RoleInstance>
+                </RoleInstanceList>
+            </Container>
+            <Version>example_version</Version>
+            <Incarnation>test_goal_incarnation</Incarnation>
+        </Goalstate>";
+        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+            .expect("Failed to parse the goalstate XML.");
+        assert_eq!(goalstate.container.container_id, "2".to_owned());
+        assert_eq!(
+            goalstate
+                .container
+                .role_instance_list
+                .role_instance
+                .instance_id,
+            "test_user_instance_id".to_owned()
         );
-        return Err(Box::from("Failed Post Call"));
+        assert_eq!(goalstate.version, "example_version".to_owned());
+        assert_eq!(goalstate.incarnation, "test_goal_incarnation".to_owned());
     }
 
-    Ok(())
+    #[tokio::test]
+    async fn test_build_report_health_file() {
+        let goalstate_str = "
+            <Goalstate>
+                <Container>
+                    <ContainerId>2</ContainerId>
+                    <RoleInstanceList>
+                        <RoleInstance>
+                            <InstanceId>test_user_instance_id</InstanceId>
+                        </RoleInstance>
+                    </RoleInstanceList>
+                </Container>
+                <Version>example_version</Version>
+                <Incarnation>test_goal_incarnation</Incarnation>
+            </Goalstate>";
+        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+            .expect("Failed to parse the goalstate XML.");
+
+        let expected_output =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+        <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+            <GoalStateIncarnation>test_goal_incarnation</GoalStateIncarnation>\n\
+            <Container>\n\
+                <ContainerId>2</ContainerId>\n\
+                <RoleInstanceList>\n\
+                    <Role>\n\
+                        <InstanceId>test_user_instance_id</InstanceId>\n\
+                        <Health>\n\
+                            <State>Ready</State>\n\
+                        </Health>\n\
+                    </Role>\n\
+                </RoleInstanceList>\n\
+            </Container>\n\
+        </Health>";
+
+        let actual_output = build_report_health_file(goalstate);
+        assert_eq!(actual_output, expected_output);
+    }
 }

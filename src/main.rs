@@ -1,9 +1,6 @@
 use tokio;
 
-use lib::distro;
-use lib::goalstate;
-use lib::imds;
-use lib::user;
+use lib::{distro, goalstate, imds, user};
 
 #[tokio::main]
 async fn main() {
@@ -19,15 +16,26 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let username = "test_user";
+    let query_result = imds::query_imds().await;
+    let imds_body = match query_result {
+        Ok(imds_body) => imds_body,
+        Err(_err) => return,
+    };
+
+    let username = imds::get_username(imds_body.clone());
+    let username = match username {
+        Ok(username) => username,
+        Err(_err) => return,
+    };
+
     let mut file_path = "/home/".to_string();
-    file_path.push_str(username);
+    file_path.push_str(username.as_str());
 
-    distro::create_user(username).await;
+    distro::create_user(username.as_str()).await;
     let _create_directory =
-        user::create_ssh_directory(username, file_path.clone()).await;
+        user::create_ssh_directory(username.as_str(), file_path.clone()).await;
 
-    let get_ssh_key_result = imds::get_ssh_keys().await;
+    let get_ssh_key_result = imds::get_ssh_keys(imds_body);
     let keys = match get_ssh_key_result {
         Ok(keys) => keys,
         Err(_err) => return,
