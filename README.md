@@ -10,13 +10,6 @@ As the maintainer of this project, please make a few updates:
 - Understanding the security reporting process in SECURITY.MD
 - Remove this section from the README
 
-## Running/Testing
-
-There are two binaries associated with this repo: `azure-provisioning-agent` and `functional_tests`. 
-To run one, use cargo to build the projects and then indicate `cargo run --bin azure-provisioning-agent`.
-The user creation script can be accessed via `make e2e-test` from the command line. This will build 
-and run the end-to-end tests that are available.
-
 ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a
