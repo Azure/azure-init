@@ -3,9 +3,9 @@
 ## Installing Rust
 
 Rust can be installed via the command line using the following command: 
-`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`. Following this installation process will also allow
-for the use of Cargo, which is Rust's compiler and dependency manager. More on the usage of cargo can be found in the
-building section.
+`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, or with other options found here:
+https://www.rust-lang.org/tools/install. Following this installation process will also allow for the 
+use of Cargo, which is Rust's compiler and dependency manager. More on the usage of cargo can be found in the building section.
 
 ## Pulling Source Code
 
