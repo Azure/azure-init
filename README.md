@@ -23,7 +23,7 @@ To run the program, you must enter the command `cargo run --bin <binary_name>` a
 
 ## Testing
 
-There are two different sets of tests: unit tests and end-to-end (e2e tests). To run unit tests, use cargo test. 
+There are two different sets of tests: unit tests and end-to-end (e2e tests). To run unit tests, use `cargo test`. 
 To run end-to-end testing, use `make e2e-test`, which will create a test user, ssh directory, place mock ssh keys, and 
 then clean up the test artifacts afterwards.
 
