@@ -19,13 +19,13 @@ Building this project can be done by going to the base of the repository in the 
 so this command builds both. These binaries are quite small, but you can build only one by entering
 `cargo build --bin <binary_name>` and indicating either `azure-provisioning-agent` or `functional_tests`.
 
-To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binar
+To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
 
 ## Testing
 
-There are two ways to run tests. The first runs unit tests, and can be done by going to the base of the repository
-and entering the CLI command `cargo test`. The second is to run the command `make e2e-test`. This will create
-a test user, their ssh directories, place mock ssh keys, and then clean the system afterwards. 
+There are two different sets of tests: unit tests and end-to-end (e2e tests). To run unit tests, use cargo test. 
+To run e2e tests, use make e2e-test, which will create a test user, ssh directory, place mock ssh keys, and 
+then clean up the test artifacts afterwards.
 
 ## Contributing
 
