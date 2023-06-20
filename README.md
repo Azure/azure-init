@@ -9,6 +9,9 @@ building section.
 
 ## Pulling Source Code
 
+This source code can accessed by cloning the repository to your machine with the command:
+`git clone git@github.com:Azure/azure-provisioning-agent.git`
+
 ## Building the Project
 
 Building this project can be done by going to the base of the repository in the command line and entering the command
@@ -21,7 +24,8 @@ To run the program, you must enter the command `cargo run --bin <binary_name>` a
 ## Testing
 
 There are two ways to run tests. The first runs unit tests, and can be done by going to the base of the repository
-and entering the CLI command `cargo test`.
+and entering the CLI command `cargo test`. The second is to run the command `make e2e-test`. This will create
+a test user, their ssh directories, place mock ssh keys, and then clean the system afterwards. 
 
 ## Contributing
 
