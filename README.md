@@ -2,6 +2,11 @@
 
 ## Installing Rust
 
+Rust can be installed via the command line using the following command: 
+`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`. Following this installation process will also allow
+for the use of Cargo, which is Rust's compiler and dependency manager. More on the usage of cargo can be found in the
+building section.
+
 ## Pulling Source Code
 
 ## Building the Project
@@ -11,7 +16,7 @@ Building this project can be done by going to the base of the repository in the 
 so this command builds both. These binaries are quite small, but you can build only one by entering
 `cargo build --bin <binary_name>` and indicating either `azure-provisioning-agent` or `functional_tests`.
 
-To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
+To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binar
 
 ## Testing
 
