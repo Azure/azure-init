@@ -1,5 +1,5 @@
 [Unit]
-Description=Azure Minimal Agent
+Description=Azure Provisioning Agent
 After=network-online.target
 Wants=network-online.target
 ConditionFileIsExecutable=/var/lib/azure-provisioning-agent/azure-provisioning-agent
