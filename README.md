@@ -1,14 +1,22 @@
-# Project
+# Azure Provisioning Agent 
 
-> This repo has been populated by an initial template to help get you started. Please
-> make sure to update the content to build a great experience for community-building.
+## Installing Rust
 
-As the maintainer of this project, please make a few updates:
+## Pulling Source Code
 
-- Improving this README.MD file to provide a great experience
-- Updating SUPPORT.MD with content about this project's support experience
-- Understanding the security reporting process in SECURITY.MD
-- Remove this section from the README
+## Building the Project
+
+Building this project can be done by going to the base of the repository in the command line and entering the command
+`cargo build --all`. This project contains two binaries, the main provisioning agent and the functional testing binary,
+so this command builds both. These binaries are quite small, but you can build only one by entering
+`cargo build --bin <binary_name>` and indicating either `azure-provisioning-agent` or `functional_tests`.
+
+To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
+
+## Testing
+
+There are two ways to run tests. The first runs unit tests, and can be done by going to the base of the repository
+and entering the CLI command `cargo test`.
 
 ## Contributing
 
