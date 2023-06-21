@@ -1,0 +1,12 @@
+[Unit]
+Description=Azure Provisioning Agent
+After=network-online.target
+Wants=network-online.target
+ConditionFileIsExecutable=/var/lib/azure-provisioning-agent/azure-provisioning-agent
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/azure-provisioning-agent/azure-provisioning-agent
+
+[Install]
+WantedBy=multi-user.target

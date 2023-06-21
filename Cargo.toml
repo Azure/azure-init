@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-reqwest = "0.11.18"
+reqwest = { version = "0.11.18", default-features = false, features = ["blocking", "json"] }
 serde = {version = "1.0.163", features = ["derive"]}
 serde_xml = "0.9.1"
 serde_derive = "1.0"
