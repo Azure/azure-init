@@ -64,9 +64,21 @@ pub fn get_username(
     Ok(username)
 }
 
+pub fn get_hostname(
+    imds_body: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(&imds_body)
+        .expect("Failed to parse the IMDS JSON.");
+    let username =
+        String::deserialize(&data["compute"]["osProfile"]["computerName"])
+            .expect("Failed to deserialize the hostname.");
+
+    Ok(username)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_ssh_keys, get_username};
+    use super::{get_hostname, get_ssh_keys, get_username};
 
     #[test]
     fn test_get_ssh_keys() {
@@ -122,5 +134,33 @@ mod tests {
             get_username(file_body).expect("Failed to get username.");
 
         assert_eq!(username, "MinProvAgentUser".to_string());
+    }
+
+    #[test]
+    fn test_get_hostname() {
+        let file_body = r#"
+        {
+            "compute": {
+              "azEnvironment": "cloud_env",
+              "customData": "",
+              "evictionPolicy": "",
+              "isHostCompatibilityLayerVm": "false",
+              "licenseType": "",
+              "location": "eastus",
+              "name": "AzTux-MinProvAgent-Test-0001",
+              "offer": "0001-com-ubuntu-server-focal",
+              "osProfile": {
+                "adminUsername": "MinProvAgentUser",
+                "computerName": "AzTux-MinProvAgent-Test-0001",
+                "disablePasswordAuthentication": "true"
+              }
+            }
+        }"#
+        .to_string();
+
+        let hostname =
+            get_hostname(file_body).expect("Failed to get hostname.");
+
+        assert_eq!(hostname, "AzTux-MinProvAgent-Test-0001".to_string());
     }
 }
