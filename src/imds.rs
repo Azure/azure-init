@@ -69,11 +69,11 @@ pub fn get_hostname(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body)
         .expect("Failed to parse the IMDS JSON.");
-    let username =
+    let hostname =
         String::deserialize(&data["compute"]["osProfile"]["computerName"])
             .expect("Failed to deserialize the hostname.");
 
-    Ok(username)
+    Ok(hostname)
 }
 
 #[cfg(test)]
