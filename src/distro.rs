@@ -73,16 +73,3 @@ impl From<&str> for Distributions {
         }
     }
 }
-
-#[cfg(test)]
-pub mod tests {
-    #[test]
-    fn test_create_user() {
-        use super::*;
-        let mut distribution = MockDistribution::new();
-        distribution.expect_create_user().returning(|_username| Ok(0));
-        let result = distribution.create_user("test_user");
-        assert_eq!(result.is_ok(), true);
-        assert_eq!(result.unwrap(), 0);
-    }
-}
