@@ -1,14 +1,31 @@
-# Project
+# Azure Provisioning Agent 
 
-> This repo has been populated by an initial template to help get you started. Please
-> make sure to update the content to build a great experience for community-building.
+## Installing Rust
 
-As the maintainer of this project, please make a few updates:
+Rust can be installed via the command line using the following command: 
+`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, or with other options found here:
+https://www.rust-lang.org/tools/install. Following this installation process will also allow for the 
+use of Cargo, which is Rust's compiler and dependency manager. More on the usage of cargo can be found in the building section.
 
-- Improving this README.MD file to provide a great experience
-- Updating SUPPORT.MD with content about this project's support experience
-- Understanding the security reporting process in SECURITY.MD
-- Remove this section from the README
+## Pulling Source Code
+
+This source code can accessed by cloning the repository to your machine with the command:
+`git clone git@github.com:Azure/azure-provisioning-agent.git`
+
+## Building the Project
+
+Building this project can be done by going to the base of the repository in the command line and entering the command
+`cargo build --all`. This project contains two binaries, the main provisioning agent and the functional testing binary,
+so this command builds both. These binaries are quite small, but you can build only one by entering
+`cargo build --bin <binary_name>` and indicating either `azure-provisioning-agent` or `functional_tests`.
+
+To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
+
+## Testing
+
+There are two different sets of tests: unit tests and end-to-end (e2e tests). To run unit tests, use `cargo test`. 
+To run end-to-end testing, use `make e2e-test`, which will create a test user, ssh directory, place mock ssh keys, and 
+then clean up the test artifacts afterwards.
 
 ## Contributing
 
