@@ -28,12 +28,9 @@ VM_IMAGE="Ubuntu2204"
 VM_SIZE="Standard_D2lds_v5"
 VM_ADMIN_USERNAME="azureuser"
 AZURE_SSH_KEY_NAME="azure-ssh-key"
-PATH_TO_PRIVATE_SSH_KEY="/.ssh/id_rsa"
+PATH_TO_PRIVATE_SSH_KEY="$HOME/.ssh/id_rsa"
 
-echo $PATH_TO_PRIVATE_SSH_KEY
-exit 1
-
-if [ ! -f "$KEY" ]; then
+if [ ! -f "$PATH_TO_PRIVATE_SSH_KEY" ]; then
     ssh-keygen -t rsa -b 4096 -f $PATH_TO_PRIVATE_SSH_KEY -N ""
     echo "SSH key created."
 else
