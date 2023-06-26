@@ -22,13 +22,23 @@
 # for your Azure subscription, resource group, etc.
 SUBSCRIPTION_ID="YOUR_SUBSCRIPTION_ID"
 RESOURCE_GROUP_NAME="RESOURCE_GROUP_NAME" # e.g. myresourcegroup
-REGION="AZURE_REGION" # e.g. westus2
-VM_NAME="VM_NAME" # e.g. myvm
-VM_IMAGE="VM_IMAGE" # e.g. Ubuntu2204
-VM_SIZE="VM_SIZE" # e.g. Standard_D2lds_v5
-VM_ADMIN_USERNAME="ADMIN_USERNAME" # e.g. azureuser
-AZURE_SSH_KEY_NAME="AZURE_KEY_PAIR_NAME" # e.g. azure-ssh-key
-PATH_TO_PRIVATE_SSH_KEY="LOCAL_PATH_TO_PRIVATE_KEY_FILE" # e.g. ~/.ssh/id_rsa
+REGION="eastus"
+VM_NAME="AzProvAgentFunctionalTest"
+VM_IMAGE="Ubuntu2204"
+VM_SIZE="Standard_D2lds_v5"
+VM_ADMIN_USERNAME="azureuser"
+AZURE_SSH_KEY_NAME="azure-ssh-key"
+PATH_TO_PRIVATE_SSH_KEY="/.ssh/id_rsa"
+
+echo $PATH_TO_PRIVATE_SSH_KEY
+exit 1
+
+if [ ! -f "$KEY" ]; then
+    ssh-keygen -t rsa -b 4096 -f $PATH_TO_PRIVATE_SSH_KEY -N ""
+    echo "SSH key created."
+else
+    echo "SSH key already exists."
+fi
 
 echo "Starting script"
 echo "Logging you into Azure"
@@ -62,10 +72,4 @@ sleep 30
 echo "Logging into VM..."
 ssh -i $PATH_TO_PRIVATE_SSH_KEY $VM_ADMIN_USERNAME@$PUBLIC_IP
 
-# Begin preparing SSH environment
-apt-get update
-
-apt-get install rustc
-
-
-# make e2e-test
+sudo su
