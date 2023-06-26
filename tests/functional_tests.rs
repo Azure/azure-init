@@ -10,6 +10,7 @@ use std::env;
 async fn main() {
     let cli_args: Vec<String> = env::args().collect();
 
+    println!("");
     println!("**********************************");
     println!("* Beginning functional testing");
     println!("**********************************");

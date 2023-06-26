@@ -1,4 +1,9 @@
 build-all:
+	@echo ""
+	@echo "**********************************"
+	@echo "* Building the source code"	
+	@echo "**********************************"
+	@echo ""
 	@cargo build --all
 
 RANDOM_NUMBER := $$((1 + RANDOM % 1000))
