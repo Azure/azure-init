@@ -74,4 +74,9 @@ async fn main() {
     Distributions::from("ubuntu").set_hostname("test-hostname-set").expect("Failed to set hostname");
     println!("VM hostname successfully set");
     println!("");
+
+    println!("**********************************");
+    println!("* Functional testing completed successfully!");
+    println!("**********************************");
+    println!("");
 }
