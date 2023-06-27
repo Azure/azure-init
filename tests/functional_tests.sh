@@ -80,8 +80,3 @@ ssh -i $PATH_TO_PRIVATE_SSH_KEY $VM_ADMIN_USERNAME@$PUBLIC_IP
 sudo su
 
 ./functional_tests #test_user
-
-# if done on a vm, is this needed?
-# userdel test_user
-# rm -rf /home/test_user
-# echo "User was successfully deleted"
