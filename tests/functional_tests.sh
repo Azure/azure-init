@@ -66,7 +66,22 @@ echo $PUBLIC_IP
 echo "Sleep for 30 seconds to give the VM time to fully start up"
 sleep 30
 
+# SCP the testing binary to the machine
+###########################
+#
+# scp -i $PATH_TO_PRIVATE_SSH_KEY ../target/debug/functional_tests $VM_ADMIN_USERNAME@$PUBLIC_IP:~
+#
+###########################
+
 echo "Logging into VM..."
 ssh -i $PATH_TO_PRIVATE_SSH_KEY $VM_ADMIN_USERNAME@$PUBLIC_IP
 
+# Enter root to run tests
 sudo su
+
+./functional_tests #test_user
+
+# if done on a vm, is this needed?
+# userdel test_user
+# rm -rf /home/test_user
+# echo "User was successfully deleted"
