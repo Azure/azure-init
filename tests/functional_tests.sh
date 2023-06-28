@@ -16,7 +16,6 @@ echo "Logging you into Azure"
 
 # TODO: Add checking for Az CLI
 
-
 if [ ! -f "$PATH_TO_PUBLIC_SSH_KEY" ]; then
     ssh-keygen -t rsa -b 4096 -f $PATH_TO_PUBLIC_SSH_KEY -N ""
     echo "SSH key created."
@@ -47,7 +46,6 @@ PUBLIC_IP=$(az vm show -d -g $RG -n $VM_NAME_WITH_TIMESTAMP --query publicIps -o
 echo $PUBLIC_IP
 
 scp -o StrictHostKeyChecking=no -i $PATH_TO_PRIVATE_SSH_KEY ./target/debug/functional_tests $VM_ADMIN_USERNAME@$PUBLIC_IP:~
-
 
 # TODO: Handle SSH Failure (need to abort script)
 echo "Logging into VM..."

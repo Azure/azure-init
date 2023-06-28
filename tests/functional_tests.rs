@@ -1,8 +1,8 @@
 use tokio;
 
-use lib::{goalstate, user};
 use lib::distro::{Distribution, Distributions};
 use lib::imds::PublicKeys;
+use lib::{goalstate, user};
 
 use std::env;
 
@@ -44,7 +44,9 @@ async fn main() {
     println!("");
     println!("Attempting to create user {}", username.as_str());
 
-    Distributions::from("ubuntu").create_user(username.as_str()).expect("Failed to create user");
+    Distributions::from("ubuntu")
+        .create_user(username.as_str())
+        .expect("Failed to create user");
 
     println!("User {} was successfully created", username.as_str());
 
@@ -59,10 +61,19 @@ async fn main() {
     };
     println!("User's SSH directory was successfully created");
 
-    let mut keys:Vec<PublicKeys> = Vec::new();
-    keys.push(PublicKeys{path: "/path/to/.ssh/keys/".to_owned(), key_data: "ssh-rsa test_key_1".to_owned()});
-    keys.push(PublicKeys{path: "/path/to/.ssh/keys/".to_owned(), key_data: "ssh-rsa test_key_2".to_owned()});
-    keys.push(PublicKeys{path: "/path/to/.ssh/keys/".to_owned(), key_data: "ssh-rsa test_key_3".to_owned()});
+    let mut keys: Vec<PublicKeys> = Vec::new();
+    keys.push(PublicKeys {
+        path: "/path/to/.ssh/keys/".to_owned(),
+        key_data: "ssh-rsa test_key_1".to_owned(),
+    });
+    keys.push(PublicKeys {
+        path: "/path/to/.ssh/keys/".to_owned(),
+        key_data: "ssh-rsa test_key_2".to_owned(),
+    });
+    keys.push(PublicKeys {
+        path: "/path/to/.ssh/keys/".to_owned(),
+        key_data: "ssh-rsa test_key_3".to_owned(),
+    });
 
     file_path.push_str("/.ssh");
 
@@ -71,7 +82,9 @@ async fn main() {
     println!("");
     println!("Attempting to set the VM hostname");
 
-    Distributions::from("ubuntu").set_hostname("test-hostname-set").expect("Failed to set hostname");
+    Distributions::from("ubuntu")
+        .set_hostname("test-hostname-set")
+        .expect("Failed to set hostname");
     println!("VM hostname successfully set");
     println!("");
 

@@ -36,14 +36,15 @@ impl Distribution for Distributions {
                 match Command::new("passwd")
                     .arg("-d")
                     .arg(username.to_string())
-                    .status() {
-                        Ok(status_code) => {
-                            if !status_code.success() {
-                                return Err("Failed to create user".to_string());
-                            }
-                        },
-                        Err(err) => return Err(err.to_string()),
-                    };
+                    .status()
+                {
+                    Ok(status_code) => {
+                        if !status_code.success() {
+                            return Err("Failed to create user".to_string());
+                        }
+                    }
+                    Err(err) => return Err(err.to_string()),
+                };
 
                 return Ok(0);
             }
@@ -53,16 +54,18 @@ impl Distribution for Distributions {
         match self {
             Distributions::Debian | Distributions::Ubuntu => {
                 match Command::new("hostnamectl")
-                .arg("set-hostname")
-                .arg(hostname)
-                .status() {
-                    Ok(status_code) => return Ok(status_code.code().unwrap_or(1)),
+                    .arg("set-hostname")
+                    .arg(hostname)
+                    .status()
+                {
+                    Ok(status_code) => {
+                        return Ok(status_code.code().unwrap_or(1))
+                    }
                     Err(err) => return Err(err.to_string()),
                 };
             }
         }
     }
-
 }
 impl From<&str> for Distributions {
     fn from(s: &str) -> Self {
