@@ -25,7 +25,7 @@ else
 fi
 
 # Log into Azure (this will open a browser window prompting you to log in)
-# az login
+az login
 
 # Set the subscription you want to use
 az account set --subscription $SUBSCRIPTION_ID
