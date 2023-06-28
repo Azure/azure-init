@@ -36,7 +36,7 @@ async fn main() {
         .create_user(username.as_str())
         .expect("Failed to create user");
     let _create_directory =
-        user::create_ssh_directory(username.as_str(), file_path.clone()).await;
+        user::create_ssh_directory(username.as_str(), &file_path).await;
 
     let get_ssh_key_result = imds::get_ssh_keys(imds_body.clone());
     let keys = match get_ssh_key_result {

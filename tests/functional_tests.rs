@@ -54,7 +54,7 @@ async fn main() {
     println!("Attempting to create user's SSH directory");
 
     let _create_directory =
-        user::create_ssh_directory(username.as_str(), file_path.clone()).await;
+        user::create_ssh_directory(username.as_str(), &file_path).await;
     let _create_directory = match _create_directory {
         Ok(create_directory) => create_directory,
         Err(_err) => return,
