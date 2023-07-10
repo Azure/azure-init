@@ -48,9 +48,9 @@ pub async fn set_ssh_keys(
 
 pub async fn create_ssh_directory(
     username: &str,
-    home_path: String,
+    home_path: &String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file_path = home_path;
+    let mut file_path = home_path.to_owned();
     file_path.push_str("/.ssh");
 
     create_dir(file_path.clone())?;
