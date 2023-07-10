@@ -46,7 +46,7 @@ az vm create -n $VM_NAME_WITH_TIMESTAMP \
 echo "VM successfully created"
 
 echo "Sleeping to ensure SSH access set up"
-sleep 5
+sleep 15
 
 echo "Getting VM Public IP Address..."
 PUBLIC_IP=$(az vm show -d -g $RG -n $VM_NAME_WITH_TIMESTAMP --query publicIps -o tsv)
