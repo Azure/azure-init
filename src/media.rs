@@ -1,6 +1,7 @@
 use std::fs;
 use std::fs::create_dir_all;
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 
 use serde::Deserialize;
 use serde_xml_rs::from_str;
@@ -57,6 +58,29 @@ fn default_preprov() -> bool {
 
 fn default_preprov_type() -> String {
     "None".to_owned()
+}
+
+
+pub fn mount_media() {
+    let _mount_media = Command::new("mount")
+        .arg("-o")
+        .arg("ro")
+        .arg("/dev/sr0")
+        .arg("/AzProvAgent/media/temp/")
+        .status()
+        .expect("Failed to execute mount command.");
+}
+
+pub fn remove_media() {
+    let _unmount_media = Command::new("unmount")
+        .arg("/dev/sr0")
+        .status()
+        .expect("Failed to execute unmount command.");
+
+    let _unmount_media = Command::new("eject")
+        .arg("/dev/sr0")
+        .status()
+        .expect("Failed to execute eject command.");
 }
 
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
