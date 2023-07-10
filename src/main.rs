@@ -1,6 +1,7 @@
 use tokio;
 
-use lib::{distro, goalstate, imds, user};
+use lib::distro::{Distribution, Distributions};
+use lib::{goalstate, imds, user};
 
 #[tokio::main]
 async fn main() {
@@ -31,9 +32,11 @@ async fn main() {
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
 
-    distro::create_user(username.as_str()).await;
+    Distributions::from("ubuntu")
+        .create_user(username.as_str())
+        .expect("Failed to create user");
     let _create_directory =
-        user::create_ssh_directory(username.as_str(), file_path.clone()).await;
+        user::create_ssh_directory(username.as_str(), &file_path).await;
 
     let get_ssh_key_result = imds::get_ssh_keys(imds_body.clone());
     let keys = match get_ssh_key_result {
@@ -51,5 +54,7 @@ async fn main() {
         Err(_err) => return,
     };
 
-    distro::set_hostname(hostname.as_str());
+    Distributions::from("ubuntu")
+        .set_hostname(hostname.as_str())
+        .expect("Failed to set hostname");
 }
