@@ -23,7 +23,7 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let username = imds::get_username(imds_body.clone());
+    let username = imds::get_username(&imds_body);
     let username = match username {
         Ok(username) => username,
         Err(_err) => return,
@@ -38,7 +38,7 @@ async fn main() {
     let _create_directory =
         user::create_ssh_directory(username.as_str(), &file_path).await;
 
-    let get_ssh_key_result = imds::get_ssh_keys(imds_body.clone());
+    let get_ssh_key_result = imds::get_ssh_keys(&imds_body);
     let keys = match get_ssh_key_result {
         Ok(keys) => keys,
         Err(_err) => return,
@@ -48,7 +48,7 @@ async fn main() {
 
     user::set_ssh_keys(keys, username.to_string(), file_path.clone()).await;
 
-    let get_hostname_result = imds::get_hostname(imds_body.clone());
+    let get_hostname_result = imds::get_hostname(&imds_body);
     let hostname = match get_hostname_result {
         Ok(hostname) => hostname,
         Err(_err) => return,

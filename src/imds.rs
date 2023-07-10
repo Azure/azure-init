@@ -41,7 +41,7 @@ pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 pub fn get_ssh_keys(
-    imds_body: String,
+    imds_body: &String,
 ) -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body)
         .expect("Failed to parse the IMDS JSON.");
@@ -53,7 +53,7 @@ pub fn get_ssh_keys(
 }
 
 pub fn get_username(
-    imds_body: String,
+    imds_body: &String,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body)
         .expect("Failed to parse the IMDS JSON.");
@@ -65,7 +65,7 @@ pub fn get_username(
 }
 
 pub fn get_hostname(
-    imds_body: String,
+    imds_body: &String,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(&imds_body)
         .expect("Failed to parse the IMDS JSON.");
@@ -101,7 +101,7 @@ mod tests {
         }"#
         .to_string();
 
-        let public_keys = get_ssh_keys(file_body)
+        let public_keys = get_ssh_keys(&file_body)
             .expect("Failed to obtain ssh keys from the JSON file.");
 
         assert_eq!(public_keys[0].key_data, "ssh-rsa test_key1".to_string());
@@ -131,7 +131,7 @@ mod tests {
         .to_string();
 
         let username =
-            get_username(file_body).expect("Failed to get username.");
+            get_username(&file_body).expect("Failed to get username.");
 
         assert_eq!(username, "MinProvAgentUser".to_string());
     }
@@ -159,7 +159,7 @@ mod tests {
         .to_string();
 
         let hostname =
-            get_hostname(file_body).expect("Failed to get hostname.");
+            get_hostname(&file_body).expect("Failed to get hostname.");
 
         assert_eq!(hostname, "AzTux-MinProvAgent-Test-0001".to_string());
     }
