@@ -33,6 +33,8 @@ impl Distribution for Distributions {
                         Err(err) => return Err(err.to_string()),
                     };
 
+                    //check if password is non-empty
+
                 match Command::new("passwd")
                     .arg("-d")
                     .arg(username.to_string())

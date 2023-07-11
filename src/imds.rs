@@ -96,7 +96,9 @@ pub fn get_provision_with_password(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_hostname, get_ssh_keys, get_username, get_provision_with_password};
+    use super::{
+        get_hostname, get_provision_with_password, get_ssh_keys, get_username,
+    };
 
     #[test]
     fn test_get_ssh_keys() {

@@ -60,11 +60,47 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
+pub fn search_for_iso9660(){
+    let blk_id_9660 = Command::new("blkid")
+        .arg("-tTYPE=iso9660")
+        .arg("-odevice")
+        .output()
+        .expect("failed to execute blkid");
+
+    if blk_id_9660.status.success() {
+        let devices = String::from_utf8_lossy(&blk_id_9660.stdout);
+        for device in devices.lines() {
+            println!("Found ISO 9660 filesystem on device: {}", device);
+        }
+    } else {
+        let error = String::from_utf8_lossy(&blk_id_9660.stderr);
+        println!("Error running blkid iso9660: {}", error);
+    }
+}
+
+pub fn search_for_udf(){
+    let blk_id_udf = Command::new("blkid")
+        .arg("-tTYPE=udf")
+        .arg("-odevice")
+        .output()
+        .expect("failed to execute blkid");
+
+    if blk_id_udf.status.success() {
+        let devices = String::from_utf8_lossy(&blk_id_udf.stdout);
+        for device in devices.lines() {
+            println!("Found ISO UDF filesystem on device: {}", device);
+        }
+    } else {
+        let error = String::from_utf8_lossy(&blk_id_udf.stderr);
+        println!("Error running blkid udf: {}", error);
+    }
+}
+
 pub fn mount_media() {
     let _mount_media = Command::new("mount")
         .arg("-o")
         .arg("ro")
-        .arg("/dev/sr0")
+        .arg("/dev/sr0") //should this be a variable? //or always sr0?
         .arg("/run/azure-provisioning-agent/tmp/")
         .status()
         .expect("Failed to execute mount command.");

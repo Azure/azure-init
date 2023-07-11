@@ -1,7 +1,7 @@
 use tokio;
 
 use lib::distro::{Distribution, Distributions};
-use lib::{goalstate, imds, user};
+use lib::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
@@ -23,11 +23,40 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let username = imds::get_username(imds_body.clone());
-    let username = match username {
-        Ok(username) => username,
+    let provision_with_password = imds::get_provision_with_password(&imds_body);
+    let disable_authentication = match provision_with_password {
+        Ok(disable_authentication) => disable_authentication,
         Err(_err) => return,
     };
+
+    if disable_authentication == false {
+        //mounting section
+
+        // create folder
+        let _ = media::make_temp_directory().unwrap();
+
+        // mount device to folder
+        media::mount_media();
+
+        // read folder
+        // read from ovf-env.cml from the mounted section.
+        let _ovf_body = ""; //gotta read this from somewhere
+        let environment = media::parse_ovf_env(&imds_body);
+
+        let username = environment.provisioning_section.linux_prov_conf_set.username;
+        let password = environment.provisioning_section.linux_prov_conf_set.password;
+
+        // unmount
+        // eject after username/password/hostname/ssh keys
+        media::remove_media();
+    }
+    else {
+        let username = imds::get_username(imds_body.clone());
+        let username = match username {
+            Ok(username) => username,
+            Err(_err) => return,
+        };
+    }
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
