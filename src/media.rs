@@ -60,13 +60,12 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-
 pub fn mount_media() {
     let _mount_media = Command::new("mount")
         .arg("-o")
         .arg("ro")
         .arg("/dev/sr0")
-        .arg("/AzProvAgent/media/temp/")
+        .arg("/run/azure-provisioning-agent/tmp/")
         .status()
         .expect("Failed to execute mount command.");
 }
@@ -84,7 +83,7 @@ pub fn remove_media() {
 }
 
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = "/AzProvAgent/media/temp";
+    let file_path = "/run/azure-provisioning-agent/tmp/";
 
     create_dir_all(file_path.clone())?;
 
