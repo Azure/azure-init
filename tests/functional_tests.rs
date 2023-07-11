@@ -42,10 +42,25 @@ async fn main() {
     file_path.push_str(username.as_str());
 
     println!("");
-    println!("Attempting to create user {}", username.as_str());
+    println!(
+        "Attempting to create user {} without password",
+        username.as_str()
+    );
 
     Distributions::from("ubuntu")
-        .create_user(username.as_str())
+        .create_user(username.as_str(), "")
+        .expect("Failed to create user");
+
+    println!("User {} was successfully created", username.as_str());
+
+    println!("");
+    println!(
+        "Attempting to create user {} with password",
+        username.as_str()
+    );
+
+    Distributions::from("ubuntu")
+        .create_user("test_user_2", "azureProvisioningAgentPassword")
         .expect("Failed to create user");
 
     println!("User {} was successfully created", username.as_str());

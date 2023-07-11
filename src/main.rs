@@ -29,6 +29,9 @@ async fn main() {
         Err(_err) => return,
     };
 
+    let mut username = "".to_owned();
+    let mut password = "".to_owned();
+
     if disable_authentication == false {
         //mounting section
 
@@ -41,18 +44,23 @@ async fn main() {
         // read folder
         // read from ovf-env.cml from the mounted section.
         let _ovf_body = ""; //gotta read this from somewhere
-        let environment = media::parse_ovf_env(&imds_body);
+        let environment = media::parse_ovf_env(&imds_body).unwrap();
 
-        let username = environment.provisioning_section.linux_prov_conf_set.username;
-        let password = environment.provisioning_section.linux_prov_conf_set.password;
+        username = environment
+            .provisioning_section
+            .linux_prov_conf_set
+            .username;
+        password = environment
+            .provisioning_section
+            .linux_prov_conf_set
+            .password;
 
         // unmount
         // eject after username/password/hostname/ssh keys
         media::remove_media();
-    }
-    else {
-        let username = imds::get_username(imds_body.clone());
-        let username = match username {
+    } else {
+        let username_result = imds::get_username(imds_body.clone());
+        username = match username_result {
             Ok(username) => username,
             Err(_err) => return,
         };
@@ -62,7 +70,7 @@ async fn main() {
     file_path.push_str(username.as_str());
 
     Distributions::from("ubuntu")
-        .create_user(username.as_str())
+        .create_user(username.as_str(), password.as_str())
         .expect("Failed to create user");
     let _create_directory =
         user::create_ssh_directory(username.as_str(), &file_path).await;

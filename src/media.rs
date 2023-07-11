@@ -60,7 +60,7 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-pub fn search_for_iso9660(){
+pub fn search_for_iso9660() {
     let blk_id_9660 = Command::new("blkid")
         .arg("-tTYPE=iso9660")
         .arg("-odevice")
@@ -78,7 +78,7 @@ pub fn search_for_iso9660(){
     }
 }
 
-pub fn search_for_udf(){
+pub fn search_for_udf() {
     let blk_id_udf = Command::new("blkid")
         .arg("-tTYPE=udf")
         .arg("-odevice")
