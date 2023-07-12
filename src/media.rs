@@ -112,7 +112,7 @@ pub fn remove_media() {
         .status()
         .expect("Failed to execute unmount command.");
 
-    let _unmount_media = Command::new("eject")
+    let _eject_media = Command::new("eject")
         .arg("/dev/sr0")
         .status()
         .expect("Failed to execute eject command.");

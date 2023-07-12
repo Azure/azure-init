@@ -36,7 +36,7 @@ async fn main() {
         //mounting section
 
         // create folder
-        let _ = media::make_temp_directory().unwrap();
+        let _make_temp_directory_result = media::make_temp_directory().unwrap();
 
         // mount device to folder
         media::mount_media();
