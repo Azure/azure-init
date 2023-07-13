@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e -u -x -o pipefail
 
 epoch=$(date +%s)
 temp_dir=/tmp/staging.$epoch
