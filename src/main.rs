@@ -5,6 +5,7 @@ use lib::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
+    
     let query_result = imds::query_imds().await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
@@ -36,6 +37,8 @@ async fn main() {
             .provisioning_section
             .linux_prov_conf_set
             .password;
+
+        let authenticate_password = media::allow_password_authentication();
 
         media::remove_media();
     } else {
