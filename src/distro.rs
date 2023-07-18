@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 use std::process::Stdio;
 
 pub trait Distribution {

@@ -21,16 +21,10 @@ async fn main() {
     let mut password = "".to_owned();
 
     if disable_authentication == false {
-        //mounting section
-
-        // create folder
         let _make_temp_directory_result = media::make_temp_directory().unwrap();
 
-        // mount device to folder
         media::mount_media();
 
-        // read folder
-        // read from ovf-env.xml from the mounted section.
         let ovf_body = media::read_ovf_env_to_string().unwrap();
         let environment = media::parse_ovf_env(&ovf_body.as_str()).unwrap();
 
@@ -43,7 +37,6 @@ async fn main() {
             .linux_prov_conf_set
             .password;
 
-        // unmount
         media::remove_media();
     } else {
         let username_result = imds::get_username(imds_body.clone());
@@ -93,5 +86,4 @@ async fn main() {
         Ok(report_health) => report_health,
         Err(_err) => return,
     };
-
 }

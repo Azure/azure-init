@@ -1,6 +1,8 @@
+use std::fs;
+use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::Read;
-use std::fs::create_dir_all;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -87,21 +89,22 @@ pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
 
     create_dir_all(file_path.clone())?;
 
-    // let metadata = fs::metadata(&file_path).unwrap();
-    // let permissions = metadata.permissions();
-    // let mut new_permissions = permissions.clone();
-    // new_permissions.set_mode(0o700);
-    // fs::set_permissions(&file_path, new_permissions).unwrap();
+    let metadata = fs::metadata(&file_path).unwrap();
+    let permissions = metadata.permissions();
+    let mut new_permissions = permissions.clone();
+    new_permissions.set_mode(0o700);
+    fs::set_permissions(&file_path, new_permissions).unwrap();
 
     Ok(())
 }
 
-pub fn read_ovf_env_to_string()-> Result<String, Box<dyn std::error::Error>> {
+pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
     let file_path = "/run/azure-provisioning-agent/tmp/ovf-env.xml";
     let mut file = File::open(file_path).expect("Failed to open file");
     let mut contents = String::new();
-    file.read_to_string(&mut contents).expect("Failed to read file");
-    
+    file.read_to_string(&mut contents)
+        .expect("Failed to read file");
+
     Ok(contents)
 }
 
@@ -110,7 +113,11 @@ pub fn parse_ovf_env(
 ) -> Result<Environment, Box<dyn std::error::Error>> {
     let environment: Environment = from_str(&ovf_body)?;
 
-    if environment.provisioning_section.linux_prov_conf_set.password.is_empty()
+    if environment
+        .provisioning_section
+        .linux_prov_conf_set
+        .password
+        .is_empty()
     {
         return Err("Password is empty".into());
     }
