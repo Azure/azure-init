@@ -76,9 +76,29 @@ pub fn get_hostname(
     Ok(hostname)
 }
 
+pub fn get_provision_with_password(
+    imds_body: &String,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(&imds_body)
+        .expect("Failed to parse the IMDS JSON.");
+
+    let provision_with_password = String::deserialize(
+        &data["compute"]["osProfile"]["disablePasswordAuthentication"],
+    )
+    .expect("Failed to deserialize the provisioning type.");
+
+    if provision_with_password == "true" {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_hostname, get_ssh_keys, get_username};
+    use super::{
+        get_hostname, get_provision_with_password, get_ssh_keys, get_username,
+    };
 
     #[test]
     fn test_get_ssh_keys() {
@@ -162,5 +182,61 @@ mod tests {
             get_hostname(file_body).expect("Failed to get hostname.");
 
         assert_eq!(hostname, "AzTux-MinProvAgent-Test-0001".to_string());
+    }
+
+    #[test]
+    fn test_provision_with_password_true() {
+        let file_body = r#"
+        {
+            "compute": {
+              "azEnvironment": "cloud_env",
+              "customData": "",
+              "evictionPolicy": "",
+              "isHostCompatibilityLayerVm": "false",
+              "licenseType": "",
+              "location": "eastus",
+              "name": "AzTux-MinProvAgent-Test-0001",
+              "offer": "0001-com-ubuntu-server-focal",
+              "osProfile": {
+                "adminUsername": "MinProvAgentUser",
+                "computerName": "AzTux-MinProvAgent-Test-0001",
+                "disablePasswordAuthentication": "true"
+              }
+            }
+        }"#
+        .to_string();
+
+        let provision_with_password = get_provision_with_password(&file_body)
+            .expect("Failed to interpret disablePasswordAuthentication.");
+
+        assert_eq!(provision_with_password, true);
+    }
+
+    #[test]
+    fn test_provision_with_password_false() {
+        let file_body = r#"
+        {
+            "compute": {
+              "azEnvironment": "cloud_env",
+              "customData": "",
+              "evictionPolicy": "",
+              "isHostCompatibilityLayerVm": "false",
+              "licenseType": "",
+              "location": "eastus",
+              "name": "AzTux-MinProvAgent-Test-0001",
+              "offer": "0001-com-ubuntu-server-focal",
+              "osProfile": {
+                "adminUsername": "MinProvAgentUser",
+                "computerName": "AzTux-MinProvAgent-Test-0001",
+                "disablePasswordAuthentication": "false"
+              }
+            }
+        }"#
+        .to_string();
+
+        let provision_with_password = get_provision_with_password(&file_body)
+            .expect("Failed to interpret disablePasswordAuthentication.");
+
+        assert_eq!(provision_with_password, false);
     }
 }

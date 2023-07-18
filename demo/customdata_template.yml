@@ -1,0 +1,58 @@
+#cloud-config
+
+runcmd:
+  - nohup bash /var/log/azure/image/setup.sh 2>&1 |
+        tee -a /dev/console /var/log/azure/image/setup.log &
+
+write_files:
+  - path: /var/log/azure/image/setup.sh
+    content: |
+      set -eux -o pipefail
+      echo "SIGTOOL_START"
+
+      # Wait until system is ready.
+      state=""
+      while [[ $state != "running" && $state != "degraded" ]]; do
+          state=$(systemctl is-system-running || true)
+          sleep 1
+      done
+      wget -O /run/azure-provisioning-agent.tgz __SASURL__
+      tar -xf /run/azure-provisioning-agent.tgz -C /var/lib
+      mv /var/lib/azure-provisioning-agent/azure-provisioning-agent.service /lib/systemd/system/azure-provisioning-agent.service
+      systemctl enable /lib/systemd/system/azure-provisioning-agent.service
+      cat > /etc/netplan/eth0.yaml <<EOF
+      network:
+          ethernets:
+              eth0:
+                  dhcp4: true
+                  dhcp4-overrides:
+                      route-metric: 100
+                  dhcp6: false
+                  match:
+                      driver: hv_netvsc
+                      name: eth0
+      EOF
+      dpkg-query --show --showformat 'Cloud-init v. ${Version} for parse_cloudinit_version()' cloud-init
+
+      # deprovision waagent and remove installed user
+      waagent -deprovision+user -force
+
+      # cleanup logs
+      cloud-init clean --logs
+      journalctl --sync
+      journalctl --flush
+      journalctl --merge --rotate --vacuum-time=1s
+      find /var/log -type f -print0 -not -name "tuxops.*" | xargs -0 rm
+
+      # cleanup configured disks
+      sed -i '/comment=cloudconfig/d' /etc/fstab
+
+      # remove cloud-init
+      apt-get remove -y cloud-init walinuxagent
+
+      # remove cloud-init netplan config
+      rm /etc/netplan/50-cloud-init.yaml
+
+      echo "SIGTOOL_END"
+
+      shutdown -h now

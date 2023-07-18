@@ -1,7 +1,13 @@
+use std::io::Write;
 use std::process::Command;
+use std::process::Stdio;
 
 pub trait Distribution {
-    fn create_user(&self, username: &str) -> Result<i32, String>;
+    fn create_user(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<i32, String>;
     fn set_hostname(&self, hostname: &str) -> Result<i32, String>;
 }
 
@@ -11,7 +17,11 @@ pub enum Distributions {
 }
 
 impl Distribution for Distributions {
-    fn create_user(&self, username: &str) -> Result<i32, String> {
+    fn create_user(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<i32, String> {
         match self {
             Distributions::Debian | Distributions::Ubuntu => {
                 let mut home_path = "/home/".to_string();
@@ -33,18 +43,47 @@ impl Distribution for Distributions {
                         Err(err) => return Err(err.to_string()),
                     };
 
-                match Command::new("passwd")
-                    .arg("-d")
-                    .arg(username.to_string())
-                    .status()
-                {
-                    Ok(status_code) => {
-                        if !status_code.success() {
-                            return Err("Failed to create user".to_string());
+                if password.is_empty() == true {
+                    match Command::new("passwd")
+                        .arg("-d")
+                        .arg(username.to_string())
+                        .status()
+                    {
+                        Ok(status_code) => {
+                            if !status_code.success() {
+                                return Err("Failed to create user".to_string());
+                            }
                         }
+                        Err(err) => return Err(err.to_string()),
+                    };
+                } else {
+                    let input = format!("{}:{}", username, password);
+
+                    let mut output = Command::new("chpasswd")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                        .expect("Failed to run chpasswd.");
+
+                    let mut stdin =
+                        output.stdin.as_ref().ok_or("Failed to open stdin")?;
+
+                    stdin.write_all(input.as_bytes()).map_err(|error| {
+                        format!("Failed to write to stdin: {}", error)
+                    })?;
+
+                    let status = output.wait().map_err(|error| {
+                        format!("Failed to wait for stdin command: {}", error)
+                    })?;
+
+                    if !status.success() {
+                        return Err(format!(
+                            "Chpasswd command failed with exit code {}",
+                            status.code().unwrap_or(-1)
+                        ));
                     }
-                    Err(err) => return Err(err.to_string()),
-                };
+                }
 
                 return Ok(0);
             }
