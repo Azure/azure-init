@@ -1,6 +1,6 @@
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::fs::create_dir_all;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -60,55 +60,19 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-pub fn search_for_iso9660() {
-    let blk_id_9660 = Command::new("blkid")
-        .arg("-tTYPE=iso9660")
-        .arg("-odevice")
-        .output()
-        .expect("failed to execute blkid");
-
-    if blk_id_9660.status.success() {
-        let devices = String::from_utf8_lossy(&blk_id_9660.stdout);
-        for device in devices.lines() {
-            println!("Found ISO 9660 filesystem on device: {}", device);
-        }
-    } else {
-        let error = String::from_utf8_lossy(&blk_id_9660.stderr);
-        println!("Error running blkid iso9660: {}", error);
-    }
-}
-
-pub fn search_for_udf() {
-    let blk_id_udf = Command::new("blkid")
-        .arg("-tTYPE=udf")
-        .arg("-odevice")
-        .output()
-        .expect("failed to execute blkid");
-
-    if blk_id_udf.status.success() {
-        let devices = String::from_utf8_lossy(&blk_id_udf.stdout);
-        for device in devices.lines() {
-            println!("Found ISO UDF filesystem on device: {}", device);
-        }
-    } else {
-        let error = String::from_utf8_lossy(&blk_id_udf.stderr);
-        println!("Error running blkid udf: {}", error);
-    }
-}
-
 pub fn mount_media() {
     let _mount_media = Command::new("mount")
         .arg("-o")
         .arg("ro")
-        .arg("/dev/sr0") //should this be a variable? //or always sr0?
+        .arg("/dev/sr0")
         .arg("/run/azure-provisioning-agent/tmp/")
         .status()
         .expect("Failed to execute mount command.");
 }
 
 pub fn remove_media() {
-    let _unmount_media = Command::new("unmount")
-        .arg("/dev/sr0")
+    let _unmount_media = Command::new("umount")
+        .arg("/run/azure-provisioning-agent/tmp/")
         .status()
         .expect("Failed to execute unmount command.");
 
@@ -123,19 +87,33 @@ pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
 
     create_dir_all(file_path.clone())?;
 
-    let metadata = fs::metadata(&file_path).unwrap();
-    let permissions = metadata.permissions();
-    let mut new_permissions = permissions.clone();
-    new_permissions.set_mode(0o700);
-    fs::set_permissions(&file_path, new_permissions).unwrap();
+    // let metadata = fs::metadata(&file_path).unwrap();
+    // let permissions = metadata.permissions();
+    // let mut new_permissions = permissions.clone();
+    // new_permissions.set_mode(0o700);
+    // fs::set_permissions(&file_path, new_permissions).unwrap();
 
     Ok(())
+}
+
+pub fn read_ovf_env_to_string()-> Result<String, Box<dyn std::error::Error>> {
+    let file_path = "/run/azure-provisioning-agent/tmp/ovf-env.xml";
+    let mut file = File::open(file_path).expect("Failed to open file");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).expect("Failed to read file");
+    
+    Ok(contents)
 }
 
 pub fn parse_ovf_env(
     ovf_body: &str,
 ) -> Result<Environment, Box<dyn std::error::Error>> {
     let environment: Environment = from_str(&ovf_body)?;
+
+    if environment.provisioning_section.linux_prov_conf_set.password.is_empty()
+    {
+        return Err("Password is empty".into());
+    }
 
     return Ok(environment);
 }

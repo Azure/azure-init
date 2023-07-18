@@ -18,7 +18,7 @@ echo "*********************************************************************"
 mkdir -p $staging_dir
 cp $root_dir/target/debug/azure-provisioning-agent $staging_dir/
 cp $root_dir/config/azure-provisioning-agent.service $staging_dir/
-cp $root_dir/tests/customdata_template.yml $temp_dir/customdata.yml
+cp $root_dir/demo/customdata_template.yml $temp_dir/customdata.yml
 echo "Done"
 
 echo "*********************************************************************"

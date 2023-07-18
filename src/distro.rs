@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::process::Command;
+use std::io::Write;
 use std::process::Stdio;
 
 pub trait Distribution {
@@ -57,7 +57,7 @@ impl Distribution for Distributions {
                         Err(err) => return Err(err.to_string()),
                     };
                 } else {
-                    let input = format!("{}:{}\n", username, password);
+                    let input = format!("{}:{}", username, password);
 
                     let mut output = Command::new("chpasswd")
                         .stdin(Stdio::piped())

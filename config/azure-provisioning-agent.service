@@ -7,6 +7,8 @@ ConditionFileIsExecutable=/var/lib/azure-provisioning-agent/azure-provisioning-a
 [Service]
 Type=oneshot
 ExecStart=/var/lib/azure-provisioning-agent/azure-provisioning-agent
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=multi-user.target

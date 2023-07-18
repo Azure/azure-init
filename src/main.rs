@@ -5,18 +5,6 @@ use lib::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
-    let get_goalstate_result = goalstate::get_goalstate().await;
-    let vm_goalstate = match get_goalstate_result {
-        Ok(vm_goalstate) => vm_goalstate,
-        Err(_err) => return,
-    };
-
-    let report_health_result = goalstate::report_health(vm_goalstate).await;
-    let _report_health = match report_health_result {
-        Ok(report_health) => report_health,
-        Err(_err) => return,
-    };
-
     let query_result = imds::query_imds().await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
@@ -29,7 +17,7 @@ async fn main() {
         Err(_err) => return,
     };
 
-    let mut username = "".to_owned();
+    let username;
     let mut password = "".to_owned();
 
     if disable_authentication == false {
@@ -42,9 +30,9 @@ async fn main() {
         media::mount_media();
 
         // read folder
-        // read from ovf-env.cml from the mounted section.
-        let _ovf_body = ""; //gotta read this from somewhere
-        let environment = media::parse_ovf_env(&imds_body).unwrap();
+        // read from ovf-env.xml from the mounted section.
+        let ovf_body = media::read_ovf_env_to_string().unwrap();
+        let environment = media::parse_ovf_env(&ovf_body.as_str()).unwrap();
 
         username = environment
             .provisioning_section
@@ -56,7 +44,6 @@ async fn main() {
             .password;
 
         // unmount
-        // eject after username/password/hostname/ssh keys
         media::remove_media();
     } else {
         let username_result = imds::get_username(imds_body.clone());
@@ -94,4 +81,17 @@ async fn main() {
     Distributions::from("ubuntu")
         .set_hostname(hostname.as_str())
         .expect("Failed to set hostname");
+
+    let get_goalstate_result = goalstate::get_goalstate().await;
+    let vm_goalstate = match get_goalstate_result {
+        Ok(vm_goalstate) => vm_goalstate,
+        Err(_err) => return,
+    };
+
+    let report_health_result = goalstate::report_health(vm_goalstate).await;
+    let _report_health = match report_health_result {
+        Ok(report_health) => report_health,
+        Err(_err) => return,
+    };
+
 }

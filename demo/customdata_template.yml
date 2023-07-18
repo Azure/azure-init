@@ -34,6 +34,9 @@ write_files:
       EOF
       dpkg-query --show --showformat 'Cloud-init v. ${Version} for parse_cloudinit_version()' cloud-init
 
+      useradd backupuser --groups sudo
+      echo backupuser:testpw123456789 | chpasswd
+
       # deprovision waagent and remove installed user
       waagent -deprovision+user -force
 
