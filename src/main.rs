@@ -38,6 +38,10 @@ async fn main() {
             .password;
 
         let authenticate_password = media::allow_password_authentication();
+        let _authenticate_password = match authenticate_password {
+            Ok(authenticate_password) => authenticate_password,
+            Err(_err) => return,
+        };
 
         media::remove_media();
     } else {
