@@ -1,6 +1,6 @@
 SUBSCRIPTION_ID="0a2c89a7-a44e-4cd0-b6ec-868432ad1d13"
 EPOCH=$(date +%s)
-RG=cade-test-azprovagent-$EPOCH
+RG=functional-test-azprovagent-$EPOCH
 LOCATION=eastus
 PATH_TO_PUBLIC_SSH_KEY="$HOME/.ssh/id_rsa.pub"
 PATH_TO_PRIVATE_SSH_KEY="$HOME/.ssh/id_rsa"
