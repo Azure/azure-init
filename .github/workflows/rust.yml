@@ -25,6 +25,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIAL }}
     - name: Build
       run: cargo build --verbose
     - name: Run tests
