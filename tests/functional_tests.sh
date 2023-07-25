@@ -1,6 +1,6 @@
 SUBSCRIPTION_ID="0a2c89a7-a44e-4cd0-b6ec-868432ad1d13"
 EPOCH=$(date +%s)
-RG=cade-test-azprovagent-$EPOCH
+RG=functional-test-azprovagent-$EPOCH
 LOCATION=eastus
 PATH_TO_PUBLIC_SSH_KEY="$HOME/.ssh/id_rsa.pub"
 PATH_TO_PRIVATE_SSH_KEY="$HOME/.ssh/id_rsa"
@@ -9,14 +9,14 @@ VM_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
 VM_SIZE="Standard_D2lds_v5"
 VM_ADMIN_USERNAME="azureuser"
 AZURE_SSH_KEY_NAME="azure-ssh-key"
-VM_NAME_WITH_TIMESTAMP=$VM_NAME-$EPOCH
+VM_NAME_WITH_TIMESTAMP="$VM_NAME-$EPOCH"
 
 set -e
 
 echo "Starting script"
 
-if [ ! -f "$PATH_TO_PUBLIC_SSH_KEY" ]; then
-    ssh-keygen -t rsa -b 4096 -f $PATH_TO_PUBLIC_SSH_KEY -N ""
+if [ ! -f "$PATH_TO_PRIVATE_SSH_KEY" ]; then
+    ssh-keygen -t rsa -b 4096 -f $PATH_TO_PRIVATE_SSH_KEY -N ""
     echo "SSH key created."
 else
     echo "SSH key already exists."
@@ -24,7 +24,7 @@ fi
 
 # Log into Azure (this will open a browser window prompting you to log in)
 echo "Logging you into Azure"
-az login
+
 
 # Ensure Azure is logged in
 az account get-access-token -o none
@@ -58,4 +58,4 @@ echo "Logging into VM..."
 ssh -o StrictHostKeyChecking=no -i $PATH_TO_PRIVATE_SSH_KEY $VM_ADMIN_USERNAME@$PUBLIC_IP 'sudo ./functional_tests test_user' 
 
 # Delete the resource group
-az group delete -g $RG --yes --no-wait
+az vm delete -g $RG $VM_WITH_TIMESTAMP

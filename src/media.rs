@@ -6,7 +6,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
-
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
@@ -115,24 +114,18 @@ pub fn parse_ovf_env(
 ) -> Result<Environment, Box<dyn std::error::Error>> {
     let environment: Environment = from_str(&ovf_body)?;
 
-    if environment
-        .provisioning_section
-        .linux_prov_conf_set
-        .password
-        .is_empty()
-    {
-        return Err("Password is empty".into());
-    }
-
     Ok(environment)
 }
 
-pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>{
+pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>
+{
     let file_path = "/etc/ssh/sshd_config.d/40-azure-provisioning-agent.conf";
     let password_authentication = "PasswordAuthentication yes";
 
-    let mut file = File::create(file_path).expect("Unable to create sshd_config file.");
-    file.write_all(password_authentication.as_bytes()).expect("Unable to write to sshd_config file.");
+    let mut file =
+        File::create(file_path).expect("Unable to create sshd_config file.");
+    file.write_all(password_authentication.as_bytes())
+        .expect("Unable to write to sshd_config file.");
 
     let _restart_ssh = Command::new("systemctl")
         .arg("restart")
