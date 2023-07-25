@@ -17,7 +17,6 @@ echo "Starting script"
 
 if [ ! -f "$PATH_TO_PRIVATE_SSH_KEY" ]; then
     ssh-keygen -t rsa -b 4096 -f $PATH_TO_PRIVATE_SSH_KEY -N ""
-    A
     echo "SSH key created."
 else
     echo "SSH key already exists."
