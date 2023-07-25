@@ -37,6 +37,6 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Run unit tests
-      run: cargo tests --verbose
+      run: cargo test --verbose
     - name: Run functional tests
       run: cargo run --bin functional_tests
