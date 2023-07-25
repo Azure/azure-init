@@ -19,24 +19,18 @@ jobs:
     - name: Check formatting
       run: cargo fmt -- --check
 
-  build:
+  test:
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIAL }}
     - name: Build
       run: cargo build --verbose
-
-  test:
-    
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-20.04]
-    runs-on: ${{matrix.os}}
-    steps:
-    - uses: actions/checkout@v2
-    - name: Run unit tests
+    - name: Run tests
       run: cargo test --verbose
     - name: Run functional tests
-      run: cargo run --bin functional_tests test_user
+      run: ./tests/functional_tests.sh

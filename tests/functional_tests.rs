@@ -16,6 +16,26 @@ async fn main() {
     println!("**********************************");
     println!("");
 
+    println!("Querying wireserver for Goalstate");
+
+    let get_goalstate_result = goalstate::get_goalstate().await;
+    let vm_goalstate = match get_goalstate_result {
+        Ok(vm_goalstate) => vm_goalstate,
+        Err(_err) => return,
+    };
+
+    println!("Goalstate successfully received");
+    println!("");
+    println!("Reporting VM Health to wireserver");
+
+    let report_health_result = goalstate::report_health(vm_goalstate).await;
+    let _report_health = match report_health_result {
+        Ok(report_health) => report_health,
+        Err(_err) => return,
+    };
+
+    println!("VM Health successfully reported");
+
     let username = &cli_args[1];
 
     let mut file_path = "/home/".to_string();
