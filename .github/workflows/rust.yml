@@ -39,4 +39,4 @@ jobs:
     - name: Run unit tests
       run: cargo test --verbose
     - name: Run functional tests
-      run: cargo run --bin functional_tests
+      run: cargo run --bin functional_tests test_user
