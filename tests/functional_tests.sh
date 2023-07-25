@@ -1,6 +1,6 @@
 SUBSCRIPTION_ID="0a2c89a7-a44e-4cd0-b6ec-868432ad1d13"
 EPOCH=$(date +%s)
-RG=functional-test-azprovagent
+RG=functional-test-azprovagent-$EPOCH
 LOCATION=eastus
 PATH_TO_PUBLIC_SSH_KEY="$HOME/.ssh/id_rsa.pub"
 PATH_TO_PRIVATE_SSH_KEY="$HOME/.ssh/id_rsa"
@@ -17,6 +17,7 @@ echo "Starting script"
 
 if [ ! -f "$PATH_TO_PRIVATE_SSH_KEY" ]; then
     ssh-keygen -t rsa -b 4096 -f $PATH_TO_PRIVATE_SSH_KEY -N ""
+    A
     echo "SSH key created."
 else
     echo "SSH key already exists."
