@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use reqwest;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;

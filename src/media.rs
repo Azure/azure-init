@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use std::fs;
 use std::fs::create_dir_all;
 use std::fs::File;
