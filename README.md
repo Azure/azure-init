@@ -1,5 +1,13 @@
 # Azure Provisioning Agent 
 
+A guest agent implementation for provisioning Linux VMs on Azure.
+
+The agent configures Linux guests from provisioning metadata.
+Contrary to complex guest configuration and customisation systems like e.g. cloud-init, the Azure provisioning agent aims to be minimal.
+It strictly focuses on basic instance initialisation from Azure metadata.
+
+The Azure provisioning agent has very few requirements on its environment, so it may run in a very early stage of the boot process.
+
 ## Installing Rust
 
 Rust can be installed via the command line using the following command: 
@@ -29,17 +37,11 @@ then clean up the test artifacts afterwards.
 
 ## Contributing
 
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.opensource.microsoft.com.
+Contribution require you to agree to Microsoft's Contributor License Agreement (CLA).
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for detailed instructions.
 
-When you submit a pull request, a CLA bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+This project adheres to the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+Check out [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for a brief collection of links and references.
 
 ## Trademarks
 
