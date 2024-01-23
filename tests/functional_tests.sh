@@ -1,4 +1,8 @@
-SUBSCRIPTION_ID="0a2c89a7-a44e-4cd0-b6ec-868432ad1d13"
+#!/bin/bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"
 EPOCH=$(date +%s)
 RG=cade-test-azprovagent-$EPOCH
 LOCATION=eastus
@@ -14,6 +18,11 @@ VM_NAME_WITH_TIMESTAMP=$VM_NAME-$EPOCH
 set -e
 
 echo "Starting script"
+
+if [ -z "${SUBSCRIPTION_ID}" ] ; then
+    echo "SUBSCRIPTION_ID missing. Either set environment variable or edit $0 to set a subscription ID."
+    exit 1
+fi
 
 if [ ! -f "$PATH_TO_PUBLIC_SSH_KEY" ]; then
     ssh-keygen -t rsa -b 4096 -f $PATH_TO_PUBLIC_SSH_KEY -N ""

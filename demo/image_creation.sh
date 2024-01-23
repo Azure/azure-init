@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 set -e -u -x -o pipefail
 
 epoch=$(date +%s)
@@ -118,7 +121,7 @@ az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-ima
 
 if [[ $? -eq 0 ]]
 then
-    echo "Image publishing finished - /SharedGalleries/0a2c89a7-a44e-4cd0-b6ec-868432ad1d13-TESTGALLERYAGENT/Images/testgallery/Versions/latest"
+    echo "Image publishing finished"
     echo "Deleting staging resource group"
     az group delete -g $rg --yes --no-wait
     echo "Done"
