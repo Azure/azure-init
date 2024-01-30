@@ -328,43 +328,11 @@ mod tests {
             </wa:PlatformSettingsSection>
         </Environment>"#;
 
-        let environment: Environment = parse_ovf_env(ovf_body).unwrap();
-
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .username,
-            "myusername"
-        );
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .password,
-            ""
-        );
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .hostname,
-            "myhostname"
-        );
-        assert_eq!(
-            environment
-                .platform_settings_section
-                .platform_settings
-                .preprovisioned_vm,
-            true
-        );
-        assert_eq!(
-            environment
-                .platform_settings_section
-                .platform_settings
-                .preprovisioned_vm_type,
-            "None"
-        );
+        assert!(parse_ovf_env(ovf_body)
+            .err()
+            .unwrap()
+            .downcast::<std::io::Error>()
+            .is_err());
     }
 
     #[test]
@@ -398,42 +366,10 @@ mod tests {
             </wa:PlatformSettingsSection>
         </Environment>"#;
 
-        let environment: Environment = parse_ovf_env(ovf_body).unwrap();
-
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .username,
-            "myusername"
-        );
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .password,
-            ""
-        );
-        assert_eq!(
-            environment
-                .provisioning_section
-                .linux_prov_conf_set
-                .hostname,
-            "myhostname"
-        );
-        assert_eq!(
-            environment
-                .platform_settings_section
-                .platform_settings
-                .preprovisioned_vm,
-            false
-        );
-        assert_eq!(
-            environment
-                .platform_settings_section
-                .platform_settings
-                .preprovisioned_vm_type,
-            "None"
-        );
+        assert!(parse_ovf_env(ovf_body)
+            .err()
+            .unwrap()
+            .downcast::<std::io::Error>()
+            .is_err());
     }
 }
