@@ -93,11 +93,11 @@ pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
 
     create_dir_all(file_path)?;
 
-    let metadata = fs::metadata(&file_path).unwrap();
+    let metadata = fs::metadata(file_path).unwrap();
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o700);
-    fs::set_permissions(&file_path, new_permissions).unwrap();
+    fs::set_permissions(file_path, new_permissions).unwrap();
 
     Ok(())
 }
@@ -115,7 +115,7 @@ pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
 pub fn parse_ovf_env(
     ovf_body: &str,
 ) -> Result<Environment, Box<dyn std::error::Error>> {
-    let environment: Environment = from_str(&ovf_body)?;
+    let environment: Environment = from_str(ovf_body)?;
 
     if environment
         .provisioning_section

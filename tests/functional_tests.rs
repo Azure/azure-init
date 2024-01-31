@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use tokio;
-
 use lib::distro::{Distribution, Distributions};
 use lib::imds::PublicKeys;
 use lib::{goalstate, user};
@@ -13,11 +11,11 @@ use std::env;
 async fn main() {
     let cli_args: Vec<String> = env::args().collect();
 
-    println!("");
+    println!();
     println!("**********************************");
     println!("* Beginning functional testing");
     println!("**********************************");
-    println!("");
+    println!();
 
     println!("Querying wireserver for Goalstate");
 
@@ -28,11 +26,11 @@ async fn main() {
     };
 
     println!("Goalstate successfully received");
-    println!("");
+    println!();
     println!("Reporting VM Health to wireserver");
 
     let report_health_result = goalstate::report_health(vm_goalstate).await;
-    let _report_health = match report_health_result {
+    match report_health_result {
         Ok(report_health) => report_health,
         Err(_err) => return,
     };
@@ -44,7 +42,7 @@ async fn main() {
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
 
-    println!("");
+    println!();
     println!(
         "Attempting to create user {} without password",
         username.as_str()
@@ -56,7 +54,7 @@ async fn main() {
 
     println!("User {} was successfully created", username.as_str());
 
-    println!("");
+    println!();
     println!(
         "Attempting to create user {} with password",
         username.as_str()
@@ -68,46 +66,47 @@ async fn main() {
 
     println!("User {} was successfully created", username.as_str());
 
-    println!("");
+    println!();
     println!("Attempting to create user's SSH directory");
 
     let _create_directory =
         user::create_ssh_directory(username.as_str(), &file_path).await;
-    let _create_directory = match _create_directory {
+    match _create_directory {
         Ok(create_directory) => create_directory,
         Err(_err) => return,
     };
     println!("User's SSH directory was successfully created");
 
-    let mut keys: Vec<PublicKeys> = Vec::new();
-    keys.push(PublicKeys {
-        path: "/path/to/.ssh/keys/".to_owned(),
-        key_data: "ssh-rsa test_key_1".to_owned(),
-    });
-    keys.push(PublicKeys {
-        path: "/path/to/.ssh/keys/".to_owned(),
-        key_data: "ssh-rsa test_key_2".to_owned(),
-    });
-    keys.push(PublicKeys {
-        path: "/path/to/.ssh/keys/".to_owned(),
-        key_data: "ssh-rsa test_key_3".to_owned(),
-    });
+    let keys: Vec<PublicKeys> = vec![
+        PublicKeys {
+            path: "/path/to/.ssh/keys/".to_owned(),
+            key_data: "ssh-rsa test_key_1".to_owned(),
+        },
+        PublicKeys {
+            path: "/path/to/.ssh/keys/".to_owned(),
+            key_data: "ssh-rsa test_key_2".to_owned(),
+        },
+        PublicKeys {
+            path: "/path/to/.ssh/keys/".to_owned(),
+            key_data: "ssh-rsa test_key_3".to_owned(),
+        },
+    ];
 
     file_path.push_str("/.ssh");
 
     user::set_ssh_keys(keys, username.to_string(), file_path.clone()).await;
 
-    println!("");
+    println!();
     println!("Attempting to set the VM hostname");
 
     Distributions::from("ubuntu")
         .set_hostname("test-hostname-set")
         .expect("Failed to set hostname");
     println!("VM hostname successfully set");
-    println!("");
+    println!();
 
     println!("**********************************");
     println!("* Functional testing completed successfully!");
     println!("**********************************");
-    println!("");
+    println!();
 }

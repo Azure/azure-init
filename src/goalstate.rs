@@ -63,7 +63,7 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
 
     println!("Get request failed with status code: {}", response.status());
 
-    return Err(Box::from("Failed Get Call"));
+    Err(Box::from("Failed Get Call"))
 }
 
 pub async fn report_health(
@@ -102,7 +102,7 @@ pub async fn report_health(
         response.status()
     );
 
-    return Err(Box::from("Failed Post Call"));
+    Err(Box::from("Failed Post Call"))
 }
 
 fn build_report_health_file(goalstate: Goalstate) -> String {
@@ -127,15 +127,14 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
         post_request.replace("$GOAL_STATE_INCARNATION", &goalstate.incarnation);
     let post_request = post_request
         .replace("$CONTAINER_ID", &goalstate.container.container_id);
-    let post_request = post_request.replace(
+    post_request.replace(
         "$INSTANCE_ID",
         &goalstate
             .container
             .role_instance_list
             .role_instance
             .instance_id,
-    );
-    return post_request;
+    )
 }
 
 #[cfg(test)]

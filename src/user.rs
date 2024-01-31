@@ -25,12 +25,11 @@ pub async fn set_ssh_keys(
     for key in keys {
         writeln!(authorized_keys, "{}", key.key_data).unwrap();
     }
-    let metadata = fs::metadata(&authorized_keys_path.clone()).unwrap();
+    let metadata = fs::metadata(authorized_keys_path.clone()).unwrap();
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o600);
-    fs::set_permissions(&authorized_keys_path.clone(), new_permissions)
-        .unwrap();
+    fs::set_permissions(authorized_keys_path.clone(), new_permissions).unwrap();
 
     let uid_username = CString::new(username.clone()).unwrap();
     let uid_passwd = unsafe { libc::getpwnam(uid_username.as_ptr()) };
