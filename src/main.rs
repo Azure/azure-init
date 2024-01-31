@@ -41,7 +41,7 @@ async fn main() {
             .linux_prov_conf_set
             .password;
 
-        let authenticate_password = media::allow_password_authentication();
+        let _ = media::allow_password_authentication();
 
         media::remove_media();
     } else {

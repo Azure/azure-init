@@ -92,7 +92,7 @@ pub fn remove_media() {
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "/run/azure-provisioning-agent/tmp/";
 
-    create_dir_all(file_path.clone())?;
+    create_dir_all(file_path)?;
 
     let metadata = fs::metadata(&file_path).unwrap();
     let permissions = metadata.permissions();
