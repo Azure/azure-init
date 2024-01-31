@@ -8,7 +8,6 @@ use lib::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
-    
     let query_result = imds::query_imds().await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
