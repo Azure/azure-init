@@ -1,14 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use tokio;
-
 use lib::distro::{Distribution, Distributions};
 use lib::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
-    
     let query_result = imds::query_imds().await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
@@ -24,13 +21,13 @@ async fn main() {
     let username;
     let mut password = "".to_owned();
 
-    if disable_authentication == false {
-        let _make_temp_directory_result = media::make_temp_directory().unwrap();
+    if !disable_authentication {
+        media::make_temp_directory().unwrap();
 
         media::mount_media();
 
         let ovf_body = media::read_ovf_env_to_string().unwrap();
-        let environment = media::parse_ovf_env(&ovf_body.as_str()).unwrap();
+        let environment = media::parse_ovf_env(ovf_body.as_str()).unwrap();
 
         username = environment
             .provisioning_section
@@ -41,7 +38,7 @@ async fn main() {
             .linux_prov_conf_set
             .password;
 
-        let authenticate_password = media::allow_password_authentication();
+        let _ = media::allow_password_authentication();
 
         media::remove_media();
     } else {
@@ -88,7 +85,7 @@ async fn main() {
     };
 
     let report_health_result = goalstate::report_health(vm_goalstate).await;
-    let _report_health = match report_health_result {
+    match report_health_result {
         Ok(report_health) => report_health,
         Err(_err) => return,
     };

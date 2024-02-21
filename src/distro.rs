@@ -31,7 +31,7 @@ impl Distribution for Distributions {
                 home_path.push_str(username);
 
                 match Command::new("useradd")
-                    .arg(username.to_string())
+                    .arg(username)
                     .arg("--comment")
                     .arg(
                       "Provisioning agent created this user based on username provided in IMDS",
@@ -46,10 +46,10 @@ impl Distribution for Distributions {
                         Err(err) => return Err(err.to_string()),
                     };
 
-                if password.is_empty() == true {
+                if password.is_empty() {
                     match Command::new("passwd")
                         .arg("-d")
-                        .arg(username.to_string())
+                        .arg(username)
                         .status()
                     {
                         Ok(status_code) => {
@@ -88,7 +88,7 @@ impl Distribution for Distributions {
                     }
                 }
 
-                return Ok(0);
+                Ok(0)
             }
         }
     }
@@ -100,11 +100,9 @@ impl Distribution for Distributions {
                     .arg(hostname)
                     .status()
                 {
-                    Ok(status_code) => {
-                        return Ok(status_code.code().unwrap_or(1))
-                    }
-                    Err(err) => return Err(err.to_string()),
-                };
+                    Ok(status_code) => Ok(status_code.code().unwrap_or(1)),
+                    Err(err) => Err(err.to_string()),
+                }
             }
         }
     }

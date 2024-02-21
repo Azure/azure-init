@@ -40,7 +40,7 @@ pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
     );
     println!("{:?}", response.text().await);
 
-    return Err(Box::from("Failed Get Call"));
+    Err(Box::from("Failed Get Call"))
 }
 
 pub fn get_ssh_keys(
@@ -80,9 +80,9 @@ pub fn get_hostname(
 }
 
 pub fn get_provision_with_password(
-    imds_body: &String,
+    imds_body: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body)
+    let data: Value = serde_json::from_str(imds_body)
         .expect("Failed to parse the IMDS JSON.");
 
     let provision_with_password = String::deserialize(

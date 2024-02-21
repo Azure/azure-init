@@ -1,5 +1,7 @@
 # Azure Provisioning Agent 
 
+[![Github CI](https://github.com/Azure/azure-provisioning-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/Azure/azure-provisioning-agent/actions)
+
 A guest agent implementation for provisioning Linux VMs on Azure.
 
 The agent configures Linux guests from provisioning metadata.

@@ -9,7 +9,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
-
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
@@ -92,13 +91,13 @@ pub fn remove_media() {
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "/run/azure-provisioning-agent/tmp/";
 
-    create_dir_all(file_path.clone())?;
+    create_dir_all(file_path)?;
 
-    let metadata = fs::metadata(&file_path).unwrap();
+    let metadata = fs::metadata(file_path).unwrap();
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o700);
-    fs::set_permissions(&file_path, new_permissions).unwrap();
+    fs::set_permissions(file_path, new_permissions).unwrap();
 
     Ok(())
 }
@@ -116,7 +115,7 @@ pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
 pub fn parse_ovf_env(
     ovf_body: &str,
 ) -> Result<Environment, Box<dyn std::error::Error>> {
-    let environment: Environment = from_str(&ovf_body)?;
+    let environment: Environment = from_str(ovf_body)?;
 
     if environment
         .provisioning_section
@@ -130,12 +129,15 @@ pub fn parse_ovf_env(
     Ok(environment)
 }
 
-pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>{
+pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>
+{
     let file_path = "/etc/ssh/sshd_config.d/40-azure-provisioning-agent.conf";
     let password_authentication = "PasswordAuthentication yes";
 
-    let mut file = File::create(file_path).expect("Unable to create sshd_config file.");
-    file.write_all(password_authentication.as_bytes()).expect("Unable to write to sshd_config file.");
+    let mut file =
+        File::create(file_path).expect("Unable to create sshd_config file.");
+    file.write_all(password_authentication.as_bytes())
+        .expect("Unable to write to sshd_config file.");
 
     let _restart_ssh = Command::new("systemctl")
         .arg("restart")
