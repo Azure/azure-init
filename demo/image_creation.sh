@@ -55,7 +55,7 @@ storage=testagent$epoch
 location=eastus
 vm=testvm-$epoch
 ssh_key_path=~/.ssh/id_rsa.pub
-base_image=canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+base_image=canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest
 admin_username=testuser-$epoch
 
 echo "*********************************************************************"
@@ -104,21 +104,26 @@ image=image-$epoch
 echo "*********************************************************************"
 echo "Deallocating and generalizing vm to capture image $image"
 echo "*********************************************************************"
+az vm show -g $rg -n $vm
 az vm deallocate -g $rg -n $vm
+while [ "$(az vm get-instance-view -g $rg -n $vm --query 'instanceView.statuses[?code==`PowerState/deallocated`].displayStatus' -o tsv)" != "VM deallocated" ]
+do
+    echo "Waiting for VM to be deallocated..."
+    sleep 30
+done
+    sleep 15
 az vm generalize -g $rg -n $vm
-az image create -g $rg -n $image --source $vm --hyper-v-generation V2
 echo "Done"
 
 version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
-definition=testgallery
+definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-image_id=$(az image show -g $rg -n $image | jq .id -r)
+subscription_id=$(az vm show -g $rg -n $vm | jq .subscriptionId -r)
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
 echo "*********************************************************************"
-az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --managed-image $image_id
-
+az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --virtual-machine /subscriptions/0a2c89a7-a44e-4cd0-b6ec-868432ad1d13/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vm
 if [[ $? -eq 0 ]]
 then
     echo "Image publishing finished"
