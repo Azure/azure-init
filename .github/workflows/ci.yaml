@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-test:
-    name: Build and test azure-provisioning-agent
+    name: Build and test azure-init
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -24,7 +24,7 @@ jobs:
         with:
           command: fmt
           args: --all --check
-      - name: Build azure-provisioning-agent
+      - name: Build azure-init
         uses: actions-rs/cargo@v1
         with:
           command: build

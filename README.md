@@ -1,14 +1,14 @@
-# Azure Provisioning Agent 
+# Azure-Init
 
-[![Github CI](https://github.com/Azure/azure-provisioning-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/Azure/azure-provisioning-agent/actions)
+[![Github CI](https://github.com/Azure/azure-init/actions/workflows/ci.yaml/badge.svg)](https://github.com/Azure/azure-init/actions)
 
-A guest agent implementation for provisioning Linux VMs on Azure.
+A minimal guest agent implementation for provisioning Linux VMs on Azure.
 
 The agent configures Linux guests from provisioning metadata.
-Contrary to complex guest configuration and customisation systems like e.g. cloud-init, the Azure provisioning agent aims to be minimal.
+Contrary to complex guest configuration and customisation systems like e.g. cloud-init, Azure-Init aims to be minimal.
 It strictly focuses on basic instance initialisation from Azure metadata.
 
-The Azure provisioning agent has very few requirements on its environment, so it may run in a very early stage of the boot process.
+Azure-Init has very few requirements on its environment, so it may run in a very early stage of the boot process.
 
 ## Installing Rust
 
@@ -20,14 +20,14 @@ use of Cargo, which is Rust's compiler and dependency manager. More on the usage
 ## Pulling Source Code
 
 This source code can accessed by cloning the repository to your machine with the command:
-`git clone git@github.com:Azure/azure-provisioning-agent.git`
+`git clone git@github.com:Azure/azure-init.git`
 
 ## Building the Project
 
 Building this project can be done by going to the base of the repository in the command line and entering the command
 `cargo build --all`. This project contains two binaries, the main provisioning agent and the functional testing binary,
 so this command builds both. These binaries are quite small, but you can build only one by entering
-`cargo build --bin <binary_name>` and indicating either `azure-provisioning-agent` or `functional_tests`.
+`cargo build --bin <binary_name>` and indicating either `azure-init` or `functional_tests`.
 
 To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
 
