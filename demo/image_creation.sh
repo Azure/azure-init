@@ -109,9 +109,8 @@ az vm deallocate -g $rg -n $vm
 while [ "$(az vm get-instance-view -g $rg -n $vm --query 'instanceView.statuses[?code==`PowerState/deallocated`].displayStatus' -o tsv)" != "VM deallocated" ]
 do
     echo "Waiting for VM to be deallocated..."
-    sleep 30
+    sleep 10
 done
-    sleep 15
 az vm generalize -g $rg -n $vm
 echo "Done"
 
@@ -119,11 +118,11 @@ version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
 definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-subscription_id=$(az vm show -g $rg -n $vm | jq .subscriptionId -r)
+subscription_id=$(az vm show -g $rg -n $vm | jq -r '.subscriptionId')
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
 echo "*********************************************************************"
-az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --virtual-machine /subscriptions/0a2c89a7-a44e-4cd0-b6ec-868432ad1d13/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vm
+az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --virtual-machine /subscriptions/$subscription_id/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vm
 if [[ $? -eq 0 ]]
 then
     echo "Image publishing finished"
