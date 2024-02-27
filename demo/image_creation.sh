@@ -109,7 +109,7 @@ az vm deallocate -g $rg -n $vm
 while [ "$(az vm get-instance-view -g $rg -n $vm --query 'instanceView.statuses[?code==`PowerState/deallocated`].displayStatus' -o tsv)" != "VM deallocated" ]
 do
     echo "Waiting for VM to be deallocated..."
-    sleep 10
+    sleep 30
 done
 az vm generalize -g $rg -n $vm
 echo "Done"
@@ -118,7 +118,7 @@ version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
 definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-subscription_id=$(az vm show -g $rg -n $vm | jq -r '.subscriptionId')
+subscription_id=$(az vm show -g $rg -n $vm | grep -oPm 1 '/subscriptions/\K[^/]*')
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
 echo "*********************************************************************"
