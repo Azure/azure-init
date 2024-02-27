@@ -45,10 +45,7 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-ms-agent-name",
-        HeaderValue::from_static("azure-provisioning-agent"),
-    );
+    headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
 
     let request = client.get(url).headers(headers);
@@ -74,10 +71,7 @@ pub async fn report_health(
     let client = Client::new();
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-ms-agent-name",
-        HeaderValue::from_static("azure-provisioning-agent"),
-    );
+    headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
     headers.insert(
         "Content-Type",

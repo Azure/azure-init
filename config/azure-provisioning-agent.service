@@ -1,12 +1,12 @@
 [Unit]
-Description=Azure Provisioning Agent
+Description=Azure-Init
 After=network-online.target
 Wants=network-online.target
-ConditionFileIsExecutable=/var/lib/azure-provisioning-agent/azure-provisioning-agent
+ConditionFileIsExecutable=/var/lib/azure-init/azure-init
 
 [Service]
 Type=oneshot
-ExecStart=/var/lib/azure-provisioning-agent/azure-provisioning-agent
+ExecStart=/var/lib/azure-init/azure-init
 StandardOutput=journal+console
 StandardError=journal+console
 

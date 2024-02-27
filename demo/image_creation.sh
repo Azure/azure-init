@@ -6,7 +6,7 @@ set -e -u -x -o pipefail
 
 epoch=$(date +%s)
 temp_dir=/tmp/staging.$epoch
-target_dir=azure-provisioning-agent
+target_dir=azure-init
 staging_dir=$temp_dir/$target_dir
 echo "*********************************************************************"
 echo "Building the agent"
@@ -19,29 +19,29 @@ echo "*********************************************************************"
 echo "Staging artifacts to $staging_dir"
 echo "*********************************************************************"
 mkdir -p $staging_dir
-cp $root_dir/target/debug/azure-provisioning-agent $staging_dir/
-cp $root_dir/config/azure-provisioning-agent.service $staging_dir/
+cp $root_dir/target/debug/azure-init $staging_dir/
+cp $root_dir/config/azure-init.service $staging_dir/
 cp $root_dir/demo/customdata_template.yml $temp_dir/customdata.yml
 echo "Done"
 
 echo "*********************************************************************"
-echo "Creating azure-provisioning-agent.tgz package for upload"
+echo "Creating azure-init.tgz package for upload"
 echo "*********************************************************************"
-rm -f ./azure-provisioning-agent.tgz
-tar cvfz azure-provisioning-agent.tgz -C $temp_dir $target_dir
+rm -f ./azure-init.tgz
+tar cvfz azure-init.tgz -C $temp_dir $target_dir
 echo "Done"
 
 echo "*********************************************************************"
-echo "Uploading package as azure-provisioning-agent-$epoch.tgz"
+echo "Uploading package as azure-init-$epoch.tgz"
 echo "*********************************************************************"
-az storage blob upload --account-name aztuxprovisioningtest -c minagent --file azure-provisioning-agent.tgz --name azure-provisioning-agent-$epoch.tgz
+az storage blob upload --account-name aztuxprovisioningtest -c minagent --file azure-init.tgz --name azure-init-$epoch.tgz
 echo "Done"
 
 echo "*********************************************************************"
-echo "Generating a SAS for azure-provisioning-agent-$epoch.tgz"
+echo "Generating a SAS for azure-init-$epoch.tgz"
 echo "*********************************************************************"
 end=$(date -u -d '10 days' '+%Y-%m-%dT%H:%MZ')
-sasurl=$(az storage blob generate-sas --account-name aztuxprovisioningtest -c minagent -n azure-provisioning-agent-$epoch.tgz --permissions r --expiry $end --https-only --full-uri)
+sasurl=$(az storage blob generate-sas --account-name aztuxprovisioningtest -c minagent -n azure-init-$epoch.tgz --permissions r --expiry $end --https-only --full-uri)
 echo "Done"
 
 echo "*********************************************************************"

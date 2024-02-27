@@ -71,14 +71,14 @@ pub fn mount_media() {
         .arg("-o")
         .arg("ro")
         .arg("/dev/sr0")
-        .arg("/run/azure-provisioning-agent/tmp/")
+        .arg("/run/azure-init/tmp/")
         .status()
         .expect("Failed to execute mount command.");
 }
 
 pub fn remove_media() {
     let _unmount_media = Command::new("umount")
-        .arg("/run/azure-provisioning-agent/tmp/")
+        .arg("/run/azure-init/tmp/")
         .status()
         .expect("Failed to execute unmount command.");
 
@@ -89,7 +89,7 @@ pub fn remove_media() {
 }
 
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = "/run/azure-provisioning-agent/tmp/";
+    let file_path = "/run/azure-init/tmp/";
 
     create_dir_all(file_path)?;
 
@@ -103,7 +103,7 @@ pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
-    let file_path = "/run/azure-provisioning-agent/tmp/ovf-env.xml";
+    let file_path = "/run/azure-init/tmp/ovf-env.xml";
     let mut file = File::open(file_path).expect("Failed to open file");
     let mut contents = String::new();
     file.read_to_string(&mut contents)
@@ -131,7 +131,7 @@ pub fn parse_ovf_env(
 
 pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>
 {
-    let file_path = "/etc/ssh/sshd_config.d/40-azure-provisioning-agent.conf";
+    let file_path = "/etc/ssh/sshd_config.d/40-azure-init.conf";
     let password_authentication = "PasswordAuthentication yes";
 
     let mut file =
