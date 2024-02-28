@@ -112,7 +112,6 @@ version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
 definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-subscription_id=$(az vm show -g $rg -n $vm | jq -r '.id')
 snapshot_id=$(az snapshot show -n $vm-snapshot -g $rg --query id --output tsv)
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
