@@ -2,6 +2,11 @@
 name = "azure-init"
 version = "0.1.1"
 edition = "2021"
+repository = "https://github.com/Azure/azure-init/"
+homepage = "https://github.com/Azure/azure-init/"
+license = "MIT"
+readme = "README.md"
+description = "A reference implementation for provisioning Linux VMs on Azure."
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
