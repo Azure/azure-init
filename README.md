@@ -2,13 +2,13 @@
 
 [![Github CI](https://github.com/Azure/azure-init/actions/workflows/ci.yaml/badge.svg)](https://github.com/Azure/azure-init/actions)
 
-A minimal guest agent implementation for provisioning Linux VMs on Azure.
+A reference implementation for provisioning Linux VMs on Azure.
 
-The agent configures Linux guests from provisioning metadata.
-Contrary to complex guest configuration and customisation systems like e.g. cloud-init, Azure-Init aims to be minimal.
+Azure-init configures Linux guests from provisioning metadata.
+Contrary to complex guest configuration and customisation systems like e.g. cloud-init, azure-init aims to be minimal.
 It strictly focuses on basic instance initialisation from Azure metadata.
 
-Azure-Init has very few requirements on its environment, so it may run in a very early stage of the boot process.
+Azure-init has very few requirements on its environment, so it may run in a very early stage of the boot process.
 
 ## Installing Rust
 

@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use lib::distro::{Distribution, Distributions};
-use lib::imds::PublicKeys;
-use lib::{goalstate, user};
+use libazureinit::distro::{Distribution, Distributions};
+use libazureinit::imds::PublicKeys;
+use libazureinit::{goalstate, user};
 
 use std::env;
 

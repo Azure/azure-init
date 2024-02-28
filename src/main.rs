@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use lib::distro::{Distribution, Distributions};
-use lib::{goalstate, imds, media, user};
+use libazureinit::distro::{Distribution, Distributions};
+use libazureinit::{goalstate, imds, media, user};
 
 #[tokio::main]
 async fn main() {
