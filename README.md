@@ -12,15 +12,7 @@ Azure-init has very few requirements on its environment, so it may run in a very
 
 ## Installing Rust
 
-Rust can be installed via the command line using the following command: 
-`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, or with other options found here:
-https://www.rust-lang.org/tools/install. Following this installation process will also allow for the 
-use of Cargo, which is Rust's compiler and dependency manager. More on the usage of cargo can be found in the building section.
-
-## Pulling Source Code
-
-This source code can accessed by cloning the repository to your machine with the command:
-`git clone git@github.com:Azure/azure-init.git`
+To install Rust see here: https://www.rust-lang.org/tools/install.
 
 ## Building the Project
 
