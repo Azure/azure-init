@@ -102,27 +102,22 @@ fi
 
 image=image-$epoch
 echo "*********************************************************************"
-echo "Deallocating and generalizing vm to capture image $image"
+echo "Capturing OsDisk snapshot of vm $vm with image $image"
 echo "*********************************************************************"
-az vm show -g $rg -n $vm
-az vm deallocate -g $rg -n $vm
-while [ "$(az vm get-instance-view -g $rg -n $vm --query 'instanceView.statuses[?code==`PowerState/deallocated`].displayStatus' -o tsv)" != "VM deallocated" ]
-do
-    echo "Waiting for VM to be deallocated..."
-    sleep 30
-done
-az vm generalize -g $rg -n $vm
-echo "Done"
+target_disk=$(az disk show --ids $(az vm show -g $rg -n $vm | jq .storageProfile.osDisk.managedDisk.id -r) | jq .name -r)
+az snapshot create -g $rg -n $vm-snapshot --source $target_disk
+az snapshot show -g $rg -n $vm-snapshot
 
 version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
 definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-subscription_id=$(az vm show -g $rg -n $vm | grep -oPm 1 '/subscriptions/\K[^/]*')
+subscription_id=$(az vm show -g $rg -n $vm | jq -r '.id')
+snapshot_id=$(az snapshot show -n $vm-snapshot -g $rg --query id --output tsv)
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
 echo "*********************************************************************"
-az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --virtual-machine /subscriptions/$subscription_id/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/$vm
+az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --os-snapshot $snapshot_id --target-regions "eastus" --replica-count 1
 if [[ $? -eq 0 ]]
 then
     echo "Image publishing finished"
