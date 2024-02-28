@@ -15,4 +15,4 @@ Feel free to [start a new discussion](https://github.com/Azure/azure-init/discus
 
 ## Microsoft Support Policy
 
-Support for the Azure-Init is limited to the resources listed above.
+Support for the azure-init is limited to the resources listed above.
