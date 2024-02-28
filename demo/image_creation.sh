@@ -106,7 +106,6 @@ echo "Capturing OsDisk snapshot of vm $vm with image $image"
 echo "*********************************************************************"
 target_disk=$(az disk show --ids $(az vm show -g $rg -n $vm | jq .storageProfile.osDisk.managedDisk.id -r) | jq .name -r)
 az snapshot create -g $rg -n $vm-snapshot --source $target_disk
-az snapshot show -g $rg -n $vm-snapshot
 
 version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
