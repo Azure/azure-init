@@ -55,7 +55,7 @@ storage=testagent$epoch
 location=eastus
 vm=testvm-$epoch
 ssh_key_path=~/.ssh/id_rsa.pub
-base_image=canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+base_image=canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest
 admin_username=testuser-$epoch
 
 echo "*********************************************************************"
@@ -102,23 +102,20 @@ fi
 
 image=image-$epoch
 echo "*********************************************************************"
-echo "Deallocating and generalizing vm to capture image $image"
+echo "Capturing OsDisk snapshot of vm $vm with image $image"
 echo "*********************************************************************"
-az vm deallocate -g $rg -n $vm
-az vm generalize -g $rg -n $vm
-az image create -g $rg -n $image --source $vm --hyper-v-generation V2
-echo "Done"
+target_disk=$(az disk show --ids $(az vm show -g $rg -n $vm | jq .storageProfile.osDisk.managedDisk.id -r) | jq .name -r)
+az snapshot create -g $rg -n $vm-snapshot --source $target_disk
 
 version=$(date '+%Y.%m%d.%H%M%S')
 gallery=testgalleryagent
-definition=testgallery
+definition=testgallery-gen1
 gallery_rg=temp-rg-rust-agent-testing
-image_id=$(az image show -g $rg -n $image | jq .id -r)
+snapshot_id=$(az snapshot show -n $vm-snapshot -g $rg --query id --output tsv)
 echo "*********************************************************************"
 echo "Publishing image version $version to $gallery/$definition"
 echo "*********************************************************************"
-az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --target-regions "eastus" --replica-count 1 --managed-image $image_id
-
+az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --os-snapshot $snapshot_id --target-regions "eastus" --replica-count 1
 if [[ $? -eq 0 ]]
 then
     echo "Image publishing finished"
