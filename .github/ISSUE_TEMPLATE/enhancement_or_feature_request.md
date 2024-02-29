@@ -9,20 +9,20 @@ assignees: ''
 
 ## Current situation
 
-__[ Please describe the current situation you would like to have improved ]__
+<!-- [ Please describe the current situation you would like to have improved ] -->
 
 ## Impact
 
-__[ Please describe the impact the lack of the feature requested is creating ]__
+<!-- [ Please describe the impact the lack of the feature requested is creating ] -->
 
 ## Ideal future situation
 
-__[ Please describe the future situation after the improvement was implemented ]__
+<!-- [ Please describe the future situation after the improvement was implemented ] -->
 
 ## **Implementation options
 
-__[ Optional: please provide one or more options for implementing the feature requested ]__
+<!-- [ Optional: please provide one or more options for implementing the feature requested ] -->
 
 ## Additional information
 
-__[ Please add any information that does not fit into any of the above sections here ]__
+<!-- [ Please add any information that does not fit into any of the above sections here ] -->
