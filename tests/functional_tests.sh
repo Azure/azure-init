@@ -25,7 +25,7 @@ if [ -z "${SUBSCRIPTION_ID}" ] ; then
 fi
 
 if [ ! -f "$PATH_TO_PUBLIC_SSH_KEY" ]; then
-    ssh-keygen -t rsa -b 4096 -f $PATH_TO_PUBLIC_SSH_KEY -N ""
+    ssh-keygen -t rsa -b 4096 -f "$PATH_TO_PRIVATE_SSH_KEY" -N ""
     echo "SSH key created."
 else
     echo "SSH key already exists."
