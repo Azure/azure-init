@@ -32,11 +32,12 @@ else
 fi
 
 # Log into Azure (this will open a browser window prompting you to log in)
-echo "Logging you into Azure"
-az login
-
-# Ensure Azure is logged in
-az account get-access-token -o none
+if az account get-access-token -o none; then
+    echo "Using existing Azure account"
+else
+    echo "Logging you into Azure"
+    az login
+fi
 
 # Set the subscription you want to use
 az account set --subscription $SUBSCRIPTION_ID
