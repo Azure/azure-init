@@ -4,15 +4,15 @@
 
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"
 EPOCH=$(date +%s)
-RG=cade-test-azprovagent-$EPOCH
-LOCATION=eastus
+RG="${RG:-e2etest-azinit-$EPOCH}"
+LOCATION="${LOCATION:-eastus}"
 PATH_TO_PUBLIC_SSH_KEY="$HOME/.ssh/id_rsa.pub"
 PATH_TO_PRIVATE_SSH_KEY="$HOME/.ssh/id_rsa"
-VM_NAME="AzProvAgentFunctionalTest"
-VM_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
-VM_SIZE="Standard_D2lds_v5"
-VM_ADMIN_USERNAME="azureuser"
-AZURE_SSH_KEY_NAME="azure-ssh-key"
+VM_NAME="${VM_NAME:-AzInitFunctionalTest}"
+VM_IMAGE="${VM_IMAGE:-Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest}"
+VM_SIZE="${VM_SIZE:-Standard_D2lds_v5}"
+VM_ADMIN_USERNAME="${VM_ADMIN_USERNAME:-azureuser}"
+AZURE_SSH_KEY_NAME="${AZURE_SSH_KEY_NAME:-azure-ssh-key}"
 VM_NAME_WITH_TIMESTAMP=$VM_NAME-$EPOCH
 
 set -e
