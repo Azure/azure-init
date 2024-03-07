@@ -9,24 +9,32 @@ assignees: ''
 
 ## Description
 
-__[ 1 paragraph concisely describing the bug ]__
+<!-- [ 1 paragraph concisely describing the bug ] -->
 
 ## Impact
 
-__[ 1 sentence detailing the impact this bug is creating for you ]__
+<!-- [ 1 sentence detailing the impact this bug is creating for you ] -->
 
 ## Environment and steps to reproduce
 
-1. **Set-up**: __[ describe the environment the agent was running in when encountering the bug; image/distro, instance type, etc. ]__
-2. **Action(s)**: __[ sequence of actions that led to triggering the bug so maintainers can reproduce it; see example below ]__
-  a. __[ ... initiated VM provisioning via the command line ... ]__
-  b. __[ ... provisioning started ... ]__
-3. **Error**: __[describe the error that was triggered]__
+<!-- [ describe the environment the agent was running in when encountering the bug; image/distro, instance type, etc. ] -->
+1. **Set-up**: 
+
+<!-- [ sequence of actions that led to triggering the bug so maintainers can reproduce it; see example below ] -->
+2. **Action(s)**:
+    <!-- [ ... initiated VM provisioning via the command line ... ] -->
+    a. 
+
+    <!-- [ ... provisioning started ... ] -->
+    b.
+
+<!-- [describe the error that was triggered] -->
+3. **Error**:
 
 ## Expected behavior
 
-__[ describe what you expected to happen at 4. above but instead got an error ]__
+<!-- [ describe what you expected to happen at 4. above but instead got an error ] -->
 
 ## Additional information
 
-__[ Please add any information like serial console logs etc. here ]__
+<!-- [ Please add any information like serial console logs etc. here ] -->
