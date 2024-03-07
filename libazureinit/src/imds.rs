@@ -18,9 +18,10 @@ pub struct PublicKeys {
     pub path: String,
 }
 
-pub async fn query_imds() -> Result<String, Box<dyn std::error::Error>> {
+pub async fn query_imds(
+    client: &Client,
+) -> Result<String, Box<dyn std::error::Error>> {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
-    let client = Client::new();
     let mut headers = HeaderMap::new();
 
     headers.insert("Metadata", HeaderValue::from_static("true"));

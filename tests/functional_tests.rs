@@ -3,13 +3,25 @@
 
 use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::imds::PublicKeys;
-use libazureinit::{goalstate, user};
+use libazureinit::{
+    goalstate,
+    reqwest::{header, Client},
+    user,
+};
 
 use std::env;
 
 #[tokio::main]
 async fn main() {
     let cli_args: Vec<String> = env::args().collect();
+    let mut default_headers = header::HeaderMap::new();
+    let user_agent = header::HeaderValue::from_str("azure-init").unwrap();
+    default_headers.insert(header::USER_AGENT, user_agent);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .default_headers(default_headers)
+        .build()
+        .unwrap();
 
     println!();
     println!("**********************************");
@@ -19,7 +31,7 @@ async fn main() {
 
     println!("Querying wireserver for Goalstate");
 
-    let get_goalstate_result = goalstate::get_goalstate().await;
+    let get_goalstate_result = goalstate::get_goalstate(&client).await;
     let vm_goalstate = match get_goalstate_result {
         Ok(vm_goalstate) => vm_goalstate,
         Err(_err) => return,
@@ -29,7 +41,8 @@ async fn main() {
     println!();
     println!("Reporting VM Health to wireserver");
 
-    let report_health_result = goalstate::report_health(vm_goalstate).await;
+    let report_health_result =
+        goalstate::report_health(&client, vm_goalstate).await;
     match report_health_result {
         Ok(report_health) => report_health,
         Err(_err) => return,

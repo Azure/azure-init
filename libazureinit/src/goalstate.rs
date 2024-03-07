@@ -39,10 +39,10 @@ pub struct RoleInstance {
     instance_id: String,
 }
 
-pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
+pub async fn get_goalstate(
+    client: &Client,
+) -> Result<Goalstate, Box<dyn std::error::Error>> {
     let url = "http://168.63.129.16/machine/?comp=goalstate";
-
-    let client = Client::new();
 
     let mut headers = HeaderMap::new();
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
@@ -64,11 +64,10 @@ pub async fn get_goalstate() -> Result<Goalstate, Box<dyn std::error::Error>> {
 }
 
 pub async fn report_health(
+    client: &Client,
     goalstate: Goalstate,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = "http://168.63.129.16/machine/?comp=health";
-
-    let client = Client::new();
 
     let mut headers = HeaderMap::new();
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
