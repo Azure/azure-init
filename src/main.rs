@@ -2,11 +2,28 @@
 // Licensed under the MIT License.
 
 use libazureinit::distro::{Distribution, Distributions};
-use libazureinit::{goalstate, imds, media, user};
+use libazureinit::{
+    goalstate, imds, media,
+    reqwest::{header, Client},
+    user,
+};
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() {
-    let query_result = imds::query_imds().await;
+    let mut default_headers = header::HeaderMap::new();
+    let user_agent = header::HeaderValue::from_str(
+        format!("azure-init v{VERSION}").as_str(),
+    )
+    .unwrap();
+    default_headers.insert(header::USER_AGENT, user_agent);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .default_headers(default_headers)
+        .build()
+        .unwrap();
+    let query_result = imds::query_imds(&client).await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
         Err(_err) => return,
@@ -78,13 +95,14 @@ async fn main() {
         .set_hostname(hostname.as_str())
         .expect("Failed to set hostname");
 
-    let get_goalstate_result = goalstate::get_goalstate().await;
+    let get_goalstate_result = goalstate::get_goalstate(&client).await;
     let vm_goalstate = match get_goalstate_result {
         Ok(vm_goalstate) => vm_goalstate,
         Err(_err) => return,
     };
 
-    let report_health_result = goalstate::report_health(vm_goalstate).await;
+    let report_health_result =
+        goalstate::report_health(&client, vm_goalstate).await;
     match report_health_result {
         Ok(report_health) => report_health,
         Err(_err) => return,
