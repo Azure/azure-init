@@ -95,7 +95,9 @@ async fn main() {
 
     file_path.push_str("/.ssh");
 
-    user::set_ssh_keys(keys, username.to_string(), file_path.clone()).await;
+    user::set_ssh_keys(keys, username.to_string(), file_path.clone())
+        .await
+        .unwrap();
 
     println!();
     println!("Attempting to set the VM hostname");
