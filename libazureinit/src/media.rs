@@ -5,9 +5,7 @@ use std::fs;
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::Read;
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 
 use serde::Deserialize;
 use serde_xml_rs::from_str;
@@ -66,28 +64,6 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-pub fn mount_media() {
-    let _mount_media = Command::new("mount")
-        .arg("-o")
-        .arg("ro")
-        .arg("/dev/sr0")
-        .arg("/run/azure-init/tmp/")
-        .status()
-        .expect("Failed to execute mount command.");
-}
-
-pub fn remove_media() {
-    let _unmount_media = Command::new("umount")
-        .arg("/run/azure-init/tmp/")
-        .status()
-        .expect("Failed to execute unmount command.");
-
-    let _eject_media = Command::new("eject")
-        .arg("/dev/sr0")
-        .status()
-        .expect("Failed to execute eject command.");
-}
-
 pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "/run/azure-init/tmp/";
 
@@ -127,25 +103,6 @@ pub fn parse_ovf_env(
     }
 
     Ok(environment)
-}
-
-pub fn allow_password_authentication() -> Result<(), Box<dyn std::error::Error>>
-{
-    let file_path = "/etc/ssh/sshd_config.d/40-azure-init.conf";
-    let password_authentication = "PasswordAuthentication yes";
-
-    let mut file =
-        File::create(file_path).expect("Unable to create sshd_config file.");
-    file.write_all(password_authentication.as_bytes())
-        .expect("Unable to write to sshd_config file.");
-
-    let _restart_ssh = Command::new("systemctl")
-        .arg("restart")
-        .arg("ssh")
-        .status()
-        .expect("Failed to execute restart ssh command.");
-
-    Ok(())
 }
 
 #[cfg(test)]

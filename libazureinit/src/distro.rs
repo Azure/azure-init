@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::io::Write;
 use std::process::Command;
-use std::process::Stdio;
 
 pub trait Distribution {
     fn create_user(
@@ -60,32 +58,11 @@ impl Distribution for Distributions {
                         Err(err) => return Err(err.to_string()),
                     };
                 } else {
-                    let input = format!("{}:{}", username, password);
-
-                    let mut output = Command::new("chpasswd")
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::inherit())
-                        .spawn()
-                        .expect("Failed to run chpasswd.");
-
-                    let mut stdin =
-                        output.stdin.as_ref().ok_or("Failed to open stdin")?;
-
-                    stdin.write_all(input.as_bytes()).map_err(|error| {
-                        format!("Failed to write to stdin: {}", error)
-                    })?;
-
-                    let status = output.wait().map_err(|error| {
-                        format!("Failed to wait for stdin command: {}", error)
-                    })?;
-
-                    if !status.success() {
-                        return Err(format!(
-                            "Chpasswd command failed with exit code {}",
-                            status.code().unwrap_or(-1)
-                        ));
-                    }
+                    // creating user with a non-empty password is not allowed.
+                    return Err(
+                        "Failed to create user with non-empty password"
+                            .to_string(),
+                    );
                 }
 
                 Ok(0)
