@@ -13,7 +13,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn get_username(
     imds_body: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    if imds::get_provision_with_password(&imds_body).map_err(|_| {
+    if imds::is_password_authentication_disabled(&imds_body).map_err(|_| {
         "Failed to get disable password authentication".to_string()
     })? {
         // password authentication is disabled

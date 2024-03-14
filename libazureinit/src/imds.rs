@@ -80,7 +80,7 @@ pub fn get_hostname(
     Ok(hostname)
 }
 
-pub fn get_provision_with_password(
+pub fn is_password_authentication_disabled(
     imds_body: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(imds_body)
@@ -101,7 +101,8 @@ pub fn get_provision_with_password(
 #[cfg(test)]
 mod tests {
     use super::{
-        get_hostname, get_provision_with_password, get_ssh_keys, get_username,
+        get_hostname, get_ssh_keys, get_username,
+        is_password_authentication_disabled,
     };
 
     #[test]
@@ -210,8 +211,9 @@ mod tests {
         }"#
         .to_string();
 
-        let provision_with_password = get_provision_with_password(&file_body)
-            .expect("Failed to interpret disablePasswordAuthentication.");
+        let provision_with_password =
+            is_password_authentication_disabled(&file_body)
+                .expect("Failed to interpret disablePasswordAuthentication.");
 
         assert_eq!(provision_with_password, true);
     }
