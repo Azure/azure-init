@@ -58,12 +58,12 @@ async fn main() {
     let query_result = imds::query_imds(&client).await;
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
     let username = match get_username(imds_body.clone()) {
         Ok(res) => res,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
     let mut file_path = "/home/".to_string();
@@ -79,7 +79,7 @@ async fn main() {
     let get_ssh_key_result = imds::get_ssh_keys(imds_body.clone());
     let keys = match get_ssh_key_result {
         Ok(keys) => keys,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
     file_path.push_str("/.ssh");
@@ -89,7 +89,7 @@ async fn main() {
     let get_hostname_result = imds::get_hostname(imds_body.clone());
     let hostname = match get_hostname_result {
         Ok(hostname) => hostname,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
     Distributions::from("ubuntu")
@@ -99,13 +99,13 @@ async fn main() {
     let get_goalstate_result = goalstate::get_goalstate(&client).await;
     let vm_goalstate = match get_goalstate_result {
         Ok(vm_goalstate) => vm_goalstate,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
     let report_health_result =
         goalstate::report_health(&client, vm_goalstate).await;
     match report_health_result {
         Ok(report_health) => report_health,
-        Err(_err) => return,
+        Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 }
