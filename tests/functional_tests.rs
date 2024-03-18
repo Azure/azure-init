@@ -68,18 +68,6 @@ async fn main() {
     println!("User {} was successfully created", username.as_str());
 
     println!();
-    println!(
-        "Attempting to create user {} with password",
-        username.as_str()
-    );
-
-    Distributions::from("ubuntu")
-        .create_user("test_user_2", "azureProvisioningAgentPassword")
-        .expect("Failed to create user");
-
-    println!("User {} was successfully created", username.as_str());
-
-    println!();
     println!("Attempting to create user's SSH directory");
 
     let _create_directory =
