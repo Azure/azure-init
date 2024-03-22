@@ -10,6 +10,7 @@ description = "A reference implementation for provisioning Linux VMs on Azure."
 
 [dependencies]
 exitcode = "1.1.2"
+anyhow = "1.0.81"
 tokio = { version = "1", features = ["full"] }
 
 [dependencies.libazureinit]

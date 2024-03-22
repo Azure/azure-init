@@ -3,13 +3,12 @@
 
 use std::process::Command;
 
+use crate::error::Error;
+
 pub trait Distribution {
-    fn create_user(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<i32, String>;
-    fn set_hostname(&self, hostname: &str) -> Result<i32, String>;
+    fn create_user(&self, username: &str, password: &str)
+        -> Result<i32, Error>;
+    fn set_hostname(&self, hostname: &str) -> Result<i32, Error>;
 }
 
 pub enum Distributions {
@@ -22,13 +21,13 @@ impl Distribution for Distributions {
         &self,
         username: &str,
         password: &str,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, Error> {
         match self {
             Distributions::Debian | Distributions::Ubuntu => {
                 let mut home_path = "/home/".to_string();
                 home_path.push_str(username);
 
-                match Command::new("useradd")
+                let status = Command::new("useradd")
                     .arg(username)
                     .arg("--comment")
                     .arg(
@@ -39,46 +38,48 @@ impl Distribution for Distributions {
                     .arg("-d")
                     .arg(home_path.clone())
                     .arg("-m")
-                    .status(){
-                        Ok(_)=>(),
-                        Err(err) => return Err(err.to_string()),
-                    };
+                    .status()?;
+                if !status.success() {
+                    return Err(Error::SubprocessFailed {
+                        command: "useradd".to_string(),
+                        status,
+                    });
+                }
 
                 if password.is_empty() {
-                    match Command::new("passwd")
+                    let status = Command::new("passwd")
                         .arg("-d")
                         .arg(username)
-                        .status()
-                    {
-                        Ok(status_code) => {
-                            if !status_code.success() {
-                                return Err("Failed to create user".to_string());
-                            }
-                        }
-                        Err(err) => return Err(err.to_string()),
-                    };
+                        .status()?;
+                    if !status.success() {
+                        return Err(Error::SubprocessFailed {
+                            command: "passwd".to_string(),
+                            status,
+                        });
+                    }
                 } else {
                     // creating user with a non-empty password is not allowed.
-                    return Err(
-                        "Failed to create user with non-empty password"
-                            .to_string(),
-                    );
+                    return Err(Error::NonEmptyPassword);
                 }
 
                 Ok(0)
             }
         }
     }
-    fn set_hostname(&self, hostname: &str) -> Result<i32, String> {
+    fn set_hostname(&self, hostname: &str) -> Result<i32, Error> {
         match self {
             Distributions::Debian | Distributions::Ubuntu => {
-                match Command::new("hostnamectl")
+                let status = Command::new("hostnamectl")
                     .arg("set-hostname")
                     .arg(hostname)
-                    .status()
-                {
-                    Ok(status_code) => Ok(status_code.code().unwrap_or(1)),
-                    Err(err) => Err(err.to_string()),
+                    .status()?;
+                if status.success() {
+                    Ok(status.code().unwrap_or(1))
+                } else {
+                    Err(Error::SubprocessFailed {
+                        command: "chpasswd".to_string(),
+                        status,
+                    })
                 }
             }
         }

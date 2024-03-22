@@ -10,6 +10,8 @@ use std::os::unix::fs::PermissionsExt;
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
+use crate::error::Error;
+
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
@@ -69,40 +71,37 @@ pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
 
     create_dir_all(file_path)?;
 
-    let metadata = fs::metadata(file_path).unwrap();
+    let metadata = fs::metadata(file_path)?;
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o700);
-    fs::set_permissions(file_path, new_permissions).unwrap();
+    fs::set_permissions(file_path, new_permissions)?;
 
     Ok(())
 }
 
-pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
+pub fn read_ovf_env_to_string() -> Result<String, Error> {
     let file_path = "/run/azure-init/tmp/ovf-env.xml";
-    let mut file = File::open(file_path).expect("Failed to open file");
+    let mut file = File::open(file_path)?;
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .expect("Failed to read file");
+    file.read_to_string(&mut contents)?;
 
     Ok(contents)
 }
 
-pub fn parse_ovf_env(
-    ovf_body: &str,
-) -> Result<Environment, Box<dyn std::error::Error>> {
+pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
 
-    if environment
+    if !environment
         .provisioning_section
         .linux_prov_conf_set
         .password
         .is_empty()
     {
-        return Err("Password is empty".into());
+        Err(Error::NonEmptyPassword)
+    } else {
+        Ok(environment)
     }
-
-    Ok(environment)
 }
 
 #[cfg(test)]
@@ -122,7 +121,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
-                    <UserPassword>mypassword</UserPassword>
+                    <UserPassword></UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -157,7 +156,7 @@ mod tests {
                 .provisioning_section
                 .linux_prov_conf_set
                 .password,
-            "mypassword"
+            ""
         );
         assert_eq!(
             environment
@@ -196,7 +195,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
-                    <UserPassword>mypassword</UserPassword>
+                    <UserPassword></UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -230,7 +229,7 @@ mod tests {
                 .provisioning_section
                 .linux_prov_conf_set
                 .password,
-            "mypassword"
+            ""
         );
         assert_eq!(
             environment
@@ -256,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ovf_env_missing_password() {
+    fn test_get_ovf_env_password_provided() {
         let ovf_body = r#"
         <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1" 
             xmlns:oe="http://schemas.dmtf.org/ovf/environment/1" 
@@ -268,6 +267,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
+                    <UserPassword>mypassword</UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -286,49 +286,9 @@ mod tests {
                 </PlatformSettings>
             </wa:PlatformSettingsSection>
         </Environment>"#;
-
-        assert!(parse_ovf_env(ovf_body)
-            .err()
-            .unwrap()
-            .downcast::<std::io::Error>()
-            .is_err());
-    }
-
-    #[test]
-    fn test_get_ovf_env_missing_three() {
-        let ovf_body = r#"
-        <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1" 
-            xmlns:oe="http://schemas.dmtf.org/ovf/environment/1" 
-            xmlns:wa="http://schemas.microsoft.com/windowsazure" 
-            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"> 
-            <wa:ProvisioningSection>
-                <wa:Version>1.0</wa:Version>
-                <LinuxProvisioningConfigurationSet xmlns="http://schemas.microsoft.com/windowsazure" 
-                xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-                    <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
-                    <UserName>myusername</UserName>
-                    <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
-                    <HostName>myhostname</HostName>
-                </LinuxProvisioningConfigurationSet>
-            </wa:ProvisioningSection>
-            <wa:PlatformSettingsSection>
-                <wa:Version>1.0</wa:Version>
-                <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure" 
-                    xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-                    <KmsServerHostname>kms.core.windows.net</KmsServerHostname>
-                    <ProvisionGuestAgent>true</ProvisionGuestAgent>
-                    <GuestAgentPackageName i:nil="true"/>
-                    <RetainWindowsPEPassInUnattend>true</RetainWindowsPEPassInUnattend>
-                    <RetainOfflineServicingPassInUnattend>true</RetainOfflineServicingPassInUnattend>
-                    <EnableTrustedImageIdentifier>false</EnableTrustedImageIdentifier>
-                </PlatformSettings>
-            </wa:PlatformSettingsSection>
-        </Environment>"#;
-
-        assert!(parse_ovf_env(ovf_body)
-            .err()
-            .unwrap()
-            .downcast::<std::io::Error>()
-            .is_err());
+        match parse_ovf_env(ovf_body) {
+            Err(Error::NonEmptyPassword) => {}
+            _ => panic!("Non-empty passwords aren't allowed"),
+        };
     }
 }

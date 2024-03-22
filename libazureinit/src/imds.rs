@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json;
 use serde_json::Value;
 
+use crate::error::Error;
+
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct PublicKeys {
     #[serde(rename = "keyData")]
@@ -18,9 +20,7 @@ pub struct PublicKeys {
     pub path: String,
 }
 
-pub async fn query_imds(
-    client: &Client,
-) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn query_imds(client: &Client) -> Result<String, Error> {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
     let mut headers = HeaderMap::new();
 
@@ -32,64 +32,47 @@ pub async fn query_imds(
     if response.status().is_success() {
         let imds_body = response.text().await?;
 
-        return Ok(imds_body);
+        Ok(imds_body)
+    } else {
+        Err(Error::HttpStatus {
+            endpoint: url.to_owned(),
+            status: response.status(),
+        })
     }
-
-    println!(
-        "Get IMDS request failed with status code: {}",
-        response.status()
-    );
-    println!("{:?}", response.text().await);
-
-    Err(Box::from("Failed Get Call"))
 }
 
-pub fn get_ssh_keys(
-    imds_body: String,
-) -> Result<Vec<PublicKeys>, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body)
-        .expect("Failed to parse the IMDS JSON.");
+pub fn get_ssh_keys(imds_body: String) -> Result<Vec<PublicKeys>, Error> {
+    let data: Value = serde_json::from_str(&imds_body)?;
     let public_keys =
-        Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"])
-            .expect("Failed to deserialize the public ssh keys.");
+        Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"])?;
 
     Ok(public_keys)
 }
 
-pub fn get_username(
-    imds_body: String,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body)
-        .expect("Failed to parse the IMDS JSON.");
+pub fn get_username(imds_body: String) -> Result<String, Error> {
+    let data: Value = serde_json::from_str(&imds_body)?;
     let username =
-        String::deserialize(&data["compute"]["osProfile"]["adminUsername"])
-            .expect("Failed to deserialize the admin username.");
+        String::deserialize(&data["compute"]["osProfile"]["adminUsername"])?;
 
     Ok(username)
 }
 
-pub fn get_hostname(
-    imds_body: String,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(&imds_body)
-        .expect("Failed to parse the IMDS JSON.");
+pub fn get_hostname(imds_body: String) -> Result<String, Error> {
+    let data: Value = serde_json::from_str(&imds_body)?;
     let hostname =
-        String::deserialize(&data["compute"]["osProfile"]["computerName"])
-            .expect("Failed to deserialize the hostname.");
+        String::deserialize(&data["compute"]["osProfile"]["computerName"])?;
 
     Ok(hostname)
 }
 
 pub fn is_password_authentication_disabled(
     imds_body: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let data: Value = serde_json::from_str(imds_body)
-        .expect("Failed to parse the IMDS JSON.");
+) -> Result<bool, Error> {
+    let data: Value = serde_json::from_str(imds_body)?;
 
     let provision_with_password = String::deserialize(
         &data["compute"]["osProfile"]["disablePasswordAuthentication"],
-    )
-    .expect("Failed to deserialize the provisioning type.");
+    )?;
 
     if provision_with_password == "true" {
         return Ok(true);
