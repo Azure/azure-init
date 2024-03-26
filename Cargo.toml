@@ -16,6 +16,10 @@ tokio = { version = "1", features = ["full"] }
 path = "libazureinit"
 version = "0.1.0"
 
+[dependencies.azurekvp]
+path = "azurekvp"
+version = "0.1.0"
+
 [profile.dev]
 incremental = true
 
@@ -30,4 +34,5 @@ path = "tests/functional_tests.rs"
 [workspace]
 members = [
     "libazureinit",
+    "azurekvp",
 ]
