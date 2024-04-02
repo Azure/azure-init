@@ -43,3 +43,5 @@ jobs:
           if [ $(grep -c 'warning' clippy.log || true) != '0' ]; then
             gh issue create --title "Clippy discovered warnings in the codebase" --body-file clippy.log
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
