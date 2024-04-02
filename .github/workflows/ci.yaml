@@ -36,8 +36,13 @@ jobs:
         with:
           command: test
           args: --verbose
-      - name: Run clippy
+      - name: Run clippy 
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --verbose -- --deny warnings
+          args: --verbose -- --deny warnings > clippy.log || true
+      - name: Create issue if clippy found warnings
+        run: |
+          if [ $(grep -c 'warning' clippy.log || true) != '0' ]; then
+            gh issue create --title "Clippy discovered warnings in the codebase" --body-file clippy.log
+          fi
