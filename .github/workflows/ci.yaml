@@ -40,7 +40,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --verbose -- --deny warnings 2>&1 | tee clippy.log || true
+          args: --verbose -- --deny warnings | tee clippy.log || true
       - name: Create issue if clippy found warnings
         run: |
           if [ $(grep -c 'warning' clippy.log || true) != '0' ]; then
