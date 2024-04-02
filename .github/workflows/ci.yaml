@@ -39,8 +39,7 @@ jobs:
       - name: Run clippy 
         uses: actions-rs/cargo@v1
         with:
-          command: clippy
-          args: --verbose -- --deny warnings > clippy.log || true
+          command: sh -c 'cargo clippy --verbose -- --deny warnings > clippy.log || true'
       - name: Create issue if clippy found warnings
         run: |
           if [ $(grep -c 'warning' clippy.log || true) != '0' ]; then
