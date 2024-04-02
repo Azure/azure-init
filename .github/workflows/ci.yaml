@@ -37,10 +37,6 @@ jobs:
           command: test
           args: --verbose
       - name: Run Clippy and redirect output to file
-        uses: actions-rs/cargo@v1
-        with:
-          command: cargo clippy --verbose -- --deny warnings > clippy.log 2>&1 || true
-      - name: run clippy pt 2
         run: cargo clippy --verbose -- --deny warnings > clippy.log 2>&1 || true
       - name: Create issue if clippy found warnings
         run: |
