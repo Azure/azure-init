@@ -6,6 +6,8 @@ use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::Command;
 
 use serde::Deserialize;
 use serde_xml_rs::from_str;
@@ -66,27 +68,92 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = "/run/azure-init/tmp/";
+pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
+pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 
-    create_dir_all(file_path)?;
+// Some zero-sized structs that just provide states for our state machine
+pub struct Mounted;
+pub struct Unmounted;
 
-    let metadata = fs::metadata(file_path)?;
-    let permissions = metadata.permissions();
-    let mut new_permissions = permissions.clone();
-    new_permissions.set_mode(0o700);
-    fs::set_permissions(file_path, new_permissions)?;
-
-    Ok(())
+pub struct Media<State = Unmounted> {
+    device_path: PathBuf,
+    mount_path: PathBuf,
+    state: std::marker::PhantomData<State>,
 }
 
-pub fn read_ovf_env_to_string() -> Result<String, Error> {
-    let file_path = "/run/azure-init/tmp/ovf-env.xml";
-    let mut file = File::open(file_path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
+impl Media<Unmounted> {
+    pub fn new(device_path: PathBuf, mount_path: PathBuf) -> Media<Unmounted> {
+        Media {
+            device_path,
+            mount_path,
+            state: std::marker::PhantomData,
+        }
+    }
 
-    Ok(contents)
+    pub fn mount(self) -> Result<Media<Mounted>, Error> {
+        create_dir_all(&self.mount_path)?;
+
+        let metadata = fs::metadata(&self.mount_path)?;
+        let permissions = metadata.permissions();
+        let mut new_permissions = permissions.clone();
+        new_permissions.set_mode(0o700);
+        fs::set_permissions(&self.mount_path, new_permissions)?;
+
+        let mount_status = Command::new("mount")
+            .arg("-o")
+            .arg("ro")
+            .arg(&self.device_path)
+            .arg(&self.mount_path)
+            .status()?;
+
+        if !mount_status.success() {
+            Err(Error::SubprocessFailed {
+                command: "mount".to_string(),
+                status: mount_status,
+            })
+        } else {
+            Ok(Media {
+                device_path: self.device_path,
+                mount_path: self.mount_path,
+                state: std::marker::PhantomData,
+            })
+        }
+    }
+}
+
+impl Media<Mounted> {
+    pub fn unmount(self) -> Result<(), Error> {
+        let umount_status =
+            Command::new("umount").arg(self.mount_path).status()?;
+        if !umount_status.success() {
+            return Err(Error::SubprocessFailed {
+                command: "umount".to_string(),
+                status: umount_status,
+            });
+        }
+
+        let eject_status =
+            Command::new("eject").arg(self.device_path).status()?;
+        if !eject_status.success() {
+            Err(Error::SubprocessFailed {
+                command: "eject".to_string(),
+                status: eject_status,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
+        let mut file_path = self.mount_path.clone();
+        file_path.push("ovf-env.xml");
+        let mut file =
+            File::open(file_path.to_str().unwrap_or(PATH_MOUNT_POINT))?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        Ok(contents)
+    }
 }
 
 pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
