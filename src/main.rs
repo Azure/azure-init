@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -9,20 +10,33 @@ use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
+    media::Media,
     reqwest::{header, Client},
     user,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn get_username(imds_body: String) -> Result<String, LibError> {
+fn get_username(imds_body: String) -> Result<String, anyhow::Error> {
     if imds::is_password_authentication_disabled(&imds_body)? {
         // password authentication is disabled
-        imds::get_username(imds_body.clone())
+        Ok(imds::get_username(imds_body.clone())?)
     } else {
         // password authentication is enabled
-        let ovf_body = media::read_ovf_env_to_string()?;
+        let mount_media = Media::new(
+            PathBuf::from(media::PATH_MOUNT_DEVICE),
+            PathBuf::from(media::PATH_MOUNT_POINT),
+        );
+        let mounted = mount_media
+            .mount()
+            .with_context(|| "Failed to mount media.")?;
+
+        let ovf_body = mounted.read_ovf_env_to_string()?;
         let environment = media::parse_ovf_env(ovf_body.as_str())?;
+
+        mounted
+            .unmount()
+            .with_context(|| "Failed to remove media.")?;
 
         Ok(environment
             .provisioning_section
