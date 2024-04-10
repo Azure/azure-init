@@ -1,40 +1,67 @@
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::TracerProvider;
-use opentelemetry_stdout as stdout;
-use std::fs::File;
-use std::io::{self, Write};
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+use opentelemetry::trace::{TracerProvider, Tracer};
+use opentelemetry_sdk::export::trace::SpanExporter;
 use tracing::{error, span};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use std::fs::File;
+use std::io::Write;
+use std::pin::Pin;
+use std::future::Future;
+use opentelemetry::trace::TraceError;
 
-fn main() {
-   // Create a new OpenTelemetry trace pipeline that prints to stdout
-   let provider = TracerProvider::builder()
-       .with_simple_exporter(stdout::SpanExporter::default())
-       .build();
-   let tracer = provider.tracer("readme_example");
 
-   // Specify the log file path
-   let log_file_path = "azurekvp/src/spans.log";
-   let file_name_prefix = "spans.log";
-
-   // Check if the log file exists, and create it if not
-   if !std::path::Path::new(log_file_path).exists() {
-       let _ = File::create(log_file_path).expect("Failed to create log file");
+#[derive(Debug)]
+struct FileExporter {
+   file: File,
+}
+impl FileExporter {
+   fn new(file: File) -> Self {
+       FileExporter { file }
    }
-   // Create a file appender using tracing-appender
-   let appender = RollingFileAppender::new(Rotation:: NEVER, log_file_path, file_name_prefix);
+}
+impl SpanExporter for FileExporter {
+    fn export(&mut self, batch: Vec<opentelemetry_sdk::export::trace::SpanData>) -> Pin<Box<dyn Future<Output = Result<(), TraceError>> + Send + 'static>> {
+        Box::pin(async move {
+            for span_data in batch {
+                let span_json = match serde_json::to_string(&span_data) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!("Failed to serialize span data: {:?}", e);
+                        String::default()
+                    }
+                };
+                if let Err(e) = writeln!(self.file, "{}", span_json) {
+                    error!("Failed to write span data to file: {:?}", e);
+                }
+            }
+            Ok(())
+        })
+    }
+    fn shutdown(&mut self) {}
+ }
+fn main() {
+   // Open a file for writing spans
+   let log_file_path = "spans.log";
+   let file = File::create(log_file_path).expect("Failed to create file");
+   let exporter = FileExporter::new(file);
 
-   // Create a tracing layer with the configured tracer and file appender
+   // Create a new OpenTelemetry trace pipeline with custom file exporter
+   let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+       .with_simple_exporter(exporter)
+       .build();
+
+   let tracer = provider.tracer("readme_example");
+   // Create a tracing layer with the configured tracer
+   
    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-   let subscriber = Registry::default()
-        .with(telemetry)
-        .with(Layer::new().with_writer(appender));
-       //.with(FmtSpan::default().with_writer(appender));
-    
-   // Use the tracing subscriber `Registry`
+
+   // Use the tracing subscriber `Registry`, or any other subscriber
+   // that impls `LookupSpan`
+   let subscriber = Registry::default().with(telemetry);
+
+   // Trace executed code
    tracing::subscriber::with_default(subscriber, || {
        // Spans will be sent to the configured OpenTelemetry exporter
        let root = span!(tracing::Level::TRACE, "app_start", work_units = 2);
