@@ -11,12 +11,15 @@ description = "A binary library for implementing OpenTelemetry KVP for Linux VMs
 [dependencies]
 opentelemetry = "0.21"
 opentelemetry_sdk = "0.21"
-opentelemetry-stdout = "0.2.0"
+opentelemetry-stdout = { version = "0.2.0", features = ["trace"] }
 tracing = "0.1"
-tracing-opentelemetry = "0.11"
-serde = { version = "1.0", features = ["derive"] }
+tracing-opentelemetry = "0.22"
+serde = { version = "1.0" }
 serde_json = "1.0.68"
 tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["full"] }
+nix = "0.22.0"
+
 
 
 [[bin]]

@@ -1,71 +1,57 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-use opentelemetry::trace::{TracerProvider, Tracer};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::TracerProvider;
 use opentelemetry_sdk::export::trace::SpanExporter;
+use opentelemetry_stdout as stdout;
 use tracing::{error, span};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
 use std::fs::File;
-use std::io::Write;
-use std::pin::Pin;
-use std::future::Future;
-use opentelemetry::trace::TraceError;
+use std::io::{self, Write};
+use nix::unistd::dup2;
+use nix::libc;
+use std::os::fd::AsRawFd;
 
 
-#[derive(Debug)]
-struct FileExporter {
-   file: File,
-}
-impl FileExporter {
-   fn new(file: File) -> Self {
-       FileExporter { file }
-   }
-}
-impl SpanExporter for FileExporter {
-    fn export(&mut self, batch: Vec<opentelemetry_sdk::export::trace::SpanData>) -> Pin<Box<dyn Future<Output = Result<(), TraceError>> + Send + 'static>> {
-        Box::pin(async move {
-            for span_data in batch {
-                let span_json = match serde_json::to_string(&span_data) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        error!("Failed to serialize span data: {:?}", e);
-                        String::default()
-                    }
-                };
-                if let Err(e) = writeln!(self.file, "{}", span_json) {
-                    error!("Failed to write span data to file: {:?}", e);
-                }
-            }
-            Ok(())
-        })
-    }
-    fn shutdown(&mut self) {}
- }
-fn main() {
-   // Open a file for writing spans
-   let log_file_path = "spans.log";
-   let file = File::create(log_file_path).expect("Failed to create file");
-   let exporter = FileExporter::new(file);
+fn main() -> io::Result<()> {
+    // Specify the log file path
+    let log_file_path = "spans.log";
 
-   // Create a new OpenTelemetry trace pipeline with custom file exporter
-   let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-       .with_simple_exporter(exporter)
-       .build();
+    // Create a new file for writing
+    let file = File::create(log_file_path)?;
 
-   let tracer = provider.tracer("readme_example");
-   // Create a tracing layer with the configured tracer
-   
-   let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    // Duplicate file descriptor to stdout
+    let stdout_fd = file.as_raw_fd();
+    dup2(stdout_fd, libc::STDOUT_FILENO)?;
 
-   // Use the tracing subscriber `Registry`, or any other subscriber
-   // that impls `LookupSpan`
-   let subscriber = Registry::default().with(telemetry);
+    // Create a new OpenTelemetry trace pipeline that prints to stdout
+    let provider = TracerProvider::builder()
+        .with_simple_exporter(stdout::SpanExporter::default())
+        .build();
+    let tracer = provider.tracer("readme_example");
 
-   // Trace executed code
-   tracing::subscriber::with_default(subscriber, || {
-       // Spans will be sent to the configured OpenTelemetry exporter
-       let root = span!(tracing::Level::TRACE, "app_start", work_units = 2);
-       let _enter = root.enter();
-       error!("This event will be logged in the root span.");
-   });
+    // Create a tracing layer with the configured tracer
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Use the tracing subscriber `Registry`, or any other subscriber
+    // that impls `LookupSpan`
+    let subscriber = Registry::default().with(telemetry);
+
+    // Trace executed code
+    tracing::subscriber::with_default(subscriber, || {
+        // Spans will be sent to the configured OpenTelemetry exporter
+        let root = span!(tracing::Level::TRACE, "app_start", work_units = 2);
+        let _enter = root.enter();
+
+        // Error events will be logged in the root span
+        error!("This event will be logged in the root span.");
+
+        // Redirect stdout to the file after tracing setup
+        let file = File::create(log_file_path)?;
+        let stdout_fd = file.as_raw_fd();
+        dup2(stdout_fd, libc::STDOUT_FILENO)?;
+
+        Ok(())
+    })
 }
