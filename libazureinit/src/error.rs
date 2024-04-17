@@ -29,4 +29,6 @@ pub enum Error {
     UserMissing { user: String },
     #[error("Provisioning a user with a non-empty password is not supported")]
     NonEmptyPassword,
+    #[error("Unable to get list of block devices")]
+    BlockUtils(#[from] block_utils::BlockUtilsError),
 }

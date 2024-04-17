@@ -14,7 +14,7 @@ use serde_xml_rs::from_str;
 
 use crate::error::Error;
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
     pub provisioning_section: ProvisioningSection,
@@ -22,7 +22,7 @@ pub struct Environment {
     pub platform_settings_section: PlatformSettingsSection,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct ProvisioningSection {
     #[serde(rename = "Version")]
     pub version: String,
@@ -30,7 +30,7 @@ pub struct ProvisioningSection {
     pub linux_prov_conf_set: LinuxProvisioningConfigurationSet,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct LinuxProvisioningConfigurationSet {
     #[serde(rename = "UserName")]
     pub username: String,
@@ -40,7 +40,7 @@ pub struct LinuxProvisioningConfigurationSet {
     pub hostname: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettingsSection {
     #[serde(rename = "Version")]
     pub version: String,
@@ -48,7 +48,7 @@ pub struct PlatformSettingsSection {
     pub platform_settings: PlatformSettings,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettings {
     #[serde(default = "default_preprov", rename = "PreprovisionedVm")]
     pub preprovisioned_vm: bool,
@@ -70,6 +70,22 @@ fn default_preprov_type() -> String {
 
 pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
 pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
+
+const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
+
+// Get a mounted device with any filesystem for CDROM
+pub fn get_mount_device() -> Result<Vec<String>, Error> {
+    let mut list_devices: Vec<String> = Vec::new();
+
+    while let Some(device) = block_utils::get_mounted_devices()?
+        .into_iter()
+        .find(|dev| CDROM_VALID_FS.contains(&dev.fs_type.to_str()))
+    {
+        list_devices.push(device.name);
+    }
+
+    Ok(list_devices)
+}
 
 // Some zero-sized structs that just provide states for our state machine
 pub struct Mounted;
