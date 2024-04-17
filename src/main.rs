@@ -10,12 +10,30 @@ use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::Media,
+    media::{Environment, Media},
     reqwest::{header, Client},
     user,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// Mount the given device, get OVF environment data, return it.
+fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
+    let mount_media =
+        Media::new(PathBuf::from(dev), PathBuf::from(media::PATH_MOUNT_POINT));
+    let mounted = mount_media
+        .mount()
+        .with_context(|| "Failed to mount media.")?;
+
+    let ovf_body = mounted.read_ovf_env_to_string()?;
+    let environment = media::parse_ovf_env(ovf_body.as_str())?;
+
+    mounted
+        .unmount()
+        .with_context(|| "Failed to remove media.")?;
+
+    Ok(environment)
+}
 
 fn get_username(imds_body: String) -> Result<String, anyhow::Error> {
     if imds::is_password_authentication_disabled(&imds_body)? {
@@ -23,22 +41,23 @@ fn get_username(imds_body: String) -> Result<String, anyhow::Error> {
         Ok(imds::get_username(imds_body.clone())?)
     } else {
         // password authentication is enabled
-        let mount_media = Media::new(
-            PathBuf::from(media::PATH_MOUNT_DEVICE),
-            PathBuf::from(media::PATH_MOUNT_POINT),
-        );
-        let mounted = mount_media
-            .mount()
-            .with_context(|| "Failed to mount media.")?;
 
-        let ovf_body = mounted.read_ovf_env_to_string()?;
-        let environment = media::parse_ovf_env(ovf_body.as_str())?;
+        // list of CDROM devices that is available with possible filesystems.
+        let ovf_devices = media::get_mount_device()?;
+        let mut environment: Option<Environment> = None;
 
-        mounted
-            .unmount()
-            .with_context(|| "Failed to remove media.")?;
+        // loop until it finds a correct device.
+        for dev in ovf_devices {
+            environment = match mount_parse_ovf_env(dev) {
+                Ok(env) => Some(env),
+                Err(_) => continue,
+            }
+        }
 
         Ok(environment
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unable to get list of block devices")
+            })?
             .provisioning_section
             .linux_prov_conf_set
             .username)

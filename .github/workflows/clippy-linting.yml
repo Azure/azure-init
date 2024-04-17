@@ -11,9 +11,13 @@ jobs:
     name: Run clippy on azure-init 
     runs-on: ubuntu-latest
     steps:
+      - name: Install libudev
+        run: |
+          sudo apt update
+          sudo apt install -y libudev-dev
       - uses: actions/checkout@v4
-      - name: Install rust
       - uses: actions-rs/toolchain@v1
+        name: Install rust
         with:
           profile: minimal
           toolchain: stable
