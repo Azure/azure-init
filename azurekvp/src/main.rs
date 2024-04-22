@@ -12,7 +12,14 @@ use std::io::{self, Write};
 use nix::unistd::dup2;
 use nix::libc;
 use std::os::fd::AsRawFd;
+use tracing::instrument;
 
+
+#[instrument]
+fn my_function() {
+    // Code inside my_function
+    error!("This is an error logged inside my_function.");
+}
 
 fn main() -> io::Result<()> {
     // Specify the log file path
@@ -20,10 +27,6 @@ fn main() -> io::Result<()> {
 
     // Create a new file for writing
     let file = File::create(log_file_path)?;
-
-    // Duplicate file descriptor to stdout
-    let stdout_fd = file.as_raw_fd();
-    dup2(stdout_fd, libc::STDOUT_FILENO)?;
 
     // Create a new OpenTelemetry trace pipeline that prints to stdout
     let provider = TracerProvider::builder()
@@ -38,17 +41,12 @@ fn main() -> io::Result<()> {
     // that impls `LookupSpan`
     let subscriber = Registry::default().with(telemetry);
 
-    // Trace executed code
+    // Initialize the tracing subscriber
     tracing::subscriber::with_default(subscriber, || {
-        // Spans will be sent to the configured OpenTelemetry exporter
-        let root = span!(tracing::Level::TRACE, "app_start", work_units = 2);
-        let _enter = root.enter();
-
-        // Error events will be logged in the root span
-        error!("This event will be logged in the root span.");
+        // Call the instrumented function
+        my_function();
 
         // Redirect stdout to the file after tracing setup
-        let file = File::create(log_file_path)?;
         let stdout_fd = file.as_raw_fd();
         dup2(stdout_fd, libc::STDOUT_FILENO)?;
 
