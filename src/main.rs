@@ -7,9 +7,15 @@ use libazureinit::{
     reqwest::{header, Client},
     user,
 };
+use azurekvp::{initialize_tracing, TRACER};
+use opentelemetry::global;
+use tracing::{info, instrument};
+use opentelemetry::trace::Tracer;
+use opentelemetry::trace::Span;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[instrument]
 fn get_username(
     imds_body: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -43,7 +49,11 @@ fn get_username(
 }
 
 #[tokio::main]
+#[instrument]
 async fn main() {
+    // Initialize the tracing subscriber
+    initialize_tracing();
+
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
@@ -61,10 +71,15 @@ async fn main() {
         Err(_err) => std::process::exit(exitcode::CONFIG),
     };
 
+    // You can now use TRACER to create spans or perform tracing operations
+    let tracer = global::tracer("azure-kvp");
+    let mut span = tracer.span_builder("test").start(&tracer);
     let username = match get_username(imds_body.clone()) {
         Ok(res) => res,
         Err(_err) => std::process::exit(exitcode::CONFIG),
     };
+    // End the span
+    span.end();
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
