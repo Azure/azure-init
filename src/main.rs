@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 
 use libazureinit::distro::{Distribution, Distributions};
+use libazureinit::imds::InstanceMetadata;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
@@ -35,10 +36,16 @@ fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
     Ok(environment)
 }
 
-fn get_username(imds_body: String) -> Result<String, anyhow::Error> {
-    if imds::is_password_authentication_disabled(&imds_body)? {
+fn get_username(
+    instance_metadata: &InstanceMetadata,
+) -> Result<String, anyhow::Error> {
+    if instance_metadata
+        .compute
+        .os_profile
+        .disable_password_authentication
+    {
         // password authentication is disabled
-        Ok(imds::get_username(imds_body.clone())?)
+        Ok(instance_metadata.compute.os_profile.admin_username.clone())
     } else {
         // password authentication is enabled
 
@@ -94,9 +101,9 @@ async fn provision() -> Result<(), anyhow::Error> {
         .timeout(std::time::Duration::from_secs(30))
         .default_headers(default_headers)
         .build()?;
-    let imds_body = imds::query_imds(&client).await?;
-    let username = get_username(imds_body.clone())
-        .with_context(|| "Failed to retrieve the admin username.")?;
+
+    let instance_metadata = imds::query(&client).await?;
+    let username = get_username(&instance_metadata)?;
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
@@ -110,20 +117,20 @@ async fn provision() -> Result<(), anyhow::Error> {
         .await
         .with_context(|| "Failed to create ssh directory.")?;
 
-    let keys = imds::get_ssh_keys(imds_body.clone())
-        .with_context(|| "Failed to get ssh public keys.")?;
-
     file_path.push_str("/.ssh");
 
-    user::set_ssh_keys(keys, username.to_string(), file_path.clone())
-        .await
-        .with_context(|| "Failed to write ssh public keys.")?;
-
-    let hostname = imds::get_hostname(imds_body.clone())
-        .with_context(|| "Failed to get the configured hostname")?;
+    user::set_ssh_keys(
+        instance_metadata.compute.public_keys,
+        username.to_string(),
+        file_path.clone(),
+    )
+    .await
+    .with_context(|| "Failed to write ssh public keys.")?;
 
     Distributions::from("ubuntu")
-        .set_hostname(hostname.as_str())
+        .set_hostname(
+            instance_metadata.compute.os_profile.computer_name.as_str(),
+        )
         .with_context(|| "Failed to set hostname.")?;
 
     let vm_goalstate = goalstate::get_goalstate(&client)
