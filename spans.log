@@ -1,4 +1,4 @@
-Hello, World!SpanData {
+SpanData {
     span_context: SpanContext {
         trace_id: ecea5cd2e78812b3e9bad50d3973bde3,
         span_id: ef78e8890b27fedb,
