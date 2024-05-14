@@ -1,7 +1,129 @@
+Hello, World!SpanData {
+    span_context: SpanContext {
+        trace_id: ecea5cd2e78812b3e9bad50d3973bde3,
+        span_id: ef78e8890b27fedb,
+        trace_flags: TraceFlags(
+            1,
+        ),
+        is_remote: false,
+        trace_state: TraceState(
+            None,
+        ),
+    },
+    parent_span_id: 0000000000000000,
+    span_kind: Internal,
+    name: "test",
+    start_time: SystemTime {
+        tv_sec: 1714773090,
+        tv_nsec: 869927907,
+    },
+    end_time: SystemTime {
+        tv_sec: 1714773090,
+        tv_nsec: 870027565,
+    },
+    attributes: EvictedHashMap {
+        map: {
+            Static(
+                "idle_ns",
+            ): I64(
+                106123,
+            ),
+            Static(
+                "code.lineno",
+            ): I64(
+                53,
+            ),
+            Static(
+                "code.namespace",
+            ): String(
+                Static(
+                    "azure_init",
+                ),
+            ),
+            Static(
+                "code.filepath",
+            ): String(
+                Static(
+                    "src/main.rs",
+                ),
+            ),
+            Static(
+                "thread.name",
+            ): String(
+                Owned(
+                    "main",
+                ),
+            ),
+            Static(
+                "busy_ns",
+            ): I64(
+                5625,
+            ),
+            Static(
+                "thread.id",
+            ): I64(
+                1,
+            ),
+        },
+        evict_list: [
+            Static(
+                "idle_ns",
+            ),
+            Static(
+                "busy_ns",
+            ),
+            Static(
+                "thread.name",
+            ),
+            Static(
+                "thread.id",
+            ),
+            Static(
+                "code.lineno",
+            ),
+            Static(
+                "code.namespace",
+            ),
+            Static(
+                "code.filepath",
+            ),
+        ],
+        max_len: 128,
+        dropped_count: 0,
+    },
+    events: EvictedQueue {
+        queue: None,
+        max_len: 128,
+        dropped_count: 0,
+    },
+    links: EvictedQueue {
+        queue: None,
+        max_len: 128,
+        dropped_count: 0,
+    },
+    status: Unset,
+    resource: Resource {
+        attrs: {
+            Static(
+                "service.name",
+            ): String(
+                Owned(
+                    "unknown_service",
+                ),
+            ),
+        },
+        schema_url: None,
+    },
+    instrumentation_lib: InstrumentationLibrary {
+        name: "azure-kvp",
+        version: None,
+        schema_url: None,
+    },
+}
 SpanData {
     span_context: SpanContext {
-        trace_id: 2bc6523dc081c9c51ec42be6bdeb9ae6,
-        span_id: 9bb4ea2c4ca49a0e,
+        trace_id: 4fac9eb4d14424ba354d2bcc375dcc34,
+        span_id: 5a3fcbb7b214e95b,
         trace_flags: TraceFlags(
             1,
         ),
@@ -14,15 +136,30 @@ SpanData {
     span_kind: Internal,
     name: "get_username",
     start_time: SystemTime {
-        tv_sec: 1714767136,
-        tv_nsec: 150545680,
+        tv_sec: 1714773090,
+        tv_nsec: 880088576,
     },
     end_time: SystemTime {
-        tv_sec: 1714767136,
-        tv_nsec: 151094189,
+        tv_sec: 1714773090,
+        tv_nsec: 880662450,
     },
     attributes: EvictedHashMap {
         map: {
+            Static(
+                "thread.id",
+            ): I64(
+                1,
+            ),
+            Static(
+                "busy_ns",
+            ): I64(
+                329559,
+            ),
+            Static(
+                "idle_ns",
+            ): I64(
+                234248,
+            ),
             Static(
                 "thread.name",
             ): String(
@@ -31,9 +168,134 @@ SpanData {
                 ),
             ),
             Static(
+                "imds_body",
+            ): String(
+                Owned(
+                    "\"{\\\"compute\\\":{\\\"azEnvironment\\\":\\\"AzurePublicCloud\\\",\\\"customData\\\":\\\"\\\",\\\"evictionPolicy\\\":\\\"\\\",\\\"isHostCompatibilityLayerVm\\\":\\\"false\\\",\\\"licenseType\\\":\\\"\\\",\\\"location\\\":\\\"westus2\\\",\\\"name\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"offer\\\":\\\"\\\",\\\"osProfile\\\":{\\\"adminUsername\\\":\\\"cloudenv\\\",\\\"computerName\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"disablePasswordAuthentication\\\":\\\"true\\\"},\\\"osType\\\":\\\"Linux\\\",\\\"placementGroupId\\\":\\\"\\\",\\\"plan\\\":{\\\"name\\\":\\\"\\\",\\\"product\\\":\\\"\\\",\\\"publisher\\\":\\\"\\\"},\\\"platformFaultDomain\\\":\\\"0\\\",\\\"platformUpdateDomain\\\":\\\"0\\\",\\\"priority\\\":\\\"\\\",\\\"provider\\\":\\\"Microsoft.Compute\\\",\\\"publicKeys\\\":[{\\\"keyData\\\":\\\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDPYyB2V9q43oWBJINIZMzJ4zrYoNptGCK9i28qxj9cS2Af/FkrVYTSSRMPJforJRVkyY/6M63TFzfIeMe6b93g9Q4nDoxyUDMJ5SEkLp3kw3caxrimLQF2yJz4QySoiqaFlhfot9bP3En9i8AQYjogQtxQqpw77RRzQOkinP5gyga5W2Ia/inNGBRwF2guqZccsOrTI2WF6dnHTB28LIxhHox/WH+0CmMKQrP8yX3bzoReXvsmm8RztC6PWb3G9FzEXK6fDdaLApSIvO/sc5MSEEdbwx7yo2phWsv96x7wY3QZtUGg+ZZnrtr/RE05xQPHm+ufh7qwbF87Ekt70h9R vsonline@machine\\\",\\\"path\\\":\\\"/home/cloudenv/.ssh/authorized_keys\\\"}],\\\"publisher\\\":\\\"\\\",\\\"resourceGroupName\\\":\\\"vsclk-online-prod-rel-usw2-040\\\",\\\"resourceId\\\":\\\"/subscriptions/75bc2f80-0696-46fc-9e0b-afcddbb5dc40/resourceGroups/vsclk-online-prod-rel-usw2-040/providers/Microsoft.Compute/virtualMachines/93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"securityProfile\\\":{\\\"secureBootEnabled\\\":\\\"false\\\",\\\"virtualTpmEnabled\\\":\\\"false\\\"},\\\"sku\\\":\\\"\\\",\\\"storageProfile\\\":{\\\"dataDisks\\\":[],\\\"imageReference\\\":{\\\"id\\\":\\\"/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001\\\",\\\"offer\\\":\\\"\\\",\\\"publisher\\\":\\\"\\\",\\\"sku\\\":\\\"\\\",\\\"version\\\":\\\"\\\"},\\\"osDisk\\\":{\\\"caching\\\":\\\"ReadOnly\\\",\\\"createOption\\\":\\\"FromImage\\\",\\\"diffDiskSettings\\\":{\\\"option\\\":\\\"Local\\\"},\\\"diskSizeGB\\\":\\\"30\\\",\\\"encryptionSettings\\\":{\\\"enabled\\\":\\\"false\\\"},\\\"image\\\":{\\\"uri\\\":\\\"\\\"},\\\"managedDisk\\\":{\\\"id\\\":\\\"/subscriptions/75bc2f80-0696-46fc-9e0b-afcddbb5dc40/resourceGroups/vsclk-online-prod-rel-usw2-040/providers/Microsoft.Compute/disks/93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe-disk\\\",\\\"storageAccountType\\\":\\\"Standard_LRS\\\"},\\\"name\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe-disk\\\",\\\"osType\\\":\\\"Linux\\\",\\\"vhd\\\":{\\\"uri\\\":\\\"\\\"},\\\"writeAcceleratorEnabled\\\":\\\"false\\\"},\\\"resourceDisk\\\":{\\\"size\\\":\\\"76800\\\"}},\\\"subscriptionId\\\":\\\"75bc2f80-0696-46fc-9e0b-afcddbb5dc40\\\",\\\"tags\\\":\\\"ComputeOS:Linux;OperationReason:WatchPoolSizeIncrease;PoolDefinition:c134d4e6c324e78e88996774746a60b93a0a9a43;PoolImageFamilyName:customUbuntuServer;PoolImageName:/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001;PoolLocation:westus2;PoolSkuName:Standard_D2ds_v5;PoolVersionDefinition:a88d797aeaefa8ecf4465d5e20cb0699330c60c4;ResourceComponentRecordIds:dc819a97-da14-4cb1-8ff6-51e82d20ec8f,7b8c6fa1-5b97-4f4b-bcbe-5438e48ee350,b449b564-5c26-4f1e-a872-77033e0a1370,b5c5abfa-d5a6-49cd-8fcf-9fcae36adc27,55cab94f-06b5-4b5b-bd53-c32770b2f75d;ResourceId:93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe;ResourceName:93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe;ResourceType:ComputeVM;platformsettings.host_environment.service.platform_optedin_for_rootcerts:true\\\",\\\"tagsList\\\":[{\\\"name\\\":\\\"ComputeOS\\\",\\\"value\\\":\\\"Linux\\\"},{\\\"name\\\":\\\"OperationReason\\\",\\\"value\\\":\\\"WatchPoolSizeIncrease\\\"},{\\\"name\\\":\\\"PoolDefinition\\\",\\\"value\\\":\\\"c134d4e6c324e78e88996774746a60b93a0a9a43\\\"},{\\\"name\\\":\\\"PoolImageFamilyName\\\",\\\"value\\\":\\\"customUbuntuServer\\\"},{\\\"name\\\":\\\"PoolImageName\\\",\\\"value\\\":\\\"/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001\\\"},{\\\"name\\\":\\\"PoolLocation\\\",\\\"value\\\":\\\"westus2\\\"},{\\\"name\\\":\\\"PoolSkuName\\\",\\\"value\\\":\\\"Standard_D2ds_v5\\\"},{\\\"name\\\":\\\"PoolVersionDefinition\\\",\\\"value\\\":\\\"a88d797aeaefa8ecf4465d5e20cb0699330c60c4\\\"},{\\\"name\\\":\\\"ResourceComponentRecordIds\\\",\\\"value\\\":\\\"dc819a97-da14-4cb1-8ff6-51e82d20ec8f,7b8c6fa1-5b97-4f4b-bcbe-5438e48ee350,b449b564-5c26-4f1e-a872-77033e0a1370,b5c5abfa-d5a6-49cd-8fcf-9fcae36adc27,55cab94f-06b5-4b5b-bd53-c32770b2f75d\\\"},{\\\"name\\\":\\\"ResourceId\\\",\\\"value\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\"},{\\\"name\\\":\\\"ResourceName\\\",\\\"value\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\"},{\\\"name\\\":\\\"ResourceType\\\",\\\"value\\\":\\\"ComputeVM\\\"},{\\\"name\\\":\\\"platformsettings.host_environment.service.platform_optedin_for_rootcerts\\\",\\\"value\\\":\\\"true\\\"}],\\\"userData\\\":\\\"\\\",\\\"version\\\":\\\"2024.0419.001\\\",\\\"vmId\\\":\\\"ecfeff26-c7b4-4778-96d5-2acfd6b80c2a\\\",\\\"vmScaleSetName\\\":\\\"\\\",\\\"vmSize\\\":\\\"Standard_D2ds_v5\\\",\\\"zone\\\":\\\"\\\"},\\\"network\\\":{\\\"interface\\\":[{\\\"ipv4\\\":{\\\"ipAddress\\\":[{\\\"privateIpAddress\\\":\\\"172.16.5.4\\\",\\\"publicIpAddress\\\":\\\"\\\"}],\\\"subnet\\\":[{\\\"address\\\":\\\"172.16.5.0\\\",\\\"prefix\\\":\\\"24\\\"}]},\\\"ipv6\\\":{\\\"ipAddress\\\":[]},\\\"macAddress\\\":\\\"000D3A078740\\\"}]}}\"",
+                ),
+            ),
+            Static(
+                "code.filepath",
+            ): String(
+                Static(
+                    "src/main.rs",
+                ),
+            ),
+            Static(
                 "code.lineno",
             ): I64(
-                18,
+                20,
+            ),
+            Static(
+                "code.namespace",
+            ): String(
+                Static(
+                    "azure_init",
+                ),
+            ),
+        },
+        evict_list: [
+            Static(
+                "idle_ns",
+            ),
+            Static(
+                "busy_ns",
+            ),
+            Static(
+                "imds_body",
+            ),
+            Static(
+                "thread.name",
+            ),
+            Static(
+                "thread.id",
+            ),
+            Static(
+                "code.lineno",
+            ),
+            Static(
+                "code.namespace",
+            ),
+            Static(
+                "code.filepath",
+            ),
+        ],
+        max_len: 128,
+        dropped_count: 0,
+    },
+    events: EvictedQueue {
+        queue: None,
+        max_len: 128,
+        dropped_count: 0,
+    },
+    links: EvictedQueue {
+        queue: None,
+        max_len: 128,
+        dropped_count: 0,
+    },
+    status: Unset,
+    resource: Resource {
+        attrs: {
+            Static(
+                "service.name",
+            ): String(
+                Owned(
+                    "unknown_service",
+                ),
+            ),
+        },
+        schema_url: None,
+    },
+    instrumentation_lib: InstrumentationLibrary {
+        name: "azure-kvp",
+        version: None,
+        schema_url: None,
+    },
+}
+SpanData {
+    span_context: SpanContext {
+        trace_id: e5f08ba136344eb0c6e387a5a21ed849,
+        span_id: a22ea2674c9dd6dd,
+        trace_flags: TraceFlags(
+            1,
+        ),
+        is_remote: false,
+        trace_state: TraceState(
+            None,
+        ),
+    },
+    parent_span_id: 0000000000000000,
+    span_kind: Internal,
+    name: "query-imds",
+    start_time: SystemTime {
+        tv_sec: 1714773090,
+        tv_nsec: 880038063,
+    },
+    end_time: SystemTime {
+        tv_sec: 1714773090,
+        tv_nsec: 977431564,
+    },
+    attributes: EvictedHashMap {
+        map: {
+            Static(
+                "busy_ns",
+            ): I64(
+                4152,
+            ),
+            Static(
+                "thread.id",
+            ): I64(
+                1,
+            ),
+            Static(
+                "idle_ns",
+            ): I64(
+                37600,
+            ),
+            Static(
+                "code.lineno",
+            ): I64(
+                82,
             ),
             Static(
                 "code.filepath",
@@ -50,26 +312,11 @@ SpanData {
                 ),
             ),
             Static(
-                "thread.id",
-            ): I64(
-                1,
-            ),
-            Static(
-                "imds_body",
+                "thread.name",
             ): String(
                 Owned(
-                    "\"{\\\"compute\\\":{\\\"azEnvironment\\\":\\\"AzurePublicCloud\\\",\\\"customData\\\":\\\"\\\",\\\"evictionPolicy\\\":\\\"\\\",\\\"isHostCompatibilityLayerVm\\\":\\\"false\\\",\\\"licenseType\\\":\\\"\\\",\\\"location\\\":\\\"westus2\\\",\\\"name\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"offer\\\":\\\"\\\",\\\"osProfile\\\":{\\\"adminUsername\\\":\\\"cloudenv\\\",\\\"computerName\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"disablePasswordAuthentication\\\":\\\"true\\\"},\\\"osType\\\":\\\"Linux\\\",\\\"placementGroupId\\\":\\\"\\\",\\\"plan\\\":{\\\"name\\\":\\\"\\\",\\\"product\\\":\\\"\\\",\\\"publisher\\\":\\\"\\\"},\\\"platformFaultDomain\\\":\\\"0\\\",\\\"platformUpdateDomain\\\":\\\"0\\\",\\\"priority\\\":\\\"\\\",\\\"provider\\\":\\\"Microsoft.Compute\\\",\\\"publicKeys\\\":[{\\\"keyData\\\":\\\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDPYyB2V9q43oWBJINIZMzJ4zrYoNptGCK9i28qxj9cS2Af/FkrVYTSSRMPJforJRVkyY/6M63TFzfIeMe6b93g9Q4nDoxyUDMJ5SEkLp3kw3caxrimLQF2yJz4QySoiqaFlhfot9bP3En9i8AQYjogQtxQqpw77RRzQOkinP5gyga5W2Ia/inNGBRwF2guqZccsOrTI2WF6dnHTB28LIxhHox/WH+0CmMKQrP8yX3bzoReXvsmm8RztC6PWb3G9FzEXK6fDdaLApSIvO/sc5MSEEdbwx7yo2phWsv96x7wY3QZtUGg+ZZnrtr/RE05xQPHm+ufh7qwbF87Ekt70h9R vsonline@machine\\\",\\\"path\\\":\\\"/home/cloudenv/.ssh/authorized_keys\\\"}],\\\"publisher\\\":\\\"\\\",\\\"resourceGroupName\\\":\\\"vsclk-online-prod-rel-usw2-040\\\",\\\"resourceId\\\":\\\"/subscriptions/75bc2f80-0696-46fc-9e0b-afcddbb5dc40/resourceGroups/vsclk-online-prod-rel-usw2-040/providers/Microsoft.Compute/virtualMachines/93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\",\\\"securityProfile\\\":{\\\"secureBootEnabled\\\":\\\"false\\\",\\\"virtualTpmEnabled\\\":\\\"false\\\"},\\\"sku\\\":\\\"\\\",\\\"storageProfile\\\":{\\\"dataDisks\\\":[],\\\"imageReference\\\":{\\\"id\\\":\\\"/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001\\\",\\\"offer\\\":\\\"\\\",\\\"publisher\\\":\\\"\\\",\\\"sku\\\":\\\"\\\",\\\"version\\\":\\\"\\\"},\\\"osDisk\\\":{\\\"caching\\\":\\\"ReadOnly\\\",\\\"createOption\\\":\\\"FromImage\\\",\\\"diffDiskSettings\\\":{\\\"option\\\":\\\"Local\\\"},\\\"diskSizeGB\\\":\\\"30\\\",\\\"encryptionSettings\\\":{\\\"enabled\\\":\\\"false\\\"},\\\"image\\\":{\\\"uri\\\":\\\"\\\"},\\\"managedDisk\\\":{\\\"id\\\":\\\"/subscriptions/75bc2f80-0696-46fc-9e0b-afcddbb5dc40/resourceGroups/vsclk-online-prod-rel-usw2-040/providers/Microsoft.Compute/disks/93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe-disk\\\",\\\"storageAccountType\\\":\\\"Standard_LRS\\\"},\\\"name\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe-disk\\\",\\\"osType\\\":\\\"Linux\\\",\\\"vhd\\\":{\\\"uri\\\":\\\"\\\"},\\\"writeAcceleratorEnabled\\\":\\\"false\\\"},\\\"resourceDisk\\\":{\\\"size\\\":\\\"76800\\\"}},\\\"subscriptionId\\\":\\\"75bc2f80-0696-46fc-9e0b-afcddbb5dc40\\\",\\\"tags\\\":\\\"ComputeOS:Linux;OperationReason:WatchPoolSizeIncrease;PoolDefinition:c134d4e6c324e78e88996774746a60b93a0a9a43;PoolImageFamilyName:customUbuntuServer;PoolImageName:/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001;PoolLocation:westus2;PoolSkuName:Standard_D2ds_v5;PoolVersionDefinition:a88d797aeaefa8ecf4465d5e20cb0699330c60c4;ResourceComponentRecordIds:dc819a97-da14-4cb1-8ff6-51e82d20ec8f,7b8c6fa1-5b97-4f4b-bcbe-5438e48ee350,b449b564-5c26-4f1e-a872-77033e0a1370,b5c5abfa-d5a6-49cd-8fcf-9fcae36adc27,55cab94f-06b5-4b5b-bd53-c32770b2f75d;ResourceId:93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe;ResourceName:93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe;ResourceType:ComputeVM;platformsettings.host_environment.service.platform_optedin_for_rootcerts:true\\\",\\\"tagsList\\\":[{\\\"name\\\":\\\"ComputeOS\\\",\\\"value\\\":\\\"Linux\\\"},{\\\"name\\\":\\\"OperationReason\\\",\\\"value\\\":\\\"WatchPoolSizeIncrease\\\"},{\\\"name\\\":\\\"PoolDefinition\\\",\\\"value\\\":\\\"c134d4e6c324e78e88996774746a60b93a0a9a43\\\"},{\\\"name\\\":\\\"PoolImageFamilyName\\\",\\\"value\\\":\\\"customUbuntuServer\\\"},{\\\"name\\\":\\\"PoolImageName\\\",\\\"value\\\":\\\"/subscriptions/979523fb-a19c-4bb0-a8ee-cef29597b0a4/resourceGroups/vsclk-online-prod-images-usw2/providers/Microsoft.Compute/galleries/gallery_usw2/images/ubuntu/versions/2024.0419.001\\\"},{\\\"name\\\":\\\"PoolLocation\\\",\\\"value\\\":\\\"westus2\\\"},{\\\"name\\\":\\\"PoolSkuName\\\",\\\"value\\\":\\\"Standard_D2ds_v5\\\"},{\\\"name\\\":\\\"PoolVersionDefinition\\\",\\\"value\\\":\\\"a88d797aeaefa8ecf4465d5e20cb0699330c60c4\\\"},{\\\"name\\\":\\\"ResourceComponentRecordIds\\\",\\\"value\\\":\\\"dc819a97-da14-4cb1-8ff6-51e82d20ec8f,7b8c6fa1-5b97-4f4b-bcbe-5438e48ee350,b449b564-5c26-4f1e-a872-77033e0a1370,b5c5abfa-d5a6-49cd-8fcf-9fcae36adc27,55cab94f-06b5-4b5b-bd53-c32770b2f75d\\\"},{\\\"name\\\":\\\"ResourceId\\\",\\\"value\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\"},{\\\"name\\\":\\\"ResourceName\\\",\\\"value\\\":\\\"93ebfb57-6bdd-4f3e-8ac0-d60156e71fbe\\\"},{\\\"name\\\":\\\"ResourceType\\\",\\\"value\\\":\\\"ComputeVM\\\"},{\\\"name\\\":\\\"platformsettings.host_environment.service.platform_optedin_for_rootcerts\\\",\\\"value\\\":\\\"true\\\"}],\\\"userData\\\":\\\"\\\",\\\"version\\\":\\\"2024.0419.001\\\",\\\"vmId\\\":\\\"ecfeff26-c7b4-4778-96d5-2acfd6b80c2a\\\",\\\"vmScaleSetName\\\":\\\"\\\",\\\"vmSize\\\":\\\"Standard_D2ds_v5\\\",\\\"zone\\\":\\\"\\\"},\\\"network\\\":{\\\"interface\\\":[{\\\"ipv4\\\":{\\\"ipAddress\\\":[{\\\"privateIpAddress\\\":\\\"172.16.5.4\\\",\\\"publicIpAddress\\\":\\\"\\\"}],\\\"subnet\\\":[{\\\"address\\\":\\\"172.16.5.0\\\",\\\"prefix\\\":\\\"24\\\"}]},\\\"ipv6\\\":{\\\"ipAddress\\\":[]},\\\"macAddress\\\":\\\"000D3A078740\\\"}]}}\"",
+                    "main",
                 ),
-            ),
-            Static(
-                "busy_ns",
-            ): I64(
-                327016,
-            ),
-            Static(
-                "idle_ns",
-            ): I64(
-                218334,
             ),
         },
         evict_list: [
@@ -78,9 +325,6 @@ SpanData {
             ),
             Static(
                 "busy_ns",
-            ),
-            Static(
-                "imds_body",
             ),
             Static(
                 "thread.name",

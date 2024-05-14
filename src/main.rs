@@ -12,6 +12,8 @@ use opentelemetry::global;
 use tracing::{info, instrument};
 use opentelemetry::trace::Tracer;
 use opentelemetry::trace::Span;
+use tracing::span;
+use tracing::Level;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -48,11 +50,16 @@ fn get_username(
     }
 }
 
-#[tokio::main]
 #[instrument]
+fn test () { 
+    print!("Hello, World!"); 
+}
+
+#[tokio::main]
 async fn main() {
     // Initialize the tracing subscriber
     initialize_tracing();
+    test();
 
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
@@ -66,20 +73,19 @@ async fn main() {
         .build()
         .unwrap();
     let query_result = imds::query_imds(&client).await;
+    
+    let mut query_span = span!(Level::TRACE, "query-imds").entered();
+
     let imds_body = match query_result {
         Ok(imds_body) => imds_body,
         Err(_err) => std::process::exit(exitcode::CONFIG),
     };
+    let mut query_span = query_span.exit();
 
-    // You can now use TRACER to create spans or perform tracing operations
-    let tracer = global::tracer("azure-kvp");
-    let mut span = tracer.span_builder("test").start(&tracer);
     let username = match get_username(imds_body.clone()) {
         Ok(res) => res,
         Err(_err) => std::process::exit(exitcode::CONFIG),
     };
-    // End the span
-    span.end();
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());

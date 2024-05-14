@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use opentelemetry::{ trace::{self, TracerProvider}, trace::Tracer as _};
 use opentelemetry::sdk::trace as sdktrace;
 use opentelemetry::sdk::export::trace::stdout;
@@ -36,10 +39,11 @@ pub static TRACER: Lazy<()> = Lazy::new(|| {
     // Create a `tracing` subscriber
     let subscriber = Registry::default()
         .with(otel_layer);
+    
     // Set the subscriber as the global default
     tracing::subscriber::set_global_default(subscriber)
         .expect("Setting default subscriber failed");
-    });
+});
 
 pub fn initialize_tracing() {
     Lazy::force(&TRACER);
