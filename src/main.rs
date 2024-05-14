@@ -1,9 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use anyhow::Context;
+
 use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::{
+    error::Error as LibError,
     goalstate, imds, media,
+    media::{Environment, Media},
     reqwest::{header, Client},
     user,
 };
@@ -17,33 +24,48 @@ use tracing::Level;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// Mount the given device, get OVF environment data, return it.
 #[instrument]
-fn get_username(
-    imds_body: String,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if imds::is_password_authentication_disabled(&imds_body).map_err(|_| {
-        "Failed to get disable password authentication".to_string()
-    })? {
+fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
+    let mount_media =
+        Media::new(PathBuf::from(dev), PathBuf::from(media::PATH_MOUNT_POINT));
+    let mounted = mount_media
+        .mount()
+        .with_context(|| "Failed to mount media.")?;
+
+    let ovf_body = mounted.read_ovf_env_to_string()?;
+    let environment = media::parse_ovf_env(ovf_body.as_str())?;
+
+    mounted
+        .unmount()
+        .with_context(|| "Failed to remove media.")?;
+
+    Ok(environment)
+}
+
+fn get_username(imds_body: String) -> Result<String, anyhow::Error> {
+    if imds::is_password_authentication_disabled(&imds_body)? {
         // password authentication is disabled
-        match imds::get_username(imds_body.clone()) {
-            Ok(username) => Ok(username),
-            Err(_err) => Err("Failed to get username".into()),
-        }
+        Ok(imds::get_username(imds_body.clone())?)
     } else {
         // password authentication is enabled
-        let ovf_body = media::read_ovf_env_to_string().unwrap();
-        let environment = media::parse_ovf_env(ovf_body.as_str()).unwrap();
 
-        if !environment
-            .provisioning_section
-            .linux_prov_conf_set
-            .password
-            .is_empty()
-        {
-            return Err("password is non-empty".into());
+        // list of CDROM devices that is available with possible filesystems.
+        let ovf_devices = media::get_mount_device()?;
+        let mut environment: Option<Environment> = None;
+
+        // loop until it finds a correct device.
+        for dev in ovf_devices {
+            environment = match mount_parse_ovf_env(dev) {
+                Ok(env) => Some(env),
+                Err(_) => continue,
+            }
         }
 
         Ok(environment
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unable to get list of block devices")
+            })?
             .provisioning_section
             .linux_prov_conf_set
             .username)
@@ -56,36 +78,41 @@ fn test () {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
+    match provision().await {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{:?}", e);
+            let config: u8 = exitcode::CONFIG
+                .try_into()
+                .expect("Error code must be less than 256");
+            match e.root_cause().downcast_ref::<LibError>() {
+                Some(LibError::UserMissing { user: _ }) => {
+                    ExitCode::from(config)
+                }
+                Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+                Some(_) | None => ExitCode::FAILURE,
+            }
+        }
+    }
+}
+
+async fn provision() -> Result<(), anyhow::Error> {
     // Initialize the tracing subscriber
     initialize_tracing();
-    test();
 
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
-    )
-    .unwrap();
+    )?;
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .default_headers(default_headers)
-        .build()
-        .unwrap();
-    let query_result = imds::query_imds(&client).await;
-    
-    let mut query_span = span!(Level::TRACE, "query-imds").entered();
-
-    let imds_body = match query_result {
-        Ok(imds_body) => imds_body,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
-    let mut query_span = query_span.exit();
-
-    let username = match get_username(imds_body.clone()) {
-        Ok(res) => res,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
+        .build()?;
+    let imds_body = imds::query_imds(&client).await?;
+    let username = get_username(imds_body.clone())
+        .with_context(|| "Failed to retrieve the admin username.")?;
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
@@ -93,40 +120,34 @@ async fn main() {
     // always pass an empty password
     Distributions::from("ubuntu")
         .create_user(username.as_str(), "")
-        .expect("Failed to create user");
-    let _create_directory =
-        user::create_ssh_directory(username.as_str(), &file_path).await;
+        .with_context(|| format!("Unabled to create user '{username}'"))?;
 
-    let get_ssh_key_result = imds::get_ssh_keys(imds_body.clone());
-    let keys = match get_ssh_key_result {
-        Ok(keys) => keys,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
+    user::create_ssh_directory(username.as_str(), &file_path)
+        .await
+        .with_context(|| "Failed to create ssh directory.")?;
+
+    let keys = imds::get_ssh_keys(imds_body.clone())
+        .with_context(|| "Failed to get ssh public keys.")?;
 
     file_path.push_str("/.ssh");
 
-    user::set_ssh_keys(keys, username.to_string(), file_path.clone()).await;
+    user::set_ssh_keys(keys, username.to_string(), file_path.clone())
+        .await
+        .with_context(|| "Failed to write ssh public keys.")?;
 
-    let get_hostname_result = imds::get_hostname(imds_body.clone());
-    let hostname = match get_hostname_result {
-        Ok(hostname) => hostname,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
+    let hostname = imds::get_hostname(imds_body.clone())
+        .with_context(|| "Failed to get the configured hostname")?;
 
     Distributions::from("ubuntu")
         .set_hostname(hostname.as_str())
-        .expect("Failed to set hostname");
+        .with_context(|| "Failed to set hostname.")?;
 
-    let get_goalstate_result = goalstate::get_goalstate(&client).await;
-    let vm_goalstate = match get_goalstate_result {
-        Ok(vm_goalstate) => vm_goalstate,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
+    let vm_goalstate = goalstate::get_goalstate(&client)
+        .await
+        .with_context(|| "Failed to get desired goalstate.")?;
+    goalstate::report_health(&client, vm_goalstate)
+        .await
+        .with_context(|| "Failed to report VM health.")?;
 
-    let report_health_result =
-        goalstate::report_health(&client, vm_goalstate).await;
-    match report_health_result {
-        Ok(report_health) => report_health,
-        Err(_err) => std::process::exit(exitcode::CONFIG),
-    };
+    Ok(())
 }

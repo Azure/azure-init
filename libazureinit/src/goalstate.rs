@@ -9,6 +9,8 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
+use crate::error::Error;
+
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Goalstate {
     #[serde(rename = "Container")]
@@ -39,9 +41,7 @@ pub struct RoleInstance {
     instance_id: String,
 }
 
-pub async fn get_goalstate(
-    client: &Client,
-) -> Result<Goalstate, Box<dyn std::error::Error>> {
+pub async fn get_goalstate(client: &Client) -> Result<Goalstate, Error> {
     let url = "http://168.63.129.16/machine/?comp=goalstate";
 
     let mut headers = HeaderMap::new();
@@ -55,18 +55,19 @@ pub async fn get_goalstate(
         let body = response.text().await?;
 
         let goalstate: Goalstate = from_str(&body)?;
-        return Ok(goalstate);
+        Ok(goalstate)
+    } else {
+        Err(Error::HttpStatus {
+            endpoint: url.to_owned(),
+            status: response.status(),
+        })
     }
-
-    println!("Get request failed with status code: {}", response.status());
-
-    Err(Box::from("Failed Get Call"))
 }
 
 pub async fn report_health(
     client: &Client,
     goalstate: Goalstate,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Error> {
     let url = "http://168.63.129.16/machine/?comp=health";
 
     let mut headers = HeaderMap::new();
@@ -87,15 +88,13 @@ pub async fn report_health(
         .await?;
 
     if response.status().is_success() {
-        return Ok(());
+        Ok(())
+    } else {
+        Err(Error::HttpStatus {
+            endpoint: url.to_owned(),
+            status: response.status(),
+        })
     }
-
-    println!(
-        "Post request failed with status code: {}",
-        response.status()
-    );
-
-    Err(Box::from("Failed Post Call"))
 }
 
 fn build_report_health_file(goalstate: Goalstate) -> String {

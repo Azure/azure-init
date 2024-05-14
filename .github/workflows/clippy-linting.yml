@@ -1,0 +1,26 @@
+name: "Run Clippy for Linting"
+on:
+  pull_request:
+    branches:
+      - main
+  schedule:
+      - cron: '0 0 * * 0'
+
+jobs:
+  clippy:
+    name: Run clippy on azure-init 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install libudev
+        run: |
+          sudo apt update
+          sudo apt install -y libudev-dev
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        name: Install rust
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --verbose -- --deny warnings

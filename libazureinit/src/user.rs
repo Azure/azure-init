@@ -10,33 +10,33 @@ use nix::unistd::{Gid, Uid};
 use std::ffi::CString;
 use std::os::unix::fs::PermissionsExt;
 
+use crate::error::Error;
 use crate::imds::PublicKeys;
 
 pub async fn set_ssh_keys(
     keys: Vec<PublicKeys>,
     username: String,
     file_path: String,
-) {
+) -> Result<(), Error> {
     let mut authorized_keys_path = file_path;
     authorized_keys_path.push_str("/authorized_keys");
 
-    let mut authorized_keys =
-        File::create(authorized_keys_path.clone()).unwrap();
+    let mut authorized_keys = File::create(authorized_keys_path.clone())?;
     for key in keys {
-        writeln!(authorized_keys, "{}", key.key_data).unwrap();
+        writeln!(authorized_keys, "{}", key.key_data)?;
     }
-    let metadata = fs::metadata(authorized_keys_path.clone()).unwrap();
+    let metadata = fs::metadata(authorized_keys_path.clone())?;
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o600);
-    fs::set_permissions(authorized_keys_path.clone(), new_permissions).unwrap();
+    fs::set_permissions(authorized_keys_path.clone(), new_permissions)?;
 
-    let uid_username = CString::new(username.clone()).unwrap();
+    let uid_username = CString::new(username.clone())?;
     let uid_passwd = unsafe { libc::getpwnam(uid_username.as_ptr()) };
     let uid = unsafe { (*uid_passwd).pw_uid };
     let new_uid = Uid::from_raw(uid);
 
-    let gid_groupname = CString::new(username.clone()).unwrap();
+    let gid_groupname = CString::new(username.clone())?;
     let gid_group = unsafe { libc::getgrnam(gid_groupname.as_ptr()) };
     let gid = unsafe { (*gid_group).gr_gid };
     let new_gid = Gid::from_raw(gid);
@@ -46,26 +46,30 @@ pub async fn set_ssh_keys(
         Some(new_uid),
         Some(new_gid),
     );
+
+    Ok(())
 }
 
 pub async fn create_ssh_directory(
     username: &str,
     home_path: &String,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Error> {
     let mut file_path = home_path.to_owned();
     file_path.push_str("/.ssh");
 
     create_dir(file_path.clone())?;
 
-    let user = nix::unistd::User::from_name(username)?.unwrap();
-    nix::unistd::chown(file_path.as_str(), Some(user.uid), Some(user.gid))
-        .unwrap();
+    let user =
+        nix::unistd::User::from_name(username)?.ok_or(Error::UserMissing {
+            user: username.to_string(),
+        })?;
+    nix::unistd::chown(file_path.as_str(), Some(user.uid), Some(user.gid))?;
 
-    let metadata = fs::metadata(&file_path).unwrap();
+    let metadata = fs::metadata(&file_path)?;
     let permissions = metadata.permissions();
     let mut new_permissions = permissions.clone();
     new_permissions.set_mode(0o700);
-    fs::set_permissions(&file_path, new_permissions).unwrap();
+    fs::set_permissions(&file_path, new_permissions)?;
 
     Ok(())
 }

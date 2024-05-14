@@ -6,11 +6,15 @@ use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::Command;
 
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+use crate::error::Error;
+
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
     pub provisioning_section: ProvisioningSection,
@@ -18,7 +22,7 @@ pub struct Environment {
     pub platform_settings_section: PlatformSettingsSection,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct ProvisioningSection {
     #[serde(rename = "Version")]
     pub version: String,
@@ -26,7 +30,7 @@ pub struct ProvisioningSection {
     pub linux_prov_conf_set: LinuxProvisioningConfigurationSet,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct LinuxProvisioningConfigurationSet {
     #[serde(rename = "UserName")]
     pub username: String,
@@ -36,7 +40,7 @@ pub struct LinuxProvisioningConfigurationSet {
     pub hostname: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettingsSection {
     #[serde(rename = "Version")]
     pub version: String,
@@ -44,7 +48,7 @@ pub struct PlatformSettingsSection {
     pub platform_settings: PlatformSettings,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettings {
     #[serde(default = "default_preprov", rename = "PreprovisionedVm")]
     pub preprovisioned_vm: bool,
@@ -64,45 +68,123 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
-pub fn make_temp_directory() -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = "/run/azure-init/tmp/";
+pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
+pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 
-    create_dir_all(file_path)?;
+const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 
-    let metadata = fs::metadata(file_path).unwrap();
-    let permissions = metadata.permissions();
-    let mut new_permissions = permissions.clone();
-    new_permissions.set_mode(0o700);
-    fs::set_permissions(file_path, new_permissions).unwrap();
+// Get a mounted device with any filesystem for CDROM
+pub fn get_mount_device() -> Result<Vec<String>, Error> {
+    let mut list_devices: Vec<String> = Vec::new();
 
-    Ok(())
+    while let Some(device) = block_utils::get_mounted_devices()?
+        .into_iter()
+        .find(|dev| CDROM_VALID_FS.contains(&dev.fs_type.to_str()))
+    {
+        list_devices.push(device.name);
+    }
+
+    Ok(list_devices)
 }
 
-pub fn read_ovf_env_to_string() -> Result<String, Box<dyn std::error::Error>> {
-    let file_path = "/run/azure-init/tmp/ovf-env.xml";
-    let mut file = File::open(file_path).expect("Failed to open file");
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .expect("Failed to read file");
+// Some zero-sized structs that just provide states for our state machine
+pub struct Mounted;
+pub struct Unmounted;
 
-    Ok(contents)
+pub struct Media<State = Unmounted> {
+    device_path: PathBuf,
+    mount_path: PathBuf,
+    state: std::marker::PhantomData<State>,
 }
 
-pub fn parse_ovf_env(
-    ovf_body: &str,
-) -> Result<Environment, Box<dyn std::error::Error>> {
+impl Media<Unmounted> {
+    pub fn new(device_path: PathBuf, mount_path: PathBuf) -> Media<Unmounted> {
+        Media {
+            device_path,
+            mount_path,
+            state: std::marker::PhantomData,
+        }
+    }
+
+    pub fn mount(self) -> Result<Media<Mounted>, Error> {
+        create_dir_all(&self.mount_path)?;
+
+        let metadata = fs::metadata(&self.mount_path)?;
+        let permissions = metadata.permissions();
+        let mut new_permissions = permissions.clone();
+        new_permissions.set_mode(0o700);
+        fs::set_permissions(&self.mount_path, new_permissions)?;
+
+        let mount_status = Command::new("mount")
+            .arg("-o")
+            .arg("ro")
+            .arg(&self.device_path)
+            .arg(&self.mount_path)
+            .status()?;
+
+        if !mount_status.success() {
+            Err(Error::SubprocessFailed {
+                command: "mount".to_string(),
+                status: mount_status,
+            })
+        } else {
+            Ok(Media {
+                device_path: self.device_path,
+                mount_path: self.mount_path,
+                state: std::marker::PhantomData,
+            })
+        }
+    }
+}
+
+impl Media<Mounted> {
+    pub fn unmount(self) -> Result<(), Error> {
+        let umount_status =
+            Command::new("umount").arg(self.mount_path).status()?;
+        if !umount_status.success() {
+            return Err(Error::SubprocessFailed {
+                command: "umount".to_string(),
+                status: umount_status,
+            });
+        }
+
+        let eject_status =
+            Command::new("eject").arg(self.device_path).status()?;
+        if !eject_status.success() {
+            Err(Error::SubprocessFailed {
+                command: "eject".to_string(),
+                status: eject_status,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
+        let mut file_path = self.mount_path.clone();
+        file_path.push("ovf-env.xml");
+        let mut file =
+            File::open(file_path.to_str().unwrap_or(PATH_MOUNT_POINT))?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        Ok(contents)
+    }
+}
+
+pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
 
-    if environment
+    if !environment
         .provisioning_section
         .linux_prov_conf_set
         .password
         .is_empty()
     {
-        return Err("Password is empty".into());
+        Err(Error::NonEmptyPassword)
+    } else {
+        Ok(environment)
     }
-
-    Ok(environment)
 }
 
 #[cfg(test)]
@@ -122,7 +204,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
-                    <UserPassword>mypassword</UserPassword>
+                    <UserPassword></UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -157,7 +239,7 @@ mod tests {
                 .provisioning_section
                 .linux_prov_conf_set
                 .password,
-            "mypassword"
+            ""
         );
         assert_eq!(
             environment
@@ -196,7 +278,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
-                    <UserPassword>mypassword</UserPassword>
+                    <UserPassword></UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -230,7 +312,7 @@ mod tests {
                 .provisioning_section
                 .linux_prov_conf_set
                 .password,
-            "mypassword"
+            ""
         );
         assert_eq!(
             environment
@@ -256,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ovf_env_missing_password() {
+    fn test_get_ovf_env_password_provided() {
         let ovf_body = r#"
         <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1" 
             xmlns:oe="http://schemas.dmtf.org/ovf/environment/1" 
@@ -268,6 +350,7 @@ mod tests {
                     xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
                     <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
                     <UserName>myusername</UserName>
+                    <UserPassword>mypassword</UserPassword>
                     <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
                     <HostName>myhostname</HostName>
                 </LinuxProvisioningConfigurationSet>
@@ -286,49 +369,9 @@ mod tests {
                 </PlatformSettings>
             </wa:PlatformSettingsSection>
         </Environment>"#;
-
-        assert!(parse_ovf_env(ovf_body)
-            .err()
-            .unwrap()
-            .downcast::<std::io::Error>()
-            .is_err());
-    }
-
-    #[test]
-    fn test_get_ovf_env_missing_three() {
-        let ovf_body = r#"
-        <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1" 
-            xmlns:oe="http://schemas.dmtf.org/ovf/environment/1" 
-            xmlns:wa="http://schemas.microsoft.com/windowsazure" 
-            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"> 
-            <wa:ProvisioningSection>
-                <wa:Version>1.0</wa:Version>
-                <LinuxProvisioningConfigurationSet xmlns="http://schemas.microsoft.com/windowsazure" 
-                xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-                    <ConfigurationSetType>LinuxProvisioningConfiguration</ConfigurationSetType>
-                    <UserName>myusername</UserName>
-                    <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
-                    <HostName>myhostname</HostName>
-                </LinuxProvisioningConfigurationSet>
-            </wa:ProvisioningSection>
-            <wa:PlatformSettingsSection>
-                <wa:Version>1.0</wa:Version>
-                <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure" 
-                    xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-                    <KmsServerHostname>kms.core.windows.net</KmsServerHostname>
-                    <ProvisionGuestAgent>true</ProvisionGuestAgent>
-                    <GuestAgentPackageName i:nil="true"/>
-                    <RetainWindowsPEPassInUnattend>true</RetainWindowsPEPassInUnattend>
-                    <RetainOfflineServicingPassInUnattend>true</RetainOfflineServicingPassInUnattend>
-                    <EnableTrustedImageIdentifier>false</EnableTrustedImageIdentifier>
-                </PlatformSettings>
-            </wa:PlatformSettingsSection>
-        </Environment>"#;
-
-        assert!(parse_ovf_env(ovf_body)
-            .err()
-            .unwrap()
-            .downcast::<std::io::Error>()
-            .is_err());
+        match parse_ovf_env(ovf_body) {
+            Err(Error::NonEmptyPassword) => {}
+            _ => panic!("Non-empty passwords aren't allowed"),
+        };
     }
 }
