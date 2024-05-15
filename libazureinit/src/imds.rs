@@ -6,21 +6,79 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::Client;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json;
 use serde_json::Value;
 
 use crate::error::Error;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct InstanceMetadata {
+    /// Compute metadata
+    pub compute: Compute,
+}
+
+/// Metadata about the instance's virtual machine.
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct Compute {
+    /// Metadata about the operating system.
+    #[serde(rename = "osProfile")]
+    pub os_profile: OsProfile,
+    /// SSH Public keys.
+    #[serde(rename = "publicKeys")]
+    pub public_keys: Vec<PublicKeys>,
+}
+
+/// Metadata about the virtual machine's operating system.
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct OsProfile {
+    /// The admin account's username.
+    #[serde(rename = "adminUsername")]
+    pub admin_username: String,
+    /// The name of the virtual machine.
+    #[serde(rename = "computerName")]
+    pub computer_name: String,
+    /// Specifies whether or not password authentication is disabled.
+    #[serde(
+        rename = "disablePasswordAuthentication",
+        deserialize_with = "string_bool"
+    )]
+    pub disable_password_authentication: bool,
+}
+
+/// An SSH public key.
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct PublicKeys {
+    /// The SSH public key certificate used to authenticate with the virtual machine.
     #[serde(rename = "keyData")]
     pub key_data: String,
+    /// The full path on the virtual machine where the SSH public key is stored.
     #[serde(rename = "path")]
     pub path: String,
 }
 
-pub async fn query_imds(client: &Client) -> Result<String, Error> {
+/// Deserializer that handles the string "true" and "false" that the IMDS API returns.
+fn string_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Deserialize::deserialize(deserializer)? {
+        Value::String(string) => match string.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            unknown => Err(serde::de::Error::unknown_variant(
+                unknown,
+                &["true", "false"],
+            )),
+        },
+        Value::Bool(boolean) => Ok(boolean),
+        _ => Err(serde::de::Error::custom(
+            "Unexpected type, expected 'true' or 'false'",
+        )),
+    }
+}
+
+pub async fn query(client: &Client) -> Result<InstanceMetadata, Error> {
     let url = "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
     let mut headers = HeaderMap::new();
 
@@ -31,8 +89,9 @@ pub async fn query_imds(client: &Client) -> Result<String, Error> {
 
     if response.status().is_success() {
         let imds_body = response.text().await?;
+        let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
 
-        Ok(imds_body)
+        Ok(metadata)
     } else {
         Err(Error::HttpStatus {
             endpoint: url.to_owned(),
@@ -41,163 +100,101 @@ pub async fn query_imds(client: &Client) -> Result<String, Error> {
     }
 }
 
-pub fn get_ssh_keys(imds_body: String) -> Result<Vec<PublicKeys>, Error> {
-    let data: Value = serde_json::from_str(&imds_body)?;
-    let public_keys =
-        Vec::<PublicKeys>::deserialize(&data["compute"]["publicKeys"])?;
-
-    Ok(public_keys)
-}
-
-pub fn get_username(imds_body: String) -> Result<String, Error> {
-    let data: Value = serde_json::from_str(&imds_body)?;
-    let username =
-        String::deserialize(&data["compute"]["osProfile"]["adminUsername"])?;
-
-    Ok(username)
-}
-
-pub fn get_hostname(imds_body: String) -> Result<String, Error> {
-    let data: Value = serde_json::from_str(&imds_body)?;
-    let hostname =
-        String::deserialize(&data["compute"]["osProfile"]["computerName"])?;
-
-    Ok(hostname)
-}
-
-pub fn is_password_authentication_disabled(
-    imds_body: &str,
-) -> Result<bool, Error> {
-    let data: Value = serde_json::from_str(imds_body)?;
-
-    let provision_with_password = String::deserialize(
-        &data["compute"]["osProfile"]["disablePasswordAuthentication"],
-    )?;
-
-    if provision_with_password == "true" {
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        get_hostname, get_ssh_keys, get_username,
-        is_password_authentication_disabled,
-    };
+    use serde_json::json;
+
+    use super::{InstanceMetadata, OsProfile};
 
     #[test]
-    fn test_get_ssh_keys() {
+    fn instance_metadata_deserialization() {
         let file_body = r#"
         {
             "compute": {
-              "azEnvironment": "AzurePublicCloud",
+              "azEnvironment": "cloud_env",
               "customData": "",
+              "evictionPolicy": "",
+              "isHostCompatibilityLayerVm": "false",
+              "licenseType": "",
+              "location": "eastus",
+              "name": "AzTux-MinProvAgent-Test-0001",
+              "offer": "0001-com-ubuntu-server-focal",
+              "osProfile": {
+                "adminUsername": "MinProvAgentUser",
+                "computerName": "AzTux-MinProvAgent-Test-0001",
+                "disablePasswordAuthentication": "true"
+              },
               "publicKeys": [
                 {
                   "keyData": "ssh-rsa test_key1",
                   "path": "/path/to/.ssh/authorized_keys"
                 },
                 {
-                    "keyData": "ssh-rsa test_key2",
-                    "path": "/path/to/.ssh/authorized_keys"
+                  "keyData": "ssh-rsa test_key2",
+                  "path": "/path/to/.ssh/authorized_keys"
                 }
               ]
             }
         }"#
         .to_string();
 
-        let public_keys = get_ssh_keys(file_body)
-            .expect("Failed to obtain ssh keys from the JSON file.");
+        let metadata: InstanceMetadata =
+            serde_json::from_str(&file_body).unwrap();
 
-        assert_eq!(public_keys[0].key_data, "ssh-rsa test_key1".to_string());
-        assert_eq!(public_keys[1].key_data, "ssh-rsa test_key2".to_string());
+        assert!(metadata.compute.os_profile.disable_password_authentication);
+        assert_eq!(
+            metadata.compute.public_keys[0].key_data,
+            "ssh-rsa test_key1".to_string()
+        );
+        assert_eq!(
+            metadata.compute.public_keys[1].key_data,
+            "ssh-rsa test_key2".to_string()
+        );
+        assert_eq!(
+            metadata.compute.os_profile.admin_username,
+            "MinProvAgentUser".to_string()
+        );
+        assert_eq!(
+            metadata.compute.os_profile.computer_name,
+            "AzTux-MinProvAgent-Test-0001".to_string()
+        );
+        assert_eq!(
+            metadata.compute.os_profile.disable_password_authentication,
+            true
+        );
     }
 
     #[test]
-    fn test_get_username() {
-        let file_body = r#"
-        {
-            "compute": {
-              "azEnvironment": "cloud_env",
-              "customData": "",
-              "evictionPolicy": "",
-              "isHostCompatibilityLayerVm": "false",
-              "licenseType": "",
-              "location": "eastus",
-              "name": "AzTux-MinProvAgent-Test-0001",
-              "offer": "0001-com-ubuntu-server-focal",
-              "osProfile": {
-                "adminUsername": "MinProvAgentUser",
-                "computerName": "AzTux-MinProvAgent-Test-0001",
-                "disablePasswordAuthentication": "true"
-              }
-            }
-        }"#
-        .to_string();
-
-        let username =
-            get_username(file_body).expect("Failed to get username.");
-
-        assert_eq!(username, "MinProvAgentUser".to_string());
+    fn deserialization_disable_password_true() {
+        let os_profile = json!({
+            "adminUsername": "MinProvAgentUser",
+            "computerName": "AzTux-MinProvAgent-Test-0001",
+            "disablePasswordAuthentication": "true"
+        });
+        let os_profile: OsProfile = serde_json::from_value(os_profile).unwrap();
+        assert!(os_profile.disable_password_authentication);
     }
 
     #[test]
-    fn test_get_hostname() {
-        let file_body = r#"
-        {
-            "compute": {
-              "azEnvironment": "cloud_env",
-              "customData": "",
-              "evictionPolicy": "",
-              "isHostCompatibilityLayerVm": "false",
-              "licenseType": "",
-              "location": "eastus",
-              "name": "AzTux-MinProvAgent-Test-0001",
-              "offer": "0001-com-ubuntu-server-focal",
-              "osProfile": {
-                "adminUsername": "MinProvAgentUser",
-                "computerName": "AzTux-MinProvAgent-Test-0001",
-                "disablePasswordAuthentication": "true"
-              }
-            }
-        }"#
-        .to_string();
-
-        let hostname =
-            get_hostname(file_body).expect("Failed to get hostname.");
-
-        assert_eq!(hostname, "AzTux-MinProvAgent-Test-0001".to_string());
+    fn deserialization_disable_password_false() {
+        let os_profile = json!({
+            "adminUsername": "MinProvAgentUser",
+            "computerName": "AzTux-MinProvAgent-Test-0001",
+            "disablePasswordAuthentication": "false"
+        });
+        let os_profile: OsProfile = serde_json::from_value(os_profile).unwrap();
+        assert_eq!(os_profile.disable_password_authentication, false);
     }
 
     #[test]
-    fn test_provision_with_password_true() {
-        let file_body = r#"
-        {
-            "compute": {
-              "azEnvironment": "cloud_env",
-              "customData": "",
-              "evictionPolicy": "",
-              "isHostCompatibilityLayerVm": "false",
-              "licenseType": "",
-              "location": "eastus",
-              "name": "AzTux-MinProvAgent-Test-0001",
-              "offer": "0001-com-ubuntu-server-focal",
-              "osProfile": {
-                "adminUsername": "MinProvAgentUser",
-                "computerName": "AzTux-MinProvAgent-Test-0001",
-                "disablePasswordAuthentication": "true"
-              }
-            }
-        }"#
-        .to_string();
-
-        let provision_with_password =
-            is_password_authentication_disabled(&file_body)
-                .expect("Failed to interpret disablePasswordAuthentication.");
-
-        assert_eq!(provision_with_password, true);
+    fn deserialization_disable_password_nonsense() {
+        let os_profile = json!({
+            "adminUsername": "MinProvAgentUser",
+            "computerName": "AzTux-MinProvAgent-Test-0001",
+            "disablePasswordAuthentication": "nonsense"
+        });
+        let os_profile: Result<OsProfile, _> =
+            serde_json::from_value(os_profile);
+        assert!(os_profile.is_err_and(|err| err.is_data()));
     }
 }
