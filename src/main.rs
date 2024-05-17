@@ -36,8 +36,25 @@ fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
     Ok(environment)
 }
 
+fn get_environment() -> Result<Environment, anyhow::Error> {
+    let ovf_devices = media::get_mount_device()?;
+    let mut environment: Option<Environment> = None;
+
+    // loop until it finds a correct device.
+    for dev in ovf_devices {
+        environment = match mount_parse_ovf_env(dev) {
+            Ok(env) => Some(env),
+            Err(_) => continue,
+        }
+    }
+
+    environment
+        .ok_or_else(|| anyhow::anyhow!("Unable to get list of block devices"))
+}
+
 fn get_username(
     instance_metadata: &InstanceMetadata,
+    environment: &Environment,
 ) -> Result<String, anyhow::Error> {
     if instance_metadata
         .compute
@@ -49,22 +66,8 @@ fn get_username(
     } else {
         // password authentication is enabled
 
-        // list of CDROM devices that is available with possible filesystems.
-        let ovf_devices = media::get_mount_device()?;
-        let mut environment: Option<Environment> = None;
-
-        // loop until it finds a correct device.
-        for dev in ovf_devices {
-            environment = match mount_parse_ovf_env(dev) {
-                Ok(env) => Some(env),
-                Err(_) => continue,
-            }
-        }
-
         Ok(environment
-            .ok_or_else(|| {
-                anyhow::anyhow!("Unable to get list of block devices")
-            })?
+            .clone()
             .provisioning_section
             .linux_prov_conf_set
             .username)
@@ -103,7 +106,7 @@ async fn provision() -> Result<(), anyhow::Error> {
         .build()?;
 
     let instance_metadata = imds::query(&client).await?;
-    let username = get_username(&instance_metadata)?;
+    let username = get_username(&instance_metadata, &get_environment()?)?;
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());
