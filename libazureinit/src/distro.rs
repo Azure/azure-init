@@ -17,6 +17,7 @@ pub trait Distribution {
 pub enum Distributions {
     Debian,
     Ubuntu,
+    AzureLinux,
 }
 
 impl Distribution for Distributions {
@@ -26,10 +27,78 @@ impl Distribution for Distributions {
         password: &str,
     ) -> Result<i32, String> {
         match self {
+            Distributions::AzureLinux => {
+                let mut home_path = "/home/".to_string();
+                home_path.push_str(username);
+                println!("Creating user in AzureLinux: {}", username);
+                match Command::new("useradd")
+                    .arg(username)
+                    .arg("--comment")
+                    .arg(
+                      "Provisioning agent created this user based on username provided in IMDS",
+                    )
+                    .arg("-U")
+                    .arg("--groups")
+                    .arg("wheel,sudo")
+                    .arg("-d")
+                    .arg(home_path.clone())
+                    .arg("-m")
+                    .status(){
+                        Ok(_)=>(),
+                        Err(err) => return Err(err.to_string()),
+                    };
+
+                if password.is_empty() {
+                    match Command::new("passwd")
+                        .arg("-d")
+                        .arg(username)
+                        .status()
+                    {
+                        Ok(status_code) => {
+                            if !status_code.success() {
+                                return Err("Failed to create user".to_string());
+                            }
+                        }
+                        Err(err) => return Err(err.to_string()),
+                    };
+                    println!("User created without password")
+                } else {
+                    let input = format!("{}:{}", username, password);
+                    
+                    let mut output = Command::new("chpasswd")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                        .expect("Failed to run chpasswd.");
+                    
+                    let mut stdin =
+                        output.stdin.as_ref().ok_or("Failed to open stdin")?;
+
+                        stdin.write_all(input.as_bytes()).map_err(|error| {
+                            format!("Failed to write to stdin: {}", error)
+                        })?;
+                        
+                        let status = output.wait().map_err(|error| {
+                        format!("Failed to wait for stdin command: {}", error)
+                    })?;
+
+                    if !status.success() {
+                        return Err(format!(
+                            "Chpasswd command failed with exit code {}",
+                            status.code().unwrap_or(-1)
+                        ));
+                    }
+                    println!("User created with password")
+                }
+                
+                Ok(0)
+            },
             Distributions::Debian | Distributions::Ubuntu => {
                 let mut home_path = "/home/".to_string();
                 home_path.push_str(username);
 
+                println!("Creating user in Debian/Ubuntu: {}", username);
                 match Command::new("useradd")
                     .arg(username)
                     .arg("--comment")
@@ -94,6 +163,16 @@ impl Distribution for Distributions {
     }
     fn set_hostname(&self, hostname: &str) -> Result<i32, String> {
         match self {
+            Distributions::AzureLinux => {
+                match Command::new("hostnamectl")
+                    .arg("set-hostname")
+                    .arg(hostname)
+                    .status()
+                {
+                    Ok(status_code) => Ok(status_code.code().unwrap_or(1)),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
             Distributions::Debian | Distributions::Ubuntu => {
                 match Command::new("hostnamectl")
                     .arg("set-hostname")
@@ -112,6 +191,7 @@ impl From<&str> for Distributions {
         match s {
             "debian" => Distributions::Debian,
             "ubuntu" => Distributions::Ubuntu,
+            "azurelinux" => Distributions::AzureLinux,
             _ => panic!("Unknown distribution"),
         }
     }
