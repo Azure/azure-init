@@ -15,10 +15,18 @@ use libazureinit::{
     reqwest::{header, Client},
     user,
 };
+use azurekvp::{initialize_tracing, TRACER};
+use opentelemetry::global;
+use tracing::{info, instrument};
+use opentelemetry::trace::Tracer;
+use opentelemetry::trace::Span;
+use tracing::span;
+use tracing::Level;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Mount the given device, get OVF environment data, return it.
+#[instrument]
 fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(media::PATH_MOUNT_POINT));
@@ -71,6 +79,11 @@ fn get_username(
     }
 }
 
+#[instrument]
+fn test () { 
+    print!("Hello, World!"); 
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match provision().await {
@@ -92,6 +105,9 @@ async fn main() -> ExitCode {
 }
 
 async fn provision() -> Result<(), anyhow::Error> {
+    // Initialize the tracing subscriber
+    initialize_tracing();
+
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
