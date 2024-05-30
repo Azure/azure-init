@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -11,33 +10,32 @@ use libazureinit::imds::InstanceMetadata;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::{Environment, Media},
+    media::Environment,
     reqwest::{header, Client},
     user,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// Mount the given device, get OVF environment data, return it.
-fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
-    let mount_media =
-        Media::new(PathBuf::from(dev), PathBuf::from(media::PATH_MOUNT_POINT));
-    let mounted = mount_media
-        .mount()
-        .with_context(|| "Failed to mount media.")?;
+fn get_environment() -> Result<Environment, anyhow::Error> {
+    let ovf_devices = media::get_mount_device()?;
+    let mut environment: Option<Environment> = None;
 
-    let ovf_body = mounted.read_ovf_env_to_string()?;
-    let environment = media::parse_ovf_env(ovf_body.as_str())?;
+    // loop until it finds a correct device.
+    for dev in ovf_devices {
+        environment = match media::mount_parse_ovf_env(dev) {
+            Ok(env) => Some(env),
+            Err(_) => continue,
+        }
+    }
 
-    mounted
-        .unmount()
-        .with_context(|| "Failed to remove media.")?;
-
-    Ok(environment)
+    environment
+        .ok_or_else(|| anyhow::anyhow!("Unable to get list of block devices"))
 }
 
 fn get_username(
     instance_metadata: &InstanceMetadata,
+    environment: &Environment,
 ) -> Result<String, anyhow::Error> {
     if instance_metadata
         .compute
@@ -49,22 +47,8 @@ fn get_username(
     } else {
         // password authentication is enabled
 
-        // list of CDROM devices that is available with possible filesystems.
-        let ovf_devices = media::get_mount_device()?;
-        let mut environment: Option<Environment> = None;
-
-        // loop until it finds a correct device.
-        for dev in ovf_devices {
-            environment = match mount_parse_ovf_env(dev) {
-                Ok(env) => Some(env),
-                Err(_) => continue,
-            }
-        }
-
         Ok(environment
-            .ok_or_else(|| {
-                anyhow::anyhow!("Unable to get list of block devices")
-            })?
+            .clone()
             .provisioning_section
             .linux_prov_conf_set
             .username)
@@ -103,7 +87,7 @@ async fn provision() -> Result<(), anyhow::Error> {
         .build()?;
 
     let instance_metadata = imds::query(&client).await?;
-    let username = get_username(&instance_metadata)?;
+    let username = get_username(&instance_metadata, &get_environment()?)?;
 
     let mut file_path = "/home/".to_string();
     file_path.push_str(username.as_str());

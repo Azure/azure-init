@@ -12,6 +12,8 @@ use std::process::Command;
 use serde::Deserialize;
 use serde_xml_rs::from_str;
 
+use tracing;
+
 use crate::error::Error;
 
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
@@ -185,6 +187,24 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     } else {
         Ok(environment)
     }
+}
+
+// Mount the given device, get OVF environment data, return it.
+pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
+    let mount_media =
+        Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
+    let mounted = mount_media.mount().inspect_err(
+        |e| tracing::error!(error = ?e, "Failed to mount media."),
+    )?;
+
+    let ovf_body = mounted.read_ovf_env_to_string()?;
+    let environment = parse_ovf_env(ovf_body.as_str())?;
+
+    mounted.unmount().inspect_err(
+        |e| tracing::error!(error = ?e, "Failed to remove media."),
+    )?;
+
+    Ok(environment)
 }
 
 #[cfg(test)]
