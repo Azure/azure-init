@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -11,30 +10,12 @@ use libazureinit::imds::InstanceMetadata;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::{Environment, Media},
+    media::Environment,
     reqwest::{header, Client},
     user,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-// Mount the given device, get OVF environment data, return it.
-fn mount_parse_ovf_env(dev: String) -> Result<Environment, anyhow::Error> {
-    let mount_media =
-        Media::new(PathBuf::from(dev), PathBuf::from(media::PATH_MOUNT_POINT));
-    let mounted = mount_media
-        .mount()
-        .with_context(|| "Failed to mount media.")?;
-
-    let ovf_body = mounted.read_ovf_env_to_string()?;
-    let environment = media::parse_ovf_env(ovf_body.as_str())?;
-
-    mounted
-        .unmount()
-        .with_context(|| "Failed to remove media.")?;
-
-    Ok(environment)
-}
 
 fn get_environment() -> Result<Environment, anyhow::Error> {
     let ovf_devices = media::get_mount_device()?;
@@ -42,7 +23,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
 
     // loop until it finds a correct device.
     for dev in ovf_devices {
-        environment = match mount_parse_ovf_env(dev) {
+        environment = match media::mount_parse_ovf_env(dev) {
             Ok(env) => Some(env),
             Err(_) => continue,
         }
