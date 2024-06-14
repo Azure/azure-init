@@ -5,9 +5,9 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 
-use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::{
+    distro,
     error::Error as LibError,
     goalstate, imds, media,
     media::Environment,
@@ -93,8 +93,7 @@ async fn provision() -> Result<(), anyhow::Error> {
     file_path.push_str(username.as_str());
 
     // always pass an empty password
-    Distributions::from("ubuntu")
-        .create_user(username.as_str(), "")
+    distro::create_user(username.as_str(), "")
         .with_context(|| format!("Unabled to create user '{username}'"))?;
 
     user::create_ssh_directory(username.as_str(), &file_path)
@@ -111,11 +110,10 @@ async fn provision() -> Result<(), anyhow::Error> {
     .await
     .with_context(|| "Failed to write ssh public keys.")?;
 
-    Distributions::from("ubuntu")
-        .set_hostname(
-            instance_metadata.compute.os_profile.computer_name.as_str(),
-        )
-        .with_context(|| "Failed to set hostname.")?;
+    distro::set_hostname(
+        instance_metadata.compute.os_profile.computer_name.as_str(),
+    )
+    .with_context(|| "Failed to set hostname.")?;
 
     let vm_goalstate = goalstate::get_goalstate(&client)
         .await

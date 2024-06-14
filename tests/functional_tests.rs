@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use libazureinit::distro::{Distribution, Distributions};
 use libazureinit::imds::PublicKeys;
 use libazureinit::{
-    goalstate,
+    distro, goalstate,
     reqwest::{header, Client},
     user,
 };
@@ -61,9 +60,7 @@ async fn main() {
         username.as_str()
     );
 
-    Distributions::from("ubuntu")
-        .create_user(username.as_str(), "")
-        .expect("Failed to create user");
+    distro::create_user(username.as_str(), "").expect("Failed to create user");
 
     println!("User {} was successfully created", username.as_str());
 
@@ -102,9 +99,7 @@ async fn main() {
     println!();
     println!("Attempting to set the VM hostname");
 
-    Distributions::from("ubuntu")
-        .set_hostname("test-hostname-set")
-        .expect("Failed to set hostname");
+    distro::set_hostname("test-hostname-set").expect("Failed to set hostname");
     println!("VM hostname successfully set");
     println!();
 

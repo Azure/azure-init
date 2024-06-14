@@ -5,29 +5,10 @@ use std::process::Command;
 
 use crate::error::Error;
 
-pub trait Distribution {
-    fn create_user(&self, username: &str, password: &str)
-        -> Result<i32, Error>;
-    fn set_hostname(&self, hostname: &str) -> Result<i32, Error>;
-}
+pub fn create_user(username: &str, password: &str) -> Result<i32, Error> {
+    let home_path = format!("/home/{username}");
 
-pub enum Distributions {
-    Debian,
-    Ubuntu,
-}
-
-impl Distribution for Distributions {
-    fn create_user(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<i32, Error> {
-        match self {
-            Distributions::Debian | Distributions::Ubuntu => {
-                let mut home_path = "/home/".to_string();
-                home_path.push_str(username);
-
-                let status = Command::new("useradd")
+    let status = Command::new("useradd")
                     .arg(username)
                     .arg("--comment")
                     .arg(
@@ -39,58 +20,40 @@ impl Distribution for Distributions {
                     .arg(home_path.clone())
                     .arg("-m")
                     .status()?;
-                if !status.success() {
-                    return Err(Error::SubprocessFailed {
-                        command: "useradd".to_string(),
-                        status,
-                    });
-                }
-
-                if password.is_empty() {
-                    let status = Command::new("passwd")
-                        .arg("-d")
-                        .arg(username)
-                        .status()?;
-                    if !status.success() {
-                        return Err(Error::SubprocessFailed {
-                            command: "passwd".to_string(),
-                            status,
-                        });
-                    }
-                } else {
-                    // creating user with a non-empty password is not allowed.
-                    return Err(Error::NonEmptyPassword);
-                }
-
-                Ok(0)
-            }
-        }
+    if !status.success() {
+        return Err(Error::SubprocessFailed {
+            command: "useradd".to_string(),
+            status,
+        });
     }
-    fn set_hostname(&self, hostname: &str) -> Result<i32, Error> {
-        match self {
-            Distributions::Debian | Distributions::Ubuntu => {
-                let status = Command::new("hostnamectl")
-                    .arg("set-hostname")
-                    .arg(hostname)
-                    .status()?;
-                if status.success() {
-                    Ok(status.code().unwrap_or(1))
-                } else {
-                    Err(Error::SubprocessFailed {
-                        command: "chpasswd".to_string(),
-                        status,
-                    })
-                }
-            }
+
+    if password.is_empty() {
+        let status = Command::new("passwd").arg("-d").arg(username).status()?;
+        if !status.success() {
+            return Err(Error::SubprocessFailed {
+                command: "passwd".to_string(),
+                status,
+            });
         }
+    } else {
+        // creating user with a non-empty password is not allowed.
+        return Err(Error::NonEmptyPassword);
     }
+
+    Ok(0)
 }
-impl From<&str> for Distributions {
-    fn from(s: &str) -> Self {
-        match s {
-            "debian" => Distributions::Debian,
-            "ubuntu" => Distributions::Ubuntu,
-            _ => panic!("Unknown distribution"),
-        }
+
+pub fn set_hostname(hostname: &str) -> Result<i32, Error> {
+    let status = Command::new("hostnamectl")
+        .arg("set-hostname")
+        .arg(hostname)
+        .status()?;
+    if status.success() {
+        Ok(status.code().unwrap_or(1))
+    } else {
+        Err(Error::SubprocessFailed {
+            command: "chpasswd".to_string(),
+            status,
+        })
     }
 }
