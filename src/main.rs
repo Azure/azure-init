@@ -6,13 +6,13 @@ use std::process::ExitCode;
 use anyhow::Context;
 
 use libazureinit::imds::InstanceMetadata;
+use libazureinit::provision::{hostname, password, user};
 use libazureinit::{
-    distro,
     error::Error as LibError,
     goalstate, imds, media,
     media::Environment,
+    provision,
     reqwest::{header, Client},
-    user,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -89,34 +89,25 @@ async fn provision() -> Result<(), anyhow::Error> {
     let instance_metadata = imds::query(&client).await?;
     let username = get_username(&instance_metadata, &get_environment()?)?;
 
-    let mut file_path = "/home/".to_string();
-    file_path.push_str(username.as_str());
-
-    // always pass an empty password
-    distro::create_user_with_useradd(username.as_str())
-        .with_context(|| format!("Unabled to create user '{username}'"))?;
-    distro::set_password_with_passwd(username.as_str(), "").with_context(
-        || format!("Unabled to set an empty password for user '{username}'"),
-    )?;
-
-    user::create_ssh_directory(username.as_str(), &file_path)
-        .await
-        .with_context(|| "Failed to create ssh directory.")?;
-
-    file_path.push_str("/.ssh");
-
-    user::set_ssh_keys(
-        instance_metadata.compute.public_keys,
-        username.to_string(),
-        file_path.clone(),
+    provision::Provision::new(
+        instance_metadata.compute.os_profile.computer_name,
+        username,
     )
-    .await
-    .with_context(|| "Failed to write ssh public keys.")?;
-
-    distro::set_hostname_with_hostnamectl(
-        instance_metadata.compute.os_profile.computer_name.as_str(),
-    )
-    .with_context(|| "Failed to set hostname.")?;
+    .hostname_provisioners([
+        #[cfg(feature = "hostnamectl")]
+        hostname::Provisioner::Hostnamectl,
+    ])
+    .user_provisioners([
+        #[cfg(feature = "useradd")]
+        user::Provisioner::Useradd,
+    ])
+    .ssh_keys(instance_metadata.compute.public_keys)
+    .password("".to_string())
+    .password_provisioners([
+        #[cfg(feature = "passwd")]
+        password::Provisioner::Passwd,
+    ])
+    .provision()?;
 
     let vm_goalstate = goalstate::get_goalstate(&client)
         .await

@@ -3,9 +3,8 @@
 
 use libazureinit::imds::PublicKeys;
 use libazureinit::{
-    distro, goalstate,
+    goalstate, provision,
     reqwest::{header, Client},
-    user,
 };
 
 use std::env;
@@ -51,33 +50,6 @@ async fn main() {
 
     let username = &cli_args[1];
 
-    let mut file_path = "/home/".to_string();
-    file_path.push_str(username.as_str());
-
-    println!();
-    println!(
-        "Attempting to create user {} without password",
-        username.as_str()
-    );
-
-    distro::create_user_with_useradd(username.as_str())
-        .expect("Failed to create user for user '{username}'");
-    distro::set_password_with_passwd(username.as_str(), "")
-        .expect("Unabled to set an empty passord for user '{username}'");
-
-    println!("User {} was successfully created", username.as_str());
-
-    println!();
-    println!("Attempting to create user's SSH directory");
-
-    let _create_directory =
-        user::create_ssh_directory(username.as_str(), &file_path).await;
-    match _create_directory {
-        Ok(create_directory) => create_directory,
-        Err(_err) => return,
-    };
-    println!("User's SSH directory was successfully created");
-
     let keys: Vec<PublicKeys> = vec![
         PublicKeys {
             path: "/path/to/.ssh/keys/".to_owned(),
@@ -93,19 +65,16 @@ async fn main() {
         },
     ];
 
-    file_path.push_str("/.ssh");
+    provision::Provision::new("my-hostname".to_string(), username.to_string())
+        .hostname_provisioners([provision::hostname::Provisioner::Hostnamectl])
+        .user_provisioners([provision::user::Provisioner::Useradd])
+        .ssh_keys(keys)
+        .password("".to_string())
+        .password_provisioners([provision::password::Provisioner::Passwd])
+        .provision()
+        .expect("Failed to provision host");
 
-    user::set_ssh_keys(keys, username.to_string(), file_path.clone())
-        .await
-        .unwrap();
-
-    println!();
-    println!("Attempting to set the VM hostname");
-
-    distro::set_hostname_with_hostnamectl("test-hostname-set")
-        .expect("Failed to set hostname");
-
-    println!("VM hostname successfully set");
+    println!("VM successfully provisioned");
     println!();
 
     println!("**********************************");
