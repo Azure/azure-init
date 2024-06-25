@@ -93,8 +93,11 @@ async fn provision() -> Result<(), anyhow::Error> {
     file_path.push_str(username.as_str());
 
     // always pass an empty password
-    distro::create_user(username.as_str(), "")
+    distro::create_user_with_useradd(username.as_str())
         .with_context(|| format!("Unabled to create user '{username}'"))?;
+    distro::set_password_with_passwd(username.as_str(), "").with_context(
+        || format!("Unabled to set an empty password for user '{username}'"),
+    )?;
 
     user::create_ssh_directory(username.as_str(), &file_path)
         .await
@@ -110,7 +113,7 @@ async fn provision() -> Result<(), anyhow::Error> {
     .await
     .with_context(|| "Failed to write ssh public keys.")?;
 
-    distro::set_hostname(
+    distro::set_hostname_with_hostnamectl(
         instance_metadata.compute.os_profile.computer_name.as_str(),
     )
     .with_context(|| "Failed to set hostname.")?;

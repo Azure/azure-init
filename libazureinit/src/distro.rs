@@ -5,10 +5,11 @@ use std::process::Command;
 
 use crate::error::Error;
 
-pub fn create_user(username: &str, password: &str) -> Result<i32, Error> {
+pub fn create_user_with_useradd(username: &str) -> Result<i32, Error> {
+    let path_useradd = env!("PATH_USERADD");
     let home_path = format!("/home/{username}");
 
-    let status = Command::new("useradd")
+    let status = Command::new(path_useradd)
                     .arg(username)
                     .arg("--comment")
                     .arg(
@@ -22,16 +23,26 @@ pub fn create_user(username: &str, password: &str) -> Result<i32, Error> {
                     .status()?;
     if !status.success() {
         return Err(Error::SubprocessFailed {
-            command: "useradd".to_string(),
+            command: path_useradd.to_string(),
             status,
         });
     }
 
+    Ok(0)
+}
+
+pub fn set_password_with_passwd(
+    username: &str,
+    password: &str,
+) -> Result<i32, Error> {
+    let path_passwd = env!("PATH_PASSWD");
+
     if password.is_empty() {
-        let status = Command::new("passwd").arg("-d").arg(username).status()?;
+        let status =
+            Command::new(path_passwd).arg("-d").arg(username).status()?;
         if !status.success() {
             return Err(Error::SubprocessFailed {
-                command: "passwd".to_string(),
+                command: path_passwd.to_string(),
                 status,
             });
         }
@@ -43,8 +54,10 @@ pub fn create_user(username: &str, password: &str) -> Result<i32, Error> {
     Ok(0)
 }
 
-pub fn set_hostname(hostname: &str) -> Result<i32, Error> {
-    let status = Command::new("hostnamectl")
+pub fn set_hostname_with_hostnamectl(hostname: &str) -> Result<i32, Error> {
+    let path_hostnamectl = env!("PATH_HOSTNAMECTL");
+
+    let status = Command::new(path_hostnamectl)
         .arg("set-hostname")
         .arg(hostname)
         .status()?;
@@ -52,7 +65,7 @@ pub fn set_hostname(hostname: &str) -> Result<i32, Error> {
         Ok(status.code().unwrap_or(1))
     } else {
         Err(Error::SubprocessFailed {
-            command: "chpasswd".to_string(),
+            command: path_hostnamectl.to_string(),
             status,
         })
     }

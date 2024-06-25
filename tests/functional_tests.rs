@@ -60,7 +60,10 @@ async fn main() {
         username.as_str()
     );
 
-    distro::create_user(username.as_str(), "").expect("Failed to create user");
+    distro::create_user_with_useradd(username.as_str())
+        .expect("Failed to create user for user '{username}'");
+    distro::set_password_with_passwd(username.as_str(), "")
+        .expect("Unabled to set an empty passord for user '{username}'");
 
     println!("User {} was successfully created", username.as_str());
 
@@ -99,7 +102,9 @@ async fn main() {
     println!();
     println!("Attempting to set the VM hostname");
 
-    distro::set_hostname("test-hostname-set").expect("Failed to set hostname");
+    distro::set_hostname_with_hostnamectl("test-hostname-set")
+        .expect("Failed to set hostname");
+
     println!("VM hostname successfully set");
     println!();
 
