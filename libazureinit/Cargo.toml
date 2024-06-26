@@ -2,7 +2,6 @@
 name = "libazureinit"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.76"
 build = "build.rs"
 repository = "https://github.com/Azure/azure-init/"
 homepage = "https://github.com/Azure/azure-init/"

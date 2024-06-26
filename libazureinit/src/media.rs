@@ -193,16 +193,18 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
-    let mounted = mount_media.mount().inspect_err(
-        |e| tracing::error!(error = ?e, "Failed to mount media."),
-    )?;
+    let mounted = mount_media.mount().map_err(|e| {
+        tracing::error!(error = ?e, "Failed to mount media.");
+        e
+    })?;
 
     let ovf_body = mounted.read_ovf_env_to_string()?;
     let environment = parse_ovf_env(ovf_body.as_str())?;
 
-    mounted.unmount().inspect_err(
-        |e| tracing::error!(error = ?e, "Failed to remove media."),
-    )?;
+    mounted.unmount().map_err(|e| {
+        tracing::error!(error = ?e, "Failed to remove media.");
+        e
+    })?;
 
     Ok(environment)
 }
