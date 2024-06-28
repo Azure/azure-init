@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 pub mod hostname;
 pub mod password;
 pub mod user;
@@ -9,7 +10,6 @@ use std::{
     io::Write,
     marker::PhantomData,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
 };
 
 use private::*;
@@ -132,7 +132,7 @@ impl Provision<AllBackends> {
         self
     }
 
-    /// Provision the host.
+    /// Apply the selected configuration to the host.
     #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         self.user_backends
@@ -157,7 +157,11 @@ impl Provision<AllBackends> {
             .ok_or(Error::NoPasswordProvisioner)?;
 
         if !self.keys.is_empty() {
-            provision_ssh(&self.username, &self.keys)?;
+            let user = nix::unistd::User::from_name(&self.username)?
+                .ok_or_else(|| Error::UserMissing {
+                    user: self.username,
+                })?;
+            provision_ssh(&user, &self.keys)?;
         }
 
         self.hostname_backends
@@ -175,15 +179,19 @@ impl Provision<AllBackends> {
 }
 
 #[instrument(skip_all, name = "ssh")]
-fn provision_ssh(username: &str, keys: &[PublicKeys]) -> Result<(), Error> {
-    let ssh_dir = PathBuf::from(format!("/home/{}/.ssh", username));
-    let user = nix::unistd::User::from_name(username)?.ok_or_else(|| {
-        Error::UserMissing {
-            user: username.to_string(),
-        }
-    })?;
-    std::fs::DirBuilder::new().mode(0o700).create(&ssh_dir)?;
+fn provision_ssh(
+    user: &nix::unistd::User,
+    keys: &[PublicKeys],
+) -> Result<(), Error> {
+    let ssh_dir = user.dir.join(".ssh");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&ssh_dir)?;
     nix::unistd::chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
+    // It's possible the directory already existed if it's created with the user; make sure
+    // the permissions are correct.
+    std::fs::set_permissions(&ssh_dir, Permissions::from_mode(0o700))?;
 
     let authorized_keys_path = ssh_dir.join("authorized_keys");
     let mut authorized_keys = std::fs::File::create(&authorized_keys_path)?;
@@ -198,7 +206,13 @@ fn provision_ssh(username: &str, keys: &[PublicKeys]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
 
-    use super::{hostname, password, user, Provision};
+    use super::{hostname, password, provision_ssh, user, Provision};
+    use crate::imds::PublicKeys;
+    use std::{
+        fs::Permissions,
+        io::Read,
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
+    };
 
     #[test]
     fn test_successful_provision() {
@@ -210,5 +224,119 @@ mod tests {
                 .password_provisioners([password::Provisioner::FakePasswd])
                 .provision()
                 .unwrap();
+    }
+
+    // Test that we set the permission bits correctly on the ssh files; sadly it's difficult to test
+    // chown without elevated permissions.
+    #[test]
+    fn test_provision_ssh() {
+        let mut user =
+            nix::unistd::User::from_name(whoami::username().as_str())
+                .unwrap()
+                .unwrap();
+        let home_dir = tempfile::TempDir::new().unwrap();
+        user.dir = home_dir.path().into();
+
+        let keys = vec![
+            PublicKeys {
+                key_data: "not-a-real-key abc123".to_string(),
+                path: "unused".to_string(),
+            },
+            PublicKeys {
+                key_data: "not-a-real-key xyz987".to_string(),
+                path: "unused".to_string(),
+            },
+        ];
+        provision_ssh(&user, &keys).unwrap();
+
+        let ssh_dir =
+            std::fs::File::open(home_dir.path().join(".ssh")).unwrap();
+        let mut auth_file =
+            std::fs::File::open(home_dir.path().join(".ssh/authorized_keys"))
+                .unwrap();
+        let mut buf = String::new();
+        auth_file.read_to_string(&mut buf).unwrap();
+
+        assert_eq!("not-a-real-key abc123\nnot-a-real-key xyz987\n", buf);
+        // Refer to man 7 inode for details on the mode - 100000 is a regular file, 040000 is a directory
+        assert_eq!(
+            ssh_dir.metadata().unwrap().permissions(),
+            Permissions::from_mode(0o040700)
+        );
+        assert_eq!(
+            auth_file.metadata().unwrap().permissions(),
+            Permissions::from_mode(0o100600)
+        );
+    }
+
+    // Test that if the .ssh directory already exists, we handle it gracefully. This can occur if, for example,
+    // /etc/skel includes it. This also checks that we fix the permissions if /etc/skel has been mis-configured.
+    #[test]
+    fn test_pre_existing_ssh_dir() {
+        let mut user =
+            nix::unistd::User::from_name(whoami::username().as_str())
+                .unwrap()
+                .unwrap();
+        let home_dir = tempfile::TempDir::new().unwrap();
+        user.dir = home_dir.path().into();
+        std::fs::DirBuilder::new()
+            .mode(0o777)
+            .create(user.dir.join(".ssh").as_path())
+            .unwrap();
+
+        let keys = vec![
+            PublicKeys {
+                key_data: "not-a-real-key abc123".to_string(),
+                path: "unused".to_string(),
+            },
+            PublicKeys {
+                key_data: "not-a-real-key xyz987".to_string(),
+                path: "unused".to_string(),
+            },
+        ];
+        provision_ssh(&user, &keys).unwrap();
+
+        let ssh_dir =
+            std::fs::File::open(home_dir.path().join(".ssh")).unwrap();
+        assert_eq!(
+            ssh_dir.metadata().unwrap().permissions(),
+            Permissions::from_mode(0o040700)
+        );
+    }
+
+    // Test that any pre-existing authorized_keys are overwritten.
+    #[test]
+    fn test_pre_existing_authorized_keys() {
+        let mut user =
+            nix::unistd::User::from_name(whoami::username().as_str())
+                .unwrap()
+                .unwrap();
+        let home_dir = tempfile::TempDir::new().unwrap();
+        user.dir = home_dir.path().into();
+        std::fs::DirBuilder::new()
+            .mode(0o777)
+            .create(user.dir.join(".ssh").as_path())
+            .unwrap();
+
+        let keys = vec![
+            PublicKeys {
+                key_data: "not-a-real-key abc123".to_string(),
+                path: "unused".to_string(),
+            },
+            PublicKeys {
+                key_data: "not-a-real-key xyz987".to_string(),
+                path: "unused".to_string(),
+            },
+        ];
+        provision_ssh(&user, &keys[..1]).unwrap();
+        provision_ssh(&user, &keys[1..]).unwrap();
+
+        let mut auth_file =
+            std::fs::File::open(home_dir.path().join(".ssh/authorized_keys"))
+                .unwrap();
+        let mut buf = String::new();
+        auth_file.read_to_string(&mut buf).unwrap();
+
+        assert_eq!("not-a-real-key xyz987\n", buf);
     }
 }
