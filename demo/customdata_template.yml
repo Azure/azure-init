@@ -20,6 +20,7 @@ write_files:
       tar -xf /run/azure-init.tgz -C /var/lib
       mv /var/lib/azure-init/azure-init.service /lib/systemd/system/azure-init.service
       systemctl enable /lib/systemd/system/azure-init.service
+      mkdir --parents /etc/netplan
       cat > /etc/netplan/eth0.yaml <<EOF
       network:
           ethernets:
@@ -51,7 +52,7 @@ write_files:
       apt-get remove -y cloud-init walinuxagent
 
       # remove cloud-init netplan config
-      rm /etc/netplan/50-cloud-init.yaml
+      rm -f /etc/netplan/50-cloud-init.yaml
 
       echo "SIGTOOL_END"
 
