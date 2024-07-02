@@ -11,35 +11,24 @@ jobs:
   build-test:
     name: Build and test azure-init
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust-toolchain: [stable, stable 12 months ago]
     steps:
       - name: Install libudev
         run: |
           sudo apt update
           sudo apt install -y libudev-dev
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@master
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: rustup component add rustfmt
+          toolchain: ${{matrix.rust-toolchain}}
+          components: clippy, rustfmt
       - name: Rustfmt Check
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all --check
+        run: cargo fmt --all --check
       - name: Build azure-init
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --verbose
+        run: cargo build --verbose
       - name: Run unit tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --verbose
+        run: cargo test --verbose
       - name: Run clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --verbose -- --deny warnings
+        run: cargo clippy --verbose -- --deny warnings
