@@ -10,17 +10,18 @@ jobs:
   clippy:
     name: Run clippy on azure-init 
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust-toolchain: [stable, stable 12 months ago]
     steps:
       - name: Install libudev
         run: |
           sudo apt update
           sudo apt install -y libudev-dev
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        name: Install rust
+      - uses: dtolnay/rust-toolchain@master
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
+          toolchain: ${{matrix.rust-toolchain}}
+          components: clippy
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --verbose -- --deny warnings

@@ -27,7 +27,7 @@ pub async fn set_ssh_keys(
     }
     let metadata = fs::metadata(authorized_keys_path.clone())?;
     let permissions = metadata.permissions();
-    let mut new_permissions = permissions.clone();
+    let mut new_permissions = permissions;
     new_permissions.set_mode(0o600);
     fs::set_permissions(authorized_keys_path.clone(), new_permissions)?;
 
@@ -36,7 +36,7 @@ pub async fn set_ssh_keys(
     let uid = unsafe { (*uid_passwd).pw_uid };
     let new_uid = Uid::from_raw(uid);
 
-    let gid_groupname = CString::new(username.clone())?;
+    let gid_groupname = CString::new(username)?;
     let gid_group = unsafe { libc::getgrnam(gid_groupname.as_ptr()) };
     let gid = unsafe { (*gid_group).gr_gid };
     let new_gid = Gid::from_raw(gid);
@@ -67,7 +67,7 @@ pub async fn create_ssh_directory(
 
     let metadata = fs::metadata(&file_path)?;
     let permissions = metadata.permissions();
-    let mut new_permissions = permissions.clone();
+    let mut new_permissions = permissions;
     new_permissions.set_mode(0o700);
     fs::set_permissions(&file_path, new_permissions)?;
 
