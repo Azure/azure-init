@@ -57,6 +57,15 @@ pub struct PublicKeys {
     pub path: String,
 }
 
+impl From<&str> for PublicKeys {
+    fn from(value: &str) -> Self {
+        Self {
+            key_data: value.to_string(),
+            path: String::new(),
+        }
+    }
+}
+
 /// Deserializer that handles the string "true" and "false" that the IMDS API returns.
 fn string_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where

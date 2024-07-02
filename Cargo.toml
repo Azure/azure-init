@@ -32,3 +32,12 @@ path = "tests/functional_tests.rs"
 members = [
     "libazureinit",
 ]
+
+[features]
+passwd = []
+hostnamectl = []
+useradd = []
+
+systemd_linux = ["passwd", "hostnamectl", "useradd"]
+
+default = ["systemd_linux"]

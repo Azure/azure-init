@@ -31,4 +31,16 @@ pub enum Error {
     NonEmptyPassword,
     #[error("Unable to get list of block devices")]
     BlockUtils(#[from] block_utils::BlockUtilsError),
+    #[error(
+        "Failed to set the hostname; none of the provided backends succeeded"
+    )]
+    NoHostnameProvisioner,
+    #[error(
+        "Failed to create a user; none of the provided backends succeeded"
+    )]
+    NoUserProvisioner,
+    #[error(
+        "Failed to set the user password; none of the provided backends succeeded"
+    )]
+    NoPasswordProvisioner,
 }
