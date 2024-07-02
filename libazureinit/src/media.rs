@@ -113,7 +113,7 @@ impl Media<Unmounted> {
 
         let metadata = fs::metadata(&self.mount_path)?;
         let permissions = metadata.permissions();
-        let mut new_permissions = permissions.clone();
+        let mut new_permissions = permissions;
         new_permissions.set_mode(0o700);
         fs::set_permissions(&self.mount_path, new_permissions)?;
 

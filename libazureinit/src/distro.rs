@@ -18,7 +18,7 @@ pub fn create_user_with_useradd(username: &str) -> Result<i32, Error> {
                     .arg("--groups")
                     .arg("adm,audio,cdrom,dialout,dip,floppy,lxd,netdev,plugdev,sudo,video")
                     .arg("-d")
-                    .arg(home_path.clone())
+                    .arg(home_path)
                     .arg("-m")
                     .status()?;
     if !status.success() {
