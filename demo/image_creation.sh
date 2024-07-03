@@ -2,124 +2,186 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-set -e -u -x -o pipefail
+set -e -u -o pipefail
 
-epoch=$(date +%s)
-temp_dir=/tmp/staging.$epoch
-target_dir=azure-init
-staging_dir=$temp_dir/$target_dir
+USAGE="Usage: $0 [options]
+It is possible to pass in custom parameters like:
+
+RG=\"myrg\" LOCATION=\"westeurope\" VM_SIZE=\"Standard_D2ds_v5\" \\
+    BASE_IMAGE=\"Debian:debian-11:11-backports-gen2:latest\" \\
+    $0
+
+Options:
+    -v|--verbose    Print out debug message
+    -h|--help       This help message
+"
+
+while [[ $# -gt 0 ]] ; do
+    case "$1" in
+        -h|--help)
+            echo "$USAGE"
+            exit 0
+            ;;
+        -v|--verbose)
+            set -x
+	    shift
+            ;;
+        *)
+            break
+    esac
+done
+
+EPOCH=$(date +%s)
+TEMP_DIR=/tmp/staging.$EPOCH
+TARGET_DIR=azure-init
+STAGING_DIR=$TEMP_DIR/$TARGET_DIR
 echo "*********************************************************************"
 echo "Building the agent"
 echo "*********************************************************************"
 
 cargo build
 
-root_dir=$(git rev-parse --show-toplevel)
+ROOT_DIR=$(git rev-parse --show-toplevel)
 echo "*********************************************************************"
-echo "Staging artifacts to $staging_dir"
+echo "Staging artifacts to $STAGING_DIR"
 echo "*********************************************************************"
-mkdir -p $staging_dir
-cp $root_dir/target/debug/azure-init $staging_dir/
-cp $root_dir/config/azure-init.service $staging_dir/
-cp $root_dir/demo/customdata_template.yml $temp_dir/customdata.yml
+mkdir -p "$STAGING_DIR"
+cp "$ROOT_DIR"/target/debug/azure-init "$STAGING_DIR"/
+cp "$ROOT_DIR"/config/azure-init.service "$STAGING_DIR"/
+cp "$ROOT_DIR"/demo/customdata_template.yml "$TEMP_DIR"/customdata.yml
 echo "Done"
 
 echo "*********************************************************************"
 echo "Creating azure-init.tgz package for upload"
 echo "*********************************************************************"
 rm -f ./azure-init.tgz
-tar cvfz azure-init.tgz -C $temp_dir $target_dir
+tar cvfz azure-init.tgz -C "$TEMP_DIR" "$TARGET_DIR"
+echo "Done"
+
+RG="${RG:-testagent-$EPOCH}"
+STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-azinitsa$EPOCH}"
+STORAGE_CONTAINER="${STORAGE_CONTAINER:-azinitcontainer}"
+LOCATION="${LOCATION:-eastus}"
+
+echo "*********************************************************************"
+echo "Creating resource group $RG"
+echo "*********************************************************************"
+az group create -g "$RG" -l "$LOCATION"
 echo "Done"
 
 echo "*********************************************************************"
-echo "Uploading package as azure-init-$epoch.tgz"
+echo "Creating storage account $STORAGE_ACCOUNT"
 echo "*********************************************************************"
-az storage blob upload --account-name aztuxprovisioningtest -c minagent --file azure-init.tgz --name azure-init-$epoch.tgz
+az storage account create -g "$RG" -l "$LOCATION" -n "$STORAGE_ACCOUNT" --sku Standard_LRS -o none
 echo "Done"
 
 echo "*********************************************************************"
-echo "Generating a SAS for azure-init-$epoch.tgz"
+echo "Creating storage container $STORAGE_CONTAINER with account $STORAGE_ACCOUNT"
 echo "*********************************************************************"
-end=$(date -u -d '10 days' '+%Y-%m-%dT%H:%MZ')
-sasurl=$(az storage blob generate-sas --account-name aztuxprovisioningtest -c minagent -n azure-init-$epoch.tgz --permissions r --expiry $end --https-only --full-uri)
+az storage container create --name "$STORAGE_CONTAINER" --account-name "$STORAGE_ACCOUNT"
+echo "Done"
+
+echo "*********************************************************************"
+echo "Generating a SAS for azure-init-$EPOCH.tgz"
+echo "*********************************************************************"
+EXPIRY=$(date -u -d '10 days' '+%Y-%m-%dT%H:%MZ')
+SASURL=$(az storage blob generate-sas --account-name "$STORAGE_ACCOUNT" -c "$STORAGE_CONTAINER" -n azure-init-"$EPOCH".tgz --permissions r --expiry "$EXPIRY" --https-only --full-uri)
 echo "Done"
 
 echo "*********************************************************************"
 echo "Generating customdata"
 echo "*********************************************************************"
-sed -i "s __SASURL__ ${sasurl//&/\\&} g" $temp_dir/customdata.yml
+sed -i "s __SASURL__ ${SASURL//&/\\&} g" "$TEMP_DIR"/customdata.yml
 echo "Done"
 
-rg=testagent-$epoch
-storage=testagent$epoch
-location=eastus
-vm=testvm-$epoch
-ssh_key_path=~/.ssh/id_rsa.pub
-base_image=canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest
-admin_username=testuser-$epoch
+CONNECTION_STRING=$(az storage account show-connection-string --name "$STORAGE_ACCOUNT" --resource-group "$RG" --output tsv)
+echo "Generated connection string: $CONNECTION_STRING"
+
+VM_NAME="${VM_NAME:-testvm-$EPOCH}"
+VM_SIZE="${VM_SIZE:-Standard_D2ds_v5}"
+SSH_KEY_PATH=~/.ssh/id_rsa.pub
+BASE_IMAGE="${BASE_IMAGE:-canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-testuser-$EPOCH}"
+
+# Both "az vm create" and "az sig image-definition" should use the same securit type.
+SECURITY_TYPE="${SECURITY_TYPE:-TrustedLaunch}"
 
 echo "*********************************************************************"
-echo "Creating resource group $rg"
+echo "Uploading package as azure-init-$EPOCH.tgz"
 echo "*********************************************************************"
-az group create -g $rg -l $location
+az storage blob upload --account-name "$STORAGE_ACCOUNT" --connection-string "$CONNECTION_STRING" --container-name "$STORAGE_CONTAINER" --file azure-init.tgz --name azure-init-"$EPOCH".tgz
 echo "Done"
 
 echo "*********************************************************************"
-echo "Creating storage account $storage"
+echo "Creating vm $VM_NAME with user $ADMIN_USERNAME in $LOCATION"
 echo "*********************************************************************"
-az storage account create -g $rg -l $location -n $storage --sku Standard_LRS -o none
-echo "Done"
-
-echo "*********************************************************************"
-echo "Creating vm $vm with user $admin_username in $location"
-echo "*********************************************************************"
-az vm create -g $rg -n $vm --image $base_image --admin-username $admin_username --ssh-key-value @${ssh_key_path} --boot-diagnostics-storage $storage --size Standard_D2ds_v5 --accelerated-network true --nic-delete-option Delete --os-disk-delete-option Delete --custom-data $temp_dir/customdata.yml
+az vm create -g "$RG" -n "$VM_NAME" --image "$BASE_IMAGE" --admin-username "$ADMIN_USERNAME" --ssh-key-value @${SSH_KEY_PATH} --boot-diagnostics-storage "$STORAGE_ACCOUNT" --size "${VM_SIZE}" --accelerated-network true --nic-delete-option Delete --os-disk-delete-option Delete --custom-data "$TEMP_DIR"/customdata.yml --security-type "$SECURITY_TYPE"
 echo "vm finished deployment, waiting for image configuration to finish"
 
-deadline=$(date -u -d '15 minutes' '+%s')
-found=0
-while [[ $(date '+%s') < $deadline ]]
+DEADLINE=$(date -u -d '15 minutes' '+%s')
+FOUND=0
+while [[ $(date '+%s') < $DEADLINE ]]
 do
-    power_state=$(az vm get-instance-view -g $rg -n $vm | jq '.instanceView.statuses[] | select(.code | contains("PowerState")) | .code' -r)
-    if [[ "$power_state" == *"stopped"* ]]
+    POWER_STATE=$(az vm get-instance-view -g "$RG" -n "$VM_NAME" | jq '.instanceView.statuses[] | select(.code | contains("PowerState")) | .code' -r)
+    if [[ "$POWER_STATE" == *"stopped"* ]]
     then
-        log=$(az vm boot-diagnostics get-boot-log -g $rg -n $vm)
-        if [[ -n "$log" && "$log" == *"SIGTOOL_END"* ]]
+        LOG=$(az vm boot-diagnostics get-boot-log -g "$RG" -n "$VM_NAME")
+        if [[ -n "$LOG" && "$LOG" == *"SIGTOOL_END"* ]]
         then
             echo "vm configured successfully"
-            found=1
+            FOUND=1
             break
         fi
     fi
     sleep 15
 done
 
-if [[ $found -eq 0 ]]
+if [[ $FOUND -eq 0 ]]
 then
     echo "vm failed to configure in 15 minutes - abort"
     exit 1
 fi
 
-image=image-$epoch
+IMAGE_NAME=image-$EPOCH
 echo "*********************************************************************"
-echo "Capturing OsDisk snapshot of vm $vm with image $image"
+echo "Capturing OsDisk snapshot of vm $VM_NAME with image $IMAGE_NAME"
 echo "*********************************************************************"
-target_disk=$(az disk show --ids $(az vm show -g $rg -n $vm | jq .storageProfile.osDisk.managedDisk.id -r) | jq .name -r)
-az snapshot create -g $rg -n $vm-snapshot --source $target_disk
+TARGET_DISK=$(az disk show --ids "$(az vm show -g "$RG" -n "$VM_NAME" | jq .storageProfile.osDisk.managedDisk.id -r)" | jq .name -r)
+az snapshot create -g "$RG" -n "$VM_NAME"-snapshot --source "$TARGET_DISK"
 
-version=$(date '+%Y.%m%d.%H%M%S')
-gallery=testgalleryagent
-definition=testgallery-gen1
-gallery_rg=temp-rg-rust-agent-testing
-snapshot_id=$(az snapshot show -n $vm-snapshot -g $rg --query id --output tsv)
+IMAGE_VERSION=$(date '+%Y.%m%d.%H%M%S')
+GALLERY_NAME=testgalleryazinit
+GALLERY_DEFINITION=testgalleryazinitdef
+GALLERY_RG=testgalleryazinitrg
+SNAPSHOT_ID=$(az snapshot show -n "$VM_NAME"-snapshot -g "$RG" --query id --output tsv)
+
+# For example, if BASE_IMAGE is set to "canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest",
+# then GALLERY_PUBLISHER becomes "canonical", GALLERY_OFFER becomes
+# "0001-com-ubuntu-server-jammy", GALLERY_SKU becomes "22_04-lts-gen2".
+GALLERY_PUBLISHER="$(echo "$BASE_IMAGE" | cut -f1 -d:)"
+GALLERY_OFFER="$(echo "$BASE_IMAGE" | cut -f2 -d:)"
+GALLERY_SKU="$(echo "$BASE_IMAGE" | cut -f3 -d:)"
+
+az group create --location "$LOCATION" --resource-group "$GALLERY_RG"
+
+az sig create --resource-group "$GALLERY_RG" --gallery-name "$GALLERY_NAME"
+
 echo "*********************************************************************"
-echo "Publishing image version $version to $gallery/$definition"
+echo "Creating image definition of $BASE_IMAGE"
 echo "*********************************************************************"
-az sig image-version create -g $gallery_rg --gallery-name $gallery --gallery-image-definition $definition --gallery-image-version $version --os-snapshot $snapshot_id --target-regions "eastus" --replica-count 1
-if [[ $? -eq 0 ]]
+az sig image-definition create --resource-group "$GALLERY_RG" --gallery-name "$GALLERY_NAME" --gallery-image-definition "$GALLERY_DEFINITION" --offer "$GALLERY_OFFER" --publisher "$GALLERY_PUBLISHER" --sku "$GALLERY_SKU" --os-type linux --os-state Generalized --features SecurityType="$SECURITY_TYPE"
+
+echo "*********************************************************************"
+echo "Publishing image version $IMAGE_VERSION to $GALLERY_NAME/$GALLERY_DEFINITION"
+echo "*********************************************************************"
+if az sig image-version create -g $GALLERY_RG --gallery-name $GALLERY_NAME --gallery-image-definition $GALLERY_DEFINITION --gallery-image-version "$IMAGE_VERSION" --os-snapshot "$SNAPSHOT_ID" --target-regions "$LOCATION" --replica-count 1;
 then
     echo "Image publishing finished"
     echo "Deleting staging resource group"
-    az group delete -g $rg --yes --no-wait
+    az group delete -g "$RG" --yes --no-wait
     echo "Done"
+else
+    echo "Image publishing failed"
+    echo "Resource group $RG is kept for debugging"
+    exit 1
 fi
