@@ -67,17 +67,6 @@ async fn main() {
 
     println!("User {} was successfully created", username.as_str());
 
-    println!();
-    println!("Attempting to create user's SSH directory");
-
-    let _create_directory =
-        user::create_ssh_directory(username.as_str(), &file_path).await;
-    match _create_directory {
-        Ok(create_directory) => create_directory,
-        Err(_err) => return,
-    };
-    println!("User's SSH directory was successfully created");
-
     let keys: Vec<PublicKeys> = vec![
         PublicKeys {
             path: "/path/to/.ssh/keys/".to_owned(),
@@ -93,11 +82,10 @@ async fn main() {
         },
     ];
 
-    file_path.push_str("/.ssh");
+    println!();
+    println!("Attempting to create user's SSH authorized_keys");
 
-    user::set_ssh_keys(keys, username.to_string(), file_path.clone())
-        .await
-        .unwrap();
+    user::set_ssh_keys(keys, username).unwrap();
 
     println!();
     println!("Attempting to set the VM hostname");
