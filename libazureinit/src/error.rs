@@ -27,6 +27,10 @@ pub enum Error {
     Nix(#[from] nix::Error),
     #[error("The user {user} does not exist")]
     UserMissing { user: String },
+    #[error("failed to get username from IMDS or local OVF files")]
+    UsernameFailure,
+    #[error("failed to get instance metadata from IMDS")]
+    InstanceMetadataFailure,
     #[error("Provisioning a user with a non-empty password is not supported")]
     NonEmptyPassword,
     #[error("Unable to get list of block devices")]
