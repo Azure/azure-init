@@ -37,6 +37,7 @@ pub(crate) fn provision_ssh(
     Ok(())
 }
 
+<<<<<<< HEAD
 pub fn add_user_for_passwordless_sudo(
     username: &str,
 ) -> Result<(), Error>{
@@ -46,6 +47,31 @@ pub fn add_user_for_passwordless_sudo(
         .open("/etc/sudoers")?;
     write!(sudoers_file, "{} ALL=(ALL) NOPASSWD: ALL \n", username.to_string())?;
     sudoers_file.flush()?;
+=======
+pub fn add_user_for_passwordless_sudo(username: &str) -> Result<(), Error> {
+    // Create a file under /etc/sudoers.d with azure-init-user
+    let sudoers_path = "/etc/sudoers.d/azure-init-user";
+
+    let _ = File::create(sudoers_path)?;
+    let mut sudoers_file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(sudoers_path)?;
+    write!(
+        sudoers_file,
+        "{} ALL=(ALL) NOPASSWD: ALL \n",
+        username.to_string()
+    )?;
+    sudoers_file.flush()?;
+
+    // Set the permission
+    let metadata = fs::metadata(sudoers_path)?;
+    let permissions = metadata.permissions();
+    let mut new_permissions = permissions.clone();
+    new_permissions.set_mode(0o700);
+    fs::set_permissions(sudoers_path, new_permissions)?;
+
+>>>>>>> 20f9d3f (Enable passwordless sudo for the user)
     Ok(())
 }
 
