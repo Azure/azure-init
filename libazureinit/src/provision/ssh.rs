@@ -37,6 +37,18 @@ pub(crate) fn provision_ssh(
     Ok(())
 }
 
+pub fn add_user_for_passwordless_sudo(
+    username: &str,
+) -> Result<(), Error>{
+    let mut sudoers_file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("/etc/sudoers")?;
+    write!(sudoers_file, "{} ALL=(ALL) NOPASSWD: ALL \n", username.to_string())?;
+    sudoers_file.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 
