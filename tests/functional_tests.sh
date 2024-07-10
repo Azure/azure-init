@@ -41,18 +41,18 @@ else
 fi
 
 # Set the subscription you want to use
-az account set --subscription $SUBSCRIPTION_ID
+az account set --subscription "$SUBSCRIPTION_ID"
 
 # Create resource group
-az group create -g $RG -l $LOCATION
+az group create -g "$RG" -l "$LOCATION"
 
 echo "Creating VM..."
-az vm create -n $VM_NAME_WITH_TIMESTAMP \
--g $RG \
---image $VM_IMAGE \
---size $VM_SIZE \
---admin-username $VM_ADMIN_USERNAME \
---ssh-key-value $PATH_TO_PUBLIC_SSH_KEY \
+az vm create -n "$VM_NAME_WITH_TIMESTAMP" \
+-g "$RG" \
+--image "$VM_IMAGE" \
+--size "$VM_SIZE" \
+--admin-username "$VM_ADMIN_USERNAME" \
+--ssh-key-value "$PATH_TO_PUBLIC_SSH_KEY" \
 --public-ip-sku Standard \
 --security-type "$VM_SECURITY_TYPE"
 echo "VM successfully created"
@@ -61,13 +61,13 @@ echo "Sleeping to ensure SSH access set up"
 sleep 15
 
 echo "Getting VM Public IP Address..."
-PUBLIC_IP=$(az vm show -d -g $RG -n $VM_NAME_WITH_TIMESTAMP --query publicIps -o tsv)
-echo $PUBLIC_IP
+PUBLIC_IP=$(az vm show -d -g "$RG" -n "$VM_NAME_WITH_TIMESTAMP" --query publicIps -o tsv)
+echo "$PUBLIC_IP"
 
-scp -o StrictHostKeyChecking=no -i $PATH_TO_PRIVATE_SSH_KEY ./target/debug/functional_tests $VM_ADMIN_USERNAME@$PUBLIC_IP:~
+scp -o StrictHostKeyChecking=no -i "$PATH_TO_PRIVATE_SSH_KEY" ./target/debug/functional_tests "$VM_ADMIN_USERNAME"@"$PUBLIC_IP":~
 
 echo "Logging into VM..."
-ssh -o StrictHostKeyChecking=no -i $PATH_TO_PRIVATE_SSH_KEY $VM_ADMIN_USERNAME@$PUBLIC_IP 'sudo ./functional_tests test_user' 
+ssh -o StrictHostKeyChecking=no -i "$PATH_TO_PRIVATE_SSH_KEY" "$VM_ADMIN_USERNAME"@"$PUBLIC_IP" 'sudo ./functional_tests test_user'
 
 # Delete the resource group
-az group delete -g $RG --yes --no-wait
+az group delete -g "$RG" --yes --no-wait
