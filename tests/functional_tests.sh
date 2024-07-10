@@ -14,6 +14,7 @@ VM_SIZE="${VM_SIZE:-Standard_D2lds_v5}"
 VM_ADMIN_USERNAME="${VM_ADMIN_USERNAME:-azureuser}"
 AZURE_SSH_KEY_NAME="${AZURE_SSH_KEY_NAME:-azure-ssh-key}"
 VM_NAME_WITH_TIMESTAMP=$VM_NAME-$EPOCH
+VM_SECURITY_TYPE="${VM_SECURITY_TYPE:-TrustedLaunch}"
 
 set -e
 
@@ -52,7 +53,8 @@ az vm create -n $VM_NAME_WITH_TIMESTAMP \
 --size $VM_SIZE \
 --admin-username $VM_ADMIN_USERNAME \
 --ssh-key-value $PATH_TO_PUBLIC_SSH_KEY \
---public-ip-sku Standard
+--public-ip-sku Standard \
+--security-type "$VM_SECURITY_TYPE"
 echo "VM successfully created"
 
 echo "Sleeping to ensure SSH access set up"
