@@ -2,10 +2,11 @@
 // Licensed under the MIT License.
 
 use libazureinit::imds::PublicKeys;
+use libazureinit::User;
 use libazureinit::{
-    distro, goalstate,
+    goalstate,
     reqwest::{header, Client},
-    user,
+    HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
 
 use std::env;
@@ -51,22 +52,6 @@ async fn main() {
 
     let username = &cli_args[1];
 
-    let mut file_path = "/home/".to_string();
-    file_path.push_str(username.as_str());
-
-    println!();
-    println!(
-        "Attempting to create user {} without password",
-        username.as_str()
-    );
-
-    distro::create_user_with_useradd(username.as_str())
-        .expect("Failed to create user for user '{username}'");
-    distro::set_password_with_passwd(username.as_str(), "")
-        .expect("Unabled to set an empty passord for user '{username}'");
-
-    println!("User {} was successfully created", username.as_str());
-
     let keys: Vec<PublicKeys> = vec![
         PublicKeys {
             path: "/path/to/.ssh/keys/".to_owned(),
@@ -82,18 +67,14 @@ async fn main() {
         },
     ];
 
-    println!();
-    println!("Attempting to create user's SSH authorized_keys");
+    Provision::new("my-hostname".to_string(), User::new(username, keys))
+        .hostname_provisioners([HostnameProvisioner::Hostnamectl])
+        .user_provisioners([UserProvisioner::Useradd])
+        .password_provisioners([PasswordProvisioner::Passwd])
+        .provision()
+        .expect("Failed to provision host");
 
-    user::set_ssh_keys(keys, username).unwrap();
-
-    println!();
-    println!("Attempting to set the VM hostname");
-
-    distro::set_hostname_with_hostnamectl("test-hostname-set")
-        .expect("Failed to set hostname");
-
-    println!("VM hostname successfully set");
+    println!("VM successfully provisioned");
     println!();
 
     println!("**********************************");

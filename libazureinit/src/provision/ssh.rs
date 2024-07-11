@@ -12,19 +12,6 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::imds::PublicKeys;
 
-pub fn set_ssh_keys(
-    keys: Vec<PublicKeys>,
-    username: impl AsRef<str>,
-) -> Result<(), Error> {
-    let user =
-        nix::unistd::User::from_name(username.as_ref())?.ok_or_else(|| {
-            Error::UserMissing {
-                user: username.as_ref().to_string(),
-            }
-        })?;
-    provision_ssh(&user, &keys)
-}
-
 #[instrument(skip_all, name = "ssh")]
 pub(crate) fn provision_ssh(
     user: &nix::unistd::User,

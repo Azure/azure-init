@@ -1,12 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub mod distro;
 pub mod error;
 pub mod goalstate;
 pub mod imds;
 pub mod media;
-pub mod user;
+
+mod provision;
+pub use provision::{
+    hostname::Provisioner as HostnameProvisioner,
+    password::Provisioner as PasswordProvisioner,
+    user::{Provisioner as UserProvisioner, User},
+    Provision,
+};
 
 // Re-export as the Client is used in our API.
 pub use reqwest;
