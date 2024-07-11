@@ -34,25 +34,28 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
 }
 
 fn get_username(
-    instance_metadata: &InstanceMetadata,
-    environment: &Environment,
+    instance_metadata: Option<&InstanceMetadata>,
+    environment: Option<&Environment>,
 ) -> Result<String, anyhow::Error> {
-    if instance_metadata
-        .compute
-        .os_profile
-        .disable_password_authentication
-    {
-        // password authentication is disabled
-        Ok(instance_metadata.compute.os_profile.admin_username.clone())
-    } else {
-        // password authentication is enabled
-
-        Ok(environment
-            .clone()
-            .provisioning_section
-            .linux_prov_conf_set
-            .username)
+    if let Some(metadata) = instance_metadata {
+        if metadata.compute.os_profile.disable_password_authentication {
+            // If password authentication is disabled,
+            // simply read from IMDS metadata if available.
+            return Ok(metadata.compute.os_profile.admin_username.clone());
+        }
+        // If password authentication is enabled,
+        // fall back to reading from OVF environment file.
     }
+
+    // Read username from OVF environment via mounted local device.
+    environment
+        .map(|env| {
+            env.clone()
+                .provisioning_section
+                .linux_prov_conf_set
+                .username
+        })
+        .ok_or(LibError::UsernameFailure.into())
 }
 
 #[tokio::main]
@@ -86,11 +89,27 @@ async fn provision() -> Result<(), anyhow::Error> {
         .default_headers(default_headers)
         .build()?;
 
-    let instance_metadata = imds::query(&client).await?;
-    let username = get_username(&instance_metadata, &get_environment()?)?;
-    let user = User::new(username, instance_metadata.compute.public_keys);
+    // Username can be obtained either via fetching instance metadata from IMDS
+    // or mounting a local device for OVF environment file. It should not fail
+    // immediately in a single failure, instead it should fall back to the other
+    // mechanism. So it is not a good idea to use `?` for query() or
+    // get_environment().
+    let instance_metadata = imds::query(&client).await.ok();
 
-    Provision::new(instance_metadata.compute.os_profile.computer_name, user)
+    let environment = get_environment().ok();
+
+    let username =
+        get_username(instance_metadata.as_ref(), environment.as_ref())?;
+
+    // It is necessary to get the actual instance metadata after getting username,
+    // as it is not desirable to immediately return error before get_username.
+    let im = instance_metadata
+        .clone()
+        .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
+
+    let user = User::new(username, im.compute.public_keys);
+
+    Provision::new(im.compute.os_profile.computer_name, user)
         .hostname_provisioners([
             #[cfg(feature = "hostnamectl")]
             HostnameProvisioner::Hostnamectl,
