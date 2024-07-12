@@ -15,6 +15,8 @@ use serde_xml_rs::from_str;
 use tracing;
 
 use crate::error::Error;
+use block_utils::Device;
+
 
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
@@ -76,8 +78,11 @@ pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 
 // Get a mounted device with any filesystem for CDROM
-pub fn get_mount_device() -> Result<Vec<String>, Error> {
-    let devices = block_utils::get_mounted_devices()?;
+pub fn get_mount_device<F>(get_devices: F) -> Result<Vec<String>, Error>
+where
+    F: Fn() -> Result<Vec<Device>, Error>,
+{
+    let devices = get_devices()?;
     let list_devices: Vec<String> = devices
         .into_iter()
         .filter_map(|dev| {
@@ -90,6 +95,11 @@ pub fn get_mount_device() -> Result<Vec<String>, Error> {
         .collect();
 
     Ok(list_devices)
+}
+
+// Wrapper function
+pub fn get_wrapped_mount_devices() -> Result<Vec<String>, Error> {
+    get_mount_device(|| block_utils::get_mounted_devices().map_err(Error::from))
 }
 
 // Some zero-sized structs that just provide states for our state machine
@@ -215,6 +225,9 @@ pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use block_utils::{Device, DeviceType, MediaType, FilesystemType};
+    use uuid::Uuid;
+    use crate::error::Error; 
 
     #[test]
     fn test_get_ovf_env_none_missing() {
@@ -398,5 +411,53 @@ mod tests {
             Err(Error::NonEmptyPassword) => {}
             _ => panic!("Non-empty passwords aren't allowed"),
         };
+    }
+
+    #[test]
+    fn test_get_mount_device() {
+        // Mock function to return a predefined list of devices
+        let mock_get_mounted_devices = || -> Result<Vec<Device>, Error> {
+            Ok(vec![
+                Device {
+                    id: Some(Uuid::new_v4()),
+                    name: "device1".to_string(),
+                    media_type: MediaType::NVME, // Adjust this to match the MediaType variants
+                    device_type: DeviceType::Disk,
+                    capacity: 700_000_000,
+                    fs_type: FilesystemType::Ntfs, // Adjust this to match the FilesystemType variants
+                    serial_number: Some("12345".to_string()),
+                    logical_block_size: Some(512),
+                    physical_block_size: Some(512),
+                },
+                Device {
+                    id: Some(Uuid::new_v4()),
+                    name: "device2".to_string(),
+                    media_type: MediaType::Rotational, // Adjust this to match the MediaType variants
+                    device_type: DeviceType::Disk,
+                    capacity: 1_000_000_000,
+                    fs_type: FilesystemType::Ext4,
+                    serial_number: Some("67890".to_string()),
+                    logical_block_size: Some(512),
+                    physical_block_size: Some(512),
+                },
+                Device {
+                    id: Some(Uuid::new_v4()),
+                    name: "device3".to_string(),
+                    media_type: MediaType::NVME, // Adjust this to match the MediaType variants
+                    device_type: DeviceType::Disk,
+                    capacity: 700_000_000,
+                    fs_type: FilesystemType::Xfs, // Adjust this to match the FilesystemType variants
+                    serial_number: Some("54321".to_string()),
+                    logical_block_size: Some(512),
+                    physical_block_size: Some(512),
+                },
+            ])
+        };
+
+        let result = get_mount_device(mock_get_mounted_devices);
+
+        assert!(result.is_ok());
+        let list_devices = result.unwrap();
+        assert_eq!(list_devices, vec!["device1".to_string(), "device3".to_string()]);
     }
 }

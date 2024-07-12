@@ -4,13 +4,12 @@
 use std::process::ExitCode;
 
 use anyhow::Context;
-
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::Environment,
+    media::{Environment, get_wrapped_mount_devices},
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
@@ -18,7 +17,7 @@ use libazureinit::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn get_environment() -> Result<Environment, anyhow::Error> {
-    let ovf_devices = media::get_mount_device()?;
+    let ovf_devices = get_wrapped_mount_devices()?;
     let mut environment: Option<Environment> = None;
 
     // loop until it finds a correct device.
