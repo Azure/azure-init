@@ -421,10 +421,10 @@ mod tests {
                 Device {
                     id: Some(Uuid::new_v4()),
                     name: "device1".to_string(),
-                    media_type: MediaType::NVME, // Adjust this to match the MediaType variants
+                    media_type: MediaType::NVME, 
                     device_type: DeviceType::Disk,
                     capacity: 700_000_000,
-                    fs_type: FilesystemType::Ntfs, // Adjust this to match the FilesystemType variants
+                    fs_type: FilesystemType::Ntfs, 
                     serial_number: Some("12345".to_string()),
                     logical_block_size: Some(512),
                     physical_block_size: Some(512),
@@ -432,7 +432,7 @@ mod tests {
                 Device {
                     id: Some(Uuid::new_v4()),
                     name: "device2".to_string(),
-                    media_type: MediaType::Rotational, // Adjust this to match the MediaType variants
+                    media_type: MediaType::Rotational, 
                     device_type: DeviceType::Disk,
                     capacity: 1_000_000_000,
                     fs_type: FilesystemType::Ext4,
@@ -443,10 +443,10 @@ mod tests {
                 Device {
                     id: Some(Uuid::new_v4()),
                     name: "device3".to_string(),
-                    media_type: MediaType::NVME, // Adjust this to match the MediaType variants
+                    media_type: MediaType::NVME, 
                     device_type: DeviceType::Disk,
                     capacity: 700_000_000,
-                    fs_type: FilesystemType::Xfs, // Adjust this to match the FilesystemType variants
+                    fs_type: FilesystemType::Xfs, 
                     serial_number: Some("54321".to_string()),
                     logical_block_size: Some(512),
                     physical_block_size: Some(512),
