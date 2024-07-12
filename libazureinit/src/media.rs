@@ -18,7 +18,6 @@ use tracing;
 use crate::error::Error;
 use fstab::{FsEntry, FsTab};
 
-
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
@@ -79,7 +78,6 @@ pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 const MTAB_PATH: &str = "/etc/mtab";
 
-
 // Public wrapper function
 pub fn get_mount_device() -> Result<Vec<String>, Error> {
     wrapped_get_mount_device(Path::new(MTAB_PATH))
@@ -107,7 +105,6 @@ fn wrapped_get_mount_device(path: &Path) -> Result<Vec<String>, Error> {
 
     Ok(list_devices)
 }
-
 
 // Some zero-sized structs that just provide states for our state machine
 pub struct Mounted;
@@ -232,11 +229,10 @@ pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error; 
+    use crate::error::Error;
     use fstab::FsEntry;
-    use std::path::PathBuf;
     use std::io;
-
+    use std::path::PathBuf;
 
     #[test]
     fn test_get_ovf_env_none_missing() {
@@ -448,16 +444,23 @@ mod tests {
         };
 
         // Use dependency injection for testing
-        let result = get_mount_device_with_mock(mock_path, mock_get_mounted_devices);
+        let result =
+            get_mount_device_with_mock(mock_path, mock_get_mounted_devices);
 
         // Assert
         assert!(result.is_ok());
         let list_devices = result.unwrap();
-        assert_eq!(list_devices, vec!["/dev/sr0".to_string(), "/dev/sr1".to_string()]);
+        assert_eq!(
+            list_devices,
+            vec!["/dev/sr0".to_string(), "/dev/sr1".to_string()]
+        );
     }
 
     // Helper function for testing
-    fn get_mount_device_with_mock<F>(path: &Path, get_devices: F) -> Result<Vec<String>, io::Error>
+    fn get_mount_device_with_mock<F>(
+        path: &Path,
+        get_devices: F,
+    ) -> Result<Vec<String>, io::Error>
     where
         F: Fn() -> Result<Vec<FsEntry>, io::Error>,
     {

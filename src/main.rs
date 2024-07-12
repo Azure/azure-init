@@ -9,7 +9,7 @@ use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::{Environment, get_mount_device},
+    media::{get_mount_device, Environment},
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
