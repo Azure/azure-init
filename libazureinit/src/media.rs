@@ -6,6 +6,7 @@ use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -15,7 +16,7 @@ use serde_xml_rs::from_str;
 use tracing;
 
 use crate::error::Error;
-use block_utils::Device;
+use fstab::{FsEntry, FsTab};
 
 
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
@@ -76,18 +77,28 @@ pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
 pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
+const MTAB_PATH: &str = "/etc/mtab";
 
-// Get a mounted device with any filesystem for CDROM
-pub fn get_mount_device<F>(get_devices: F) -> Result<Vec<String>, Error>
-where
-    F: Fn() -> Result<Vec<Device>, Error>,
-{
-    let devices = get_devices()?;
-    let list_devices: Vec<String> = devices
+
+// Public wrapper function
+pub fn get_mount_device() -> Result<Vec<String>, Error> {
+    wrapped_get_mount_device(Path::new(MTAB_PATH))
+}
+
+// Inner function that takes a file path as an argument
+fn wrapped_get_mount_device(path: &Path) -> Result<Vec<String>, Error> {
+    // Create a new FsTab instance and parse the fstab file
+    let fstab = FsTab::new(path);
+
+    // Get the entries from the FsTab
+    let entries = fstab.get_entries()?;
+
+    // Filter and collect device names
+    let list_devices: Vec<String> = entries
         .into_iter()
-        .filter_map(|dev| {
-            if CDROM_VALID_FS.contains(&dev.fs_type.to_str()) {
-                Some(dev.name)
+        .filter_map(|entry| {
+            if CDROM_VALID_FS.contains(&entry.vfs_type.as_str()) {
+                Some(entry.fs_spec.clone())
             } else {
                 None
             }
@@ -97,10 +108,6 @@ where
     Ok(list_devices)
 }
 
-// Wrapper function
-pub fn get_wrapped_mount_devices() -> Result<Vec<String>, Error> {
-    get_mount_device(|| block_utils::get_mounted_devices().map_err(Error::from))
-}
 
 // Some zero-sized structs that just provide states for our state machine
 pub struct Mounted;
@@ -225,9 +232,11 @@ pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use block_utils::{Device, DeviceType, MediaType, FilesystemType};
-    use uuid::Uuid;
     use crate::error::Error; 
+    use fstab::FsEntry;
+    use std::path::PathBuf;
+    use std::io;
+
 
     #[test]
     fn test_get_ovf_env_none_missing() {
@@ -414,50 +423,57 @@ mod tests {
     }
 
     #[test]
-    fn test_get_mount_device() {
-        // Mock function to return a predefined list of devices
-        let mock_get_mounted_devices = || -> Result<Vec<Device>, Error> {
+    fn test_wrapped_get_mount_device() {
+        // Mock function to simulate reading /etc/fstab
+        let mock_path = Path::new("/mock/mtab");
+        let mock_get_mounted_devices = || -> Result<Vec<FsEntry>, io::Error> {
             Ok(vec![
-                Device {
-                    id: Some(Uuid::new_v4()),
-                    name: "device1".to_string(),
-                    media_type: MediaType::NVME, 
-                    device_type: DeviceType::Disk,
-                    capacity: 700_000_000,
-                    fs_type: FilesystemType::Ntfs, 
-                    serial_number: Some("12345".to_string()),
-                    logical_block_size: Some(512),
-                    physical_block_size: Some(512),
+                FsEntry {
+                    fs_spec: "/dev/sr0".to_string(),
+                    mountpoint: PathBuf::from("/mnt/cdrom"),
+                    vfs_type: "iso9660".to_string(),
+                    mount_options: vec![],
+                    dump: false,
+                    fsck_order: 0,
                 },
-                Device {
-                    id: Some(Uuid::new_v4()),
-                    name: "device2".to_string(),
-                    media_type: MediaType::Rotational, 
-                    device_type: DeviceType::Disk,
-                    capacity: 1_000_000_000,
-                    fs_type: FilesystemType::Ext4,
-                    serial_number: Some("67890".to_string()),
-                    logical_block_size: Some(512),
-                    physical_block_size: Some(512),
-                },
-                Device {
-                    id: Some(Uuid::new_v4()),
-                    name: "device3".to_string(),
-                    media_type: MediaType::NVME, 
-                    device_type: DeviceType::Disk,
-                    capacity: 700_000_000,
-                    fs_type: FilesystemType::Xfs, 
-                    serial_number: Some("54321".to_string()),
-                    logical_block_size: Some(512),
-                    physical_block_size: Some(512),
+                FsEntry {
+                    fs_spec: "/dev/sr1".to_string(),
+                    mountpoint: PathBuf::from("/mnt/cdrom2"),
+                    vfs_type: "udf".to_string(),
+                    mount_options: vec![],
+                    dump: false,
+                    fsck_order: 0,
                 },
             ])
         };
 
-        let result = get_mount_device(mock_get_mounted_devices);
+        // Use dependency injection for testing
+        let result = get_mount_device_with_mock(mock_path, mock_get_mounted_devices);
 
+        // Assert
         assert!(result.is_ok());
         let list_devices = result.unwrap();
-        assert_eq!(list_devices, vec!["device1".to_string(), "device3".to_string()]);
+        assert_eq!(list_devices, vec!["/dev/sr0".to_string(), "/dev/sr1".to_string()]);
+    }
+
+    // Helper function for testing
+    fn get_mount_device_with_mock<F>(path: &Path, get_devices: F) -> Result<Vec<String>, io::Error>
+    where
+        F: Fn() -> Result<Vec<FsEntry>, io::Error>,
+    {
+        let _ = path;
+        let devices = get_devices()?;
+        let list_devices: Vec<String> = devices
+            .into_iter()
+            .filter_map(|dev| {
+                if CDROM_VALID_FS.contains(&dev.vfs_type.as_str()) {
+                    Some(dev.fs_spec)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(list_devices)
     }
 }

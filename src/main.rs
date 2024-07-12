@@ -9,7 +9,7 @@ use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
     goalstate, imds, media,
-    media::{Environment, get_wrapped_mount_devices},
+    media::{Environment, get_mount_device},
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
@@ -17,7 +17,7 @@ use libazureinit::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn get_environment() -> Result<Environment, anyhow::Error> {
-    let ovf_devices = get_wrapped_mount_devices()?;
+    let ovf_devices = get_mount_device()?;
     let mut environment: Option<Environment> = None;
 
     // loop until it finds a correct device.
