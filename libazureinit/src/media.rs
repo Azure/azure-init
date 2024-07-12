@@ -77,14 +77,17 @@ const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 
 // Get a mounted device with any filesystem for CDROM
 pub fn get_mount_device() -> Result<Vec<String>, Error> {
-    let mut list_devices: Vec<String> = Vec::new();
-
-    while let Some(device) = block_utils::get_mounted_devices()?
+    let devices = block_utils::get_mounted_devices()?;
+    let list_devices: Vec<String> = devices
         .into_iter()
-        .find(|dev| CDROM_VALID_FS.contains(&dev.fs_type.to_str()))
-    {
-        list_devices.push(device.name);
-    }
+        .filter_map(|dev| {
+            if CDROM_VALID_FS.contains(&dev.fs_type.to_str()) {
+                Some(dev.name)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     Ok(list_devices)
 }
