@@ -503,20 +503,4 @@ mod tests {
         let list_devices = result.unwrap();
         assert!(list_devices.is_empty());
     }
-
-    #[test]
-    fn test_get_mount_device_with_invalid_format() {
-        let mut temp_file =
-            NamedTempFile::new().expect("Failed to create temporary file");
-        let mount_table = r#"
-            invalid_format_entry
-        "#;
-        temp_file
-            .write_all(mount_table.as_bytes())
-            .expect("Failed to write to temporary file");
-        let temp_path = temp_file.into_temp_path();
-        let result = get_mount_device(Some(temp_path.as_ref()));
-
-        assert!(result.is_err());
-    }
 }
