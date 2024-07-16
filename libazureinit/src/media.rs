@@ -82,14 +82,11 @@ const MTAB_PATH: &str = "/etc/mtab";
 // Get a mounted device with any filesystem for CDROM
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
-    // Create a new FsTab instance and parse the mtab file
     let fstab = FsTab::new(path.unwrap_or(Path::new(MTAB_PATH)));
-
-    // Get the entries from the FsTab
     let entries: Vec<FsEntry> = fstab.get_entries()?;
 
-    // Filter and collect device names
-    let list_devices: Vec<String> = entries
+    // Retrieve the names of all devices that have cdrom-type filesystem (e.g., udf)
+    let cdrom_devices: Vec<String> = entries
         .into_iter()
         .filter_map(|entry| {
             if CDROM_VALID_FS.contains(&entry.vfs_type.as_str()) {
@@ -100,7 +97,7 @@ pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
         })
         .collect();
 
-    Ok(list_devices)
+    Ok(cdrom_devices)
 }
 
 // Some zero-sized structs that just provide states for our state machine
