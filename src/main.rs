@@ -14,9 +14,14 @@ use libazureinit::{
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
+use tracing::instrument;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::EnvFilter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[instrument]
 fn get_environment() -> Result<Environment, anyhow::Error> {
     let ovf_devices = media::get_mount_device()?;
     let mut environment: Option<Environment> = None;
@@ -33,6 +38,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("Unable to get list of block devices"))
 }
 
+#[instrument(skip_all)]
 fn get_username(
     instance_metadata: Option<&InstanceMetadata>,
     environment: Option<&Environment>,
@@ -60,6 +66,17 @@ fn get_username(
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_writer(std::io::stderr);
+    let registry = tracing_subscriber::registry()
+        .with(stderr)
+        .with(EnvFilter::from_env("AZURE_INIT_LOG"));
+    tracing::subscriber::set_global_default(registry).expect(
+        "Only an application should set the global default; \
+        a library is mis-using the tracing API.",
+    );
+
     match provision().await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
@@ -78,6 +95,7 @@ async fn main() -> ExitCode {
     }
 }
 
+#[instrument]
 async fn provision() -> Result<(), anyhow::Error> {
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
