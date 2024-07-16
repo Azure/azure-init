@@ -17,7 +17,7 @@ use libazureinit::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn get_environment() -> Result<Environment, anyhow::Error> {
-    let ovf_devices = get_mount_device()?;
+    let ovf_devices = get_mount_device(None)?;
     let mut environment: Option<Environment> = None;
 
     // loop until it finds a correct device.

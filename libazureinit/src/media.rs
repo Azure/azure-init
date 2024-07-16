@@ -78,18 +78,13 @@ pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 const MTAB_PATH: &str = "/etc/mtab";
 
-// Public wrapper function
-pub fn get_mount_device() -> Result<Vec<String>, Error> {
-    wrapped_get_mount_device(Path::new(MTAB_PATH))
-}
-
-// Inner function that takes a file path as an argument
-fn wrapped_get_mount_device(path: &Path) -> Result<Vec<String>, Error> {
-    // Create a new FsTab instance and parse the fstab file
-    let fstab = FsTab::new(path);
+// Get a mounted device with any filesystem for CDROM
+pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
+    // Create a new FsTab instance and parse the mtab file
+    let fstab = FsTab::new(path.unwrap_or(Path::new(MTAB_PATH)));
 
     // Get the entries from the FsTab
-    let entries = fstab.get_entries()?;
+    let entries: Vec<FsEntry> = fstab.get_entries()?;
 
     // Filter and collect device names
     let list_devices: Vec<String> = entries
@@ -231,8 +226,9 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use fstab::FsEntry;
-    use std::io;
+    use std::io::{self, Write};
     use std::path::PathBuf;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_get_ovf_env_none_missing() {
@@ -419,35 +415,19 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapped_get_mount_device() {
-        // Mock function to simulate reading /etc/fstab
-        let mock_path = Path::new("/mock/mtab");
-        let mock_get_mounted_devices = || -> Result<Vec<FsEntry>, io::Error> {
-            Ok(vec![
-                FsEntry {
-                    fs_spec: "/dev/sr0".to_string(),
-                    mountpoint: PathBuf::from("/mnt/cdrom"),
-                    vfs_type: "iso9660".to_string(),
-                    mount_options: vec![],
-                    dump: false,
-                    fsck_order: 0,
-                },
-                FsEntry {
-                    fs_spec: "/dev/sr1".to_string(),
-                    mountpoint: PathBuf::from("/mnt/cdrom2"),
-                    vfs_type: "udf".to_string(),
-                    mount_options: vec![],
-                    dump: false,
-                    fsck_order: 0,
-                },
-            ])
-        };
+    fn test_get_mount_device_with_cdrom_entries() {
+        let mut temp_file =
+            NamedTempFile::new().expect("Failed to create temporary file");
+        let mount_table = r#"
+            /dev/sr0 /mnt/cdrom iso9660 ro,user,noauto 0 0
+            /dev/sr1 /mnt/cdrom2 udf ro,user,noauto 0 0
+        "#;
+        temp_file
+            .write_all(mount_table.as_bytes())
+            .expect("Failed to write to temporary file");
+        let temp_path = temp_file.into_temp_path();
+        let result = get_mount_device(Some(temp_path.as_ref()));
 
-        // Use dependency injection for testing
-        let result =
-            get_mount_device_with_mock(mock_path, mock_get_mounted_devices);
-
-        // Assert
         assert!(result.is_ok());
         let list_devices = result.unwrap();
         assert_eq!(
@@ -456,27 +436,77 @@ mod tests {
         );
     }
 
-    // Helper function for testing
-    fn get_mount_device_with_mock<F>(
-        path: &Path,
-        get_devices: F,
-    ) -> Result<Vec<String>, io::Error>
-    where
-        F: Fn() -> Result<Vec<FsEntry>, io::Error>,
-    {
-        let _ = path;
-        let devices = get_devices()?;
-        let list_devices: Vec<String> = devices
-            .into_iter()
-            .filter_map(|dev| {
-                if CDROM_VALID_FS.contains(&dev.vfs_type.as_str()) {
-                    Some(dev.fs_spec)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    #[test]
+    fn test_get_mount_device_without_cdrom_entries() {
+        let mut temp_file =
+            NamedTempFile::new().expect("Failed to create temporary file");
+        let mount_table = r#"
+            /dev/sda1 / ext4 defaults 0 0
+            /dev/sda2 /home ext4 defaults 0 0
+        "#;
+        temp_file
+            .write_all(mount_table.as_bytes())
+            .expect("Failed to write to temporary file");
+        let temp_path = temp_file.into_temp_path();
+        let result = get_mount_device(Some(temp_path.as_ref()));
 
-        Ok(list_devices)
+        assert!(result.is_ok());
+        let list_devices = result.unwrap();
+        assert!(list_devices.is_empty());
+    }
+
+    #[test]
+    fn test_get_mount_device_with_mixed_entries() {
+        let mut temp_file =
+            NamedTempFile::new().expect("Failed to create temporary file");
+        let mount_table = r#"
+            /dev/sr0 /mnt/cdrom iso9660 ro,user,noauto 0 0
+            /dev/sda1 / ext4 defaults 0 0
+            /dev/sr1 /mnt/cdrom2 udf ro,user,noauto 0 0
+        "#;
+        temp_file
+            .write_all(mount_table.as_bytes())
+            .expect("Failed to write to temporary file");
+        let temp_path = temp_file.into_temp_path();
+        let result = get_mount_device(Some(temp_path.as_ref()));
+
+        assert!(result.is_ok());
+        let list_devices = result.unwrap();
+        assert_eq!(
+            list_devices,
+            vec!["/dev/sr0".to_string(), "/dev/sr1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_get_mount_device_with_empty_table() {
+        let mut temp_file =
+            NamedTempFile::new().expect("Failed to create temporary file");
+        let mount_table = "";
+        temp_file
+            .write_all(mount_table.as_bytes())
+            .expect("Failed to write to temporary file");
+        let temp_path = temp_file.into_temp_path();
+        let result = get_mount_device(Some(temp_path.as_ref()));
+
+        assert!(result.is_ok());
+        let list_devices = result.unwrap();
+        assert!(list_devices.is_empty());
+    }
+
+    #[test]
+    fn test_get_mount_device_with_invalid_format() {
+        let mut temp_file =
+            NamedTempFile::new().expect("Failed to create temporary file");
+        let mount_table = r#"
+            invalid_format_entry
+        "#;
+        temp_file
+            .write_all(mount_table.as_bytes())
+            .expect("Failed to write to temporary file");
+        let temp_path = temp_file.into_temp_path();
+        let result = get_mount_device(Some(temp_path.as_ref()));
+
+        assert!(result.is_err());
     }
 }
