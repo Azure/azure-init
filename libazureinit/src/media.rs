@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_xml_rs::from_str;
 
 use tracing;
+use tracing::instrument;
 
 use crate::error::Error;
 use fstab::{FsEntry, FsTab};
@@ -79,6 +80,7 @@ const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 const MTAB_PATH: &str = "/etc/mtab";
 
 // Get a mounted device with any filesystem for CDROM
+#[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     // Create a new FsTab instance and parse the mtab file
     let fstab = FsTab::new(path.unwrap_or(Path::new(MTAB_PATH)));
@@ -102,9 +104,12 @@ pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
 }
 
 // Some zero-sized structs that just provide states for our state machine
+#[derive(Debug)]
 pub struct Mounted;
+#[derive(Debug)]
 pub struct Unmounted;
 
+#[derive(Debug)]
 pub struct Media<State = Unmounted> {
     device_path: PathBuf,
     mount_path: PathBuf,
@@ -120,6 +125,7 @@ impl Media<Unmounted> {
         }
     }
 
+    #[instrument]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
 
@@ -152,6 +158,7 @@ impl Media<Unmounted> {
 }
 
 impl Media<Mounted> {
+    #[instrument]
     pub fn unmount(self) -> Result<(), Error> {
         let umount_status =
             Command::new("umount").arg(self.mount_path).status()?;
@@ -174,6 +181,7 @@ impl Media<Mounted> {
         }
     }
 
+    #[instrument]
     pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
         let mut file_path = self.mount_path.clone();
         file_path.push("ovf-env.xml");
@@ -186,6 +194,7 @@ impl Media<Mounted> {
     }
 }
 
+#[instrument(skip_all)]
 pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
 
@@ -202,6 +211,7 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 }
 
 // Mount the given device, get OVF environment data, return it.
+#[instrument(skip_all)]
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
