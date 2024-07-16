@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+
+SUDO_GROUP=$(grep -oP "^%\K\w+" /etc/sudoers)
+
+cat >/etc/systemd/system/azure-init.service <<EOF
+[Unit]
+Description=azure-init
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="AZURE_INIT_LOG=debug"
+Environment="AZURE_INIT_USER_GROUPS=${SUDO_GROUP}"
+ExecStart=/work/src/target/debug/azure-init
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat >/usr/lib/systemd/system-preset/1-azure-init.preset <<EOF
+enable azure-init.service
+EOF
