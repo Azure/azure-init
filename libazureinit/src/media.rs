@@ -232,9 +232,7 @@ pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
 mod tests {
     use super::*;
     use crate::error::Error;
-    use fstab::FsEntry;
-    use std::io::{self, Write};
-    use std::path::PathBuf;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
