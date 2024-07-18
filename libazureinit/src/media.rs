@@ -17,7 +17,7 @@ use tracing;
 use tracing::instrument;
 
 use crate::error::Error;
-use fstab::{FsEntry, FsTab};
+use fstab::FsTab;
 
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
@@ -82,15 +82,15 @@ const MTAB_PATH: &str = "/etc/mtab";
 // Get a mounted device with any filesystem for CDROM
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
-    let fstab = FsTab::new(path.unwrap_or(Path::new(MTAB_PATH)));
-    let entries: Vec<FsEntry> = fstab.get_entries()?;
+    let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
+    let entries = fstab.get_entries()?;
 
     // Retrieve the names of all devices that have cdrom-type filesystem (e.g., udf)
-    let cdrom_devices: Vec<String> = entries
+    let cdrom_devices = entries
         .into_iter()
         .filter_map(|entry| {
             if CDROM_VALID_FS.contains(&entry.vfs_type.as_str()) {
-                Some(entry.fs_spec.clone())
+                Some(entry.fs_spec)
             } else {
                 None
             }
@@ -433,7 +433,6 @@ mod tests {
         let temp_path = temp_file.into_temp_path();
         let result = get_mount_device(Some(temp_path.as_ref()));
 
-        assert!(result.is_ok());
         let list_devices = result.unwrap();
         assert_eq!(
             list_devices,
@@ -455,7 +454,6 @@ mod tests {
         let temp_path = temp_file.into_temp_path();
         let result = get_mount_device(Some(temp_path.as_ref()));
 
-        assert!(result.is_ok());
         let list_devices = result.unwrap();
         assert!(list_devices.is_empty());
     }
@@ -475,7 +473,6 @@ mod tests {
         let temp_path = temp_file.into_temp_path();
         let result = get_mount_device(Some(temp_path.as_ref()));
 
-        assert!(result.is_ok());
         let list_devices = result.unwrap();
         assert_eq!(
             list_devices,
@@ -494,7 +491,6 @@ mod tests {
         let temp_path = temp_file.into_temp_path();
         let result = get_mount_device(Some(temp_path.as_ref()));
 
-        assert!(result.is_ok());
         let list_devices = result.unwrap();
         assert!(list_devices.is_empty());
     }
