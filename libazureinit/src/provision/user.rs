@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::{fs::Permissions, os::unix::fs::PermissionsExt, process::Command};
+use std::{os::unix::fs::OpenOptionsExt, process::Command};
 
 use std::io::Write;
 
@@ -90,13 +90,15 @@ pub enum Provisioner {
 
 impl Provisioner {
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
-        let _ = match self {
-            Self::Useradd => useradd(user),
+        match self {
+            Self::Useradd => {
+                useradd(user)?;
+                let path = "/etc/sudoers.d/azure-init-user";
+                add_user_for_passwordless_sudo(user.name.as_str(), path)
+            }
             #[cfg(test)]
             Self::FakeUseradd => Ok(()),
-        };
-        let path = "/etc/sudoers.d/azure-init-user";
-        add_user_for_passwordless_sudo(user.name.clone(), path)
+        }
     }
 }
 
@@ -128,37 +130,30 @@ fn useradd(user: &User) -> Result<(), Error> {
 }
 
 fn add_user_for_passwordless_sudo(
-    username: String,
+    username: &str,
     path: &str,
 ) -> Result<(), Error> {
     // Create a file under /etc/sudoers.d with azure-init-user
-    let sudoers_path = path;
     let mut sudoers_file = std::fs::OpenOptions::new()
-        .append(true)
+        .write(true)
         .create(true)
-        .open(sudoers_path)?;
-    write!(
-        sudoers_file,
-        "{} ALL=(ALL) NOPASSWD: ALL \n",
-        username.to_string()
-    )?;
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    writeln!(sudoers_file, "{} ALL=(ALL) NOPASSWD: ALL", username)?;
     sudoers_file.flush()?;
-    // Set the permission
-    sudoers_file.set_permissions(Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs::{self, Permissions},
-        os::unix::fs::PermissionsExt,
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use tempfile::tempdir;
 
     use crate::User;
 
     use super::add_user_for_passwordless_sudo;
-    const PATH: &str = "/tmp/test1";
 
     #[test]
     fn password_skipped_in_debug() {
@@ -177,15 +172,29 @@ mod tests {
     }
 
     #[test]
-    fn test_user_insecure() {
-        let user_insecure = User::new("azureuser", []);
-        let a = add_user_for_passwordless_sudo(user_insecure.name, PATH);
-        assert!(a.is_ok());
-        assert!(fs::metadata(PATH).is_ok(), "Specified file not created");
+    fn test_passwordless_sudo_configured_successful() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sudoers_file");
+        let path_str = path.to_str().unwrap();
+
+        let _user_insecure = User::new("azureuser", []);
+        let ret =
+            add_user_for_passwordless_sudo(&_user_insecure.name, path_str);
+
+        assert!(ret.is_ok());
+        assert!(
+            fs::metadata(path.clone()).is_ok(),
+            "{path_str} file not created"
+        );
+        let mode = fs::metadata(path_str)
+            .expect("Sudoer file not created")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "Permissions are not set properly");
         assert_eq!(
-            fs::Permissions(PATH).mode(),
-            Permissions.mode(0o600),
-            "Permissions are not set properly"
+            fs::read_to_string(path).unwrap(),
+            "azureuser ALL=(ALL) NOPASSWD: ALL\n",
+            "Contents of the file are not as expected"
         );
     }
 }
