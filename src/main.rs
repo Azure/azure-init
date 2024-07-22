@@ -24,6 +24,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Minimal provisioning agent for Azure
 ///
 /// Create a user, add SSH public keys, and set the hostname.
+///
+/// Arguments provided via command-line arguments override any arguments provided
+/// via environment variables.
 #[derive(Parser, Debug)]
 struct Cli {
     /// List of supplementary groups of the provisioned user account.
