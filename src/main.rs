@@ -4,6 +4,7 @@
 use std::process::ExitCode;
 
 use anyhow::Context;
+use clap::Parser;
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
@@ -19,6 +20,27 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::EnvFilter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Minimal provisioning agent for Azure
+///
+/// Create a user, add SSH public keys, and set the hostname.
+///
+/// Arguments provided via command-line arguments override any arguments provided
+/// via environment variables.
+#[derive(Parser, Debug)]
+struct Cli {
+    /// List of supplementary groups of the provisioned user account.
+    ///
+    /// Values can be comma-separated and the argument can be provided multiple times.
+    #[arg(
+        long,
+        short,
+        env = "AZURE_INIT_USER_GROUPS",
+        value_delimiter = ',',
+        default_value = "wheel"
+    )]
+    groups: Vec<String>,
+}
 
 #[instrument]
 fn get_environment() -> Result<Environment, anyhow::Error> {
@@ -96,6 +118,8 @@ async fn main() -> ExitCode {
 
 #[instrument]
 async fn provision() -> Result<(), anyhow::Error> {
+    let opts = Cli::parse();
+
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
@@ -124,7 +148,8 @@ async fn provision() -> Result<(), anyhow::Error> {
         .clone()
         .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
 
-    let user = User::new(username, im.compute.public_keys);
+    let user =
+        User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
     Provision::new(im.compute.os_profile.computer_name, user)
         .hostname_provisioners([
