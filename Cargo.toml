@@ -19,7 +19,7 @@ clap = { version = "<=4.4", features = ["derive", "cargo", "env"] }
 
 [dev-dependencies]
 # Purely for the MSRV requirement.
-assert_cmd = "<=2.0.13"
+assert_cmd = "<=2.0.15"
 predicates = "<=3.1.0"
 predicates-core = "<=1.0.6"
 predicates-tree = "<=1.0.9"
