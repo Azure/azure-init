@@ -21,7 +21,7 @@ clap = { version = "<=4.4", features = ["derive", "cargo", "env"] }
 # Purely for the MSRV requirement.
 assert_cmd = "<=2.0.13"
 predicates = "<=3.1.0"
-predicates-core = "<=1.0.6"
+predicates-core = "<=1.0.8"
 predicates-tree = "<=1.0.9"
 
 [dependencies.libazureinit]
