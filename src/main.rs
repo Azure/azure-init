@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -20,6 +21,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::EnvFilter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const IMDS_HTTP_TIMEOUT_SEC: u64 = 5 * 60;
+const IMDS_HTTP_RETRY_INTERVAL_SEC: u64 = 2;
 
 /// Minimal provisioning agent for Azure
 ///
@@ -135,7 +138,14 @@ async fn provision() -> Result<(), anyhow::Error> {
     // immediately in a single failure, instead it should fall back to the other
     // mechanism. So it is not a good idea to use `?` for query() or
     // get_environment().
-    let instance_metadata = imds::query(&client).await.ok();
+    let instance_metadata = imds::query(
+        &client,
+        Duration::from_secs(IMDS_HTTP_RETRY_INTERVAL_SEC),
+        Duration::from_secs(IMDS_HTTP_TIMEOUT_SEC),
+        None, // default IMDS URL
+    )
+    .await
+    .ok();
 
     let environment = get_environment().ok();
 

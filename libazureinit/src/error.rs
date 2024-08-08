@@ -47,4 +47,6 @@ pub enum Error {
         "Failed to set the user password; none of the provided backends succeeded"
     )]
     NoPasswordProvisioner,
+    #[error("A timeout error occurred")]
+    Timeout(#[from] tokio::time::error::Elapsed),
 }
