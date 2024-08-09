@@ -3,6 +3,10 @@
 
 use std::process::Command;
 
+use std::time::Duration;
+
+use std::thread::sleep;
+
 use tracing::instrument;
 
 use crate::{error::Error, imds::PublicKeys};
@@ -97,27 +101,49 @@ impl Provisioner {
 }
 
 #[instrument(skip_all)]
-fn useradd(user: &User) -> Result<(), Error> {
-    let path_useradd = env!("PATH_USERADD");
-    let home_path = format!("/home/{}", user.name);
+fn user_exists(username: &str) -> Result<bool, Error> {
+    let status = Command::new("getent")
+        .arg("passwd")
+        .arg(username)
+        .status()?;
 
-    let status = Command::new(path_useradd)
-                    .arg(&user.name)
-                    .arg("--comment")
-                    .arg(
-                      "Provisioning agent created this user based on username provided in IMDS",
-                    )
-                    .arg("--groups")
-                    .arg(user.groups.join(","))
-                    .arg("-d")
-                    .arg(home_path)
-                    .arg("-m")
-                    .status()?;
-    if !status.success() {
-        return Err(Error::SubprocessFailed {
-            command: path_useradd.to_string(),
-            status,
-        });
+    Ok(status.success())
+}
+
+#[instrument(skip_all)]
+fn useradd(user: &User) -> Result<(), Error> {
+    const MAX_RETRIES: u8 = 5;
+
+    if user_exists(&user.name)? {
+        return Ok(());
+    }
+
+    for attempt in 1..=MAX_RETRIES {
+        let path_useradd = env!("PATH_USERADD");
+        let home_path = format!("/home/{}", user.name);
+
+        let status = Command::new(path_useradd)
+                        .arg(&user.name)
+                        .arg("--comment")
+                        .arg(
+                          "Provisioning agent created this user based on username provided in IMDS",
+                        )
+                        .arg("--groups")
+                        .arg(user.groups.join(","))
+                        .arg("-d")
+                        .arg(home_path)
+                        .arg("-m")
+                        .status()?;
+        if status.success() {
+            return Ok(());
+        } else if attempt < MAX_RETRIES {
+            sleep(Duration::from_secs(30));
+        } else {
+            return Err(Error::SubprocessFailed {
+                command: path_useradd.to_string(),
+                status,
+            });
+        }
     }
 
     Ok(())
