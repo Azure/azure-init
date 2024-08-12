@@ -1,11 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::process::Command;
-
-use std::time::Duration;
-
-use std::thread::sleep;
+use std::{collections::HashSet, process::Command};
 
 use tracing::instrument;
 
@@ -112,38 +108,93 @@ fn user_exists(username: &str) -> Result<bool, Error> {
 
 #[instrument(skip_all)]
 fn useradd(user: &User) -> Result<(), Error> {
-    const MAX_RETRIES: u8 = 5;
-
     if user_exists(&user.name)? {
+        tracing::info!(
+            "User '{}' already exists. Skipping user creation.",
+            user.name
+        );
+
+        let current_groups_output =
+            Command::new("id").arg("-nG").arg(&user.name).output()?;
+
+        let current_groups =
+            String::from_utf8_lossy(&current_groups_output.stdout)
+                .split_whitespace()
+                .map(String::from) // Convert &str to String
+                .collect::<HashSet<_>>();
+
+        let new_groups =
+            user.groups.iter().cloned().collect::<HashSet<String>>();
+
+        let groups_to_add = new_groups.difference(&current_groups);
+
+        if !groups_to_add.clone().collect::<Vec<_>>().is_empty() {
+            let group_list = groups_to_add
+                .map(|group| group.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            tracing::info!(
+                "User '{}' is missing some groups. Adding them to the following groups: {}",
+                user.name,
+                group_list
+            );
+
+            let usermod_command =
+                format!("usermod -aG {} {}", group_list, user.name);
+
+            tracing::debug!("Running command: {}", usermod_command);
+
+            let status = Command::new("usermod")
+                .arg("-aG")
+                .arg(&group_list)
+                .arg(&user.name)
+                .status()?;
+
+            tracing::debug!("usermod command exit status: {}", status);
+
+            if !status.success() {
+                return Err(Error::SubprocessFailed {
+                    command: usermod_command,
+                    status,
+                });
+            }
+        }
+
         return Ok(());
     }
 
-    for attempt in 1..=MAX_RETRIES {
-        let path_useradd = env!("PATH_USERADD");
-        let home_path = format!("/home/{}", user.name);
+    let path_useradd = env!("PATH_USERADD");
+    let home_path = format!("/home/{}", user.name);
 
-        let status = Command::new(path_useradd)
-                        .arg(&user.name)
-                        .arg("--comment")
-                        .arg(
-                          "Provisioning agent created this user based on username provided in IMDS",
-                        )
-                        .arg("--groups")
-                        .arg(user.groups.join(","))
-                        .arg("-d")
-                        .arg(home_path)
-                        .arg("-m")
-                        .status()?;
-        if status.success() {
-            return Ok(());
-        } else if attempt < MAX_RETRIES {
-            sleep(Duration::from_secs(30));
-        } else {
-            return Err(Error::SubprocessFailed {
-                command: path_useradd.to_string(),
-                status,
-            });
-        }
+    let useradd_command = format!(
+        "{} {} --comment 'Provisioning agent created this user based on username provided in IMDS' --groups {} -d {} -m",
+        path_useradd,
+        user.name,
+        user.groups.join(","),
+        home_path
+    );
+
+    tracing::debug!("Running command: {}", useradd_command);
+
+    let status = Command::new(path_useradd)
+                    .arg(&user.name)
+                    .arg("--comment")
+                    .arg("Provisioning agent created this user based on username provided in IMDS")
+                    .arg("--groups")
+                    .arg(user.groups.join(","))
+                    .arg("-d")
+                    .arg(home_path)
+                    .arg("-m")
+                    .status()?;
+
+    tracing::debug!("useradd command exit status: {}", status);
+
+    if !status.success() {
+        return Err(Error::SubprocessFailed {
+            command: useradd_command,
+            status,
+        });
     }
 
     Ok(())
