@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::{collections::HashSet, process::Command};
+use std::process::Command;
 
 use tracing::instrument;
 
@@ -23,6 +23,24 @@ use crate::{error::Error, imds::PublicKeys};
 /// # use libazureinit::User;
 /// let user = User::new("azure-user", ["ssh-ed25519 NOTAREALKEY".into()])
 ///     .with_groups(["wheel".to_string(), "dialout".to_string()]);
+/// ```
+///
+/// The [`useradd`] and [`user_exists`] functions handle the creation and management of system users, including group assignments.
+/// These functions ensure that the specified user is correctly set up with the appropriate group memberships, whether they are newly created or already exist on the system.
+///
+/// - **User Creation:**
+///     - If the user does not already exist, it is created with the specified groups or, if no groups are specified, with the default `wheel` group.
+/// - **Existing User:**
+///     - If the user already exists and belongs to the specified groups, no changes are made, and the function exits.
+///     - If the user exists but does not belong to one or more of the specified groups, the user will be added to those groups using the `usermod -aG` command.
+/// - **Group Management:**
+///     - The `usermod -aG` command is used to add the user to the specified groups without removing them from any existing groups. This command will not produce an error if the user is already a member of the specified groups.
+///
+/// # Examples
+///
+/// ```
+/// let user = User::new("azureuser", vec![]).with_groups(["wheel".to_string()]);
+/// let user_with_new_group = User::new("azureuser", vec![]).with_groups(["adm".to_string()]);
 /// ```
 #[derive(Clone)]
 pub struct User {
@@ -114,51 +132,32 @@ fn useradd(user: &User) -> Result<(), Error> {
             user.name
         );
 
-        let current_groups_output =
-            Command::new("id").arg("-nG").arg(&user.name).output()?;
+        let group_list = user.groups.join(",");
 
-        let current_groups =
-            String::from_utf8_lossy(&current_groups_output.stdout)
-                .split_whitespace()
-                .map(String::from) // Convert &str to String
-                .collect::<HashSet<_>>();
+        tracing::info!(
+            "User '{}' is being added to the following groups: {}",
+            user.name,
+            group_list
+        );
 
-        let new_groups =
-            user.groups.iter().cloned().collect::<HashSet<String>>();
+        let usermod_command =
+            format!("usermod -aG {} {}", group_list, user.name);
 
-        let groups_to_add = new_groups.difference(&current_groups);
+        tracing::debug!("Running command: {}", usermod_command);
 
-        if !groups_to_add.clone().collect::<Vec<_>>().is_empty() {
-            let group_list = groups_to_add
-                .map(|group| group.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
+        let status = Command::new("usermod")
+            .arg("-aG")
+            .arg(&group_list)
+            .arg(&user.name)
+            .status()?;
 
-            tracing::info!(
-                "User '{}' is missing some groups. Adding them to the following groups: {}",
-                user.name,
-                group_list
-            );
+        tracing::debug!("usermod command exit status: {}", status);
 
-            let usermod_command =
-                format!("usermod -aG {} {}", group_list, user.name);
-
-            tracing::debug!("Running command: {}", usermod_command);
-
-            let status = Command::new("usermod")
-                .arg("-aG")
-                .arg(&group_list)
-                .arg(&user.name)
-                .status()?;
-
-            tracing::debug!("usermod command exit status: {}", status);
-
-            if !status.success() {
-                return Err(Error::SubprocessFailed {
-                    command: usermod_command,
-                    status,
-                });
-            }
+        if !status.success() {
+            return Err(Error::SubprocessFailed {
+                command: usermod_command,
+                status,
+            });
         }
 
         return Ok(());
