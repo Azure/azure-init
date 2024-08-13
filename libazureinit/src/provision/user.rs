@@ -47,6 +47,7 @@ use crate::{error::Error, imds::PublicKeys};
 /// # Examples
 ///
 /// ```
+/// # use libazureinit::User;
 /// let user = User::new("azureuser", vec![]).with_groups(["wheel".to_string()]);
 /// let user_with_new_group = User::new("azureuser", vec![]).with_groups(["adm".to_string()]);
 /// ```
