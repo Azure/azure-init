@@ -4,5 +4,3 @@ force_explicit_abi=true
 max_width=80
 tab_spaces=4
 use_field_init_shorthand=true
-wrap_commnents=true
-
