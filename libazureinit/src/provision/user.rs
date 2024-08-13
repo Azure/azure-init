@@ -9,13 +9,13 @@ use crate::{error::Error, imds::PublicKeys};
 
 /// The user and its related configuration to create on the host.
 ///
-/// A bare minimum user includes a name and a set of SSH public keys to allow the user to
-/// log into the host. Additional configuration includes a set of supplementary groups to
-/// add the user to, and a password to set for the user.
+/// A bare minimum user includes a name and a set of SSH public keys to allow
+/// the user to log into the host. Additional configuration includes a set of
+/// supplementary groups to add the user to, and a password to set for the user.
 ///
 /// By default, the user is included in the `wheel` group which is often used to
-/// grant administrator privileges via the `sudo` command. This can be changed with the
-/// [`User::with_groups`] method.
+/// grant administrator privileges via the `sudo` command. This can be changed
+/// with the [`User::with_groups`] method.
 ///
 /// # Example
 ///
@@ -25,16 +25,24 @@ use crate::{error::Error, imds::PublicKeys};
 ///     .with_groups(["wheel".to_string(), "dialout".to_string()]);
 /// ```
 ///
-/// The [`useradd`] and [`user_exists`] functions handle the creation and management of system users, including group assignments.
-/// These functions ensure that the specified user is correctly set up with the appropriate group memberships, whether they are newly created or already exist on the system.
+/// The [`useradd`] and [`user_exists`] functions handle the creation and
+/// management of system users, including group assignments. These functions
+/// ensure that the specified user is correctly set up with the appropriate
+/// group memberships, whether they are newly created or already exist on the
+/// system.
 ///
 /// - **User Creation:**
-///     - If the user does not already exist, it is created with the specified groups or, if no groups are specified, with the default `wheel` group.
+///     - If the user does not already exist, it is created with the specified
+///       groups or, if no groups are specified, with the default `wheel` group.
 /// - **Existing User:**
-///     - If the user already exists and belongs to the specified groups, no changes are made, and the function exits.
-///     - If the user exists but does not belong to one or more of the specified groups, the user will be added to those groups using the `usermod -aG` command.
+///     - If the user already exists and belongs to the specified groups, no
+///       changes are made, and the function exits.
+///     - If the user exists but does not belong to one or more of the specified
+///       groups, the user will be added to those groups using the `usermod -aG`
+///       command.
 /// - **Group Management:**
-///     - The `usermod -aG` command is used to add the user to the specified groups without removing them from any existing groups. This command will not produce an error if the user is already a member of the specified groups.
+///     - The `usermod -aG` command is used to add the user to the specified
+///       groups without removing them from any existing groups.
 ///
 /// # Examples
 ///
