@@ -9,13 +9,13 @@ use crate::{error::Error, imds::PublicKeys};
 
 /// The user and its related configuration to create on the host.
 ///
-/// A bare minimum user includes a name and a set of SSH public keys to allow the user to
-/// log into the host. Additional configuration includes a set of supplementary groups to
-/// add the user to, and a password to set for the user.
+/// A bare minimum user includes a name and a set of SSH public keys to allow
+/// the user to log into the host. Additional configuration includes a set of
+/// supplementary groups to add the user to, and a password to set for the user.
 ///
 /// By default, the user is included in the `wheel` group which is often used to
-/// grant administrator privileges via the `sudo` command. This can be changed with the
-/// [`User::with_groups`] method.
+/// grant administrator privileges via the `sudo` command. This can be changed
+/// with the [`User::with_groups`] method.
 ///
 /// # Example
 ///
@@ -23,6 +23,33 @@ use crate::{error::Error, imds::PublicKeys};
 /// # use libazureinit::User;
 /// let user = User::new("azure-user", ["ssh-ed25519 NOTAREALKEY".into()])
 ///     .with_groups(["wheel".to_string(), "dialout".to_string()]);
+/// ```
+///
+/// The [`useradd`] and [`user_exists`] functions handle the creation and
+/// management of system users, including group assignments. These functions
+/// ensure that the specified user is correctly set up with the appropriate
+/// group memberships, whether they are newly created or already exist on the
+/// system.
+///
+/// - **User Creation:**
+///     - If the user does not already exist, it is created with the specified
+///       groups or, if no groups are specified, with the default `wheel` group.
+/// - **Existing User:**
+///     - If the user already exists and belongs to the specified groups, no
+///       changes are made, and the function exits.
+///     - If the user exists but does not belong to one or more of the specified
+///       groups, the user will be added to those groups using the `usermod -aG`
+///       command.
+/// - **Group Management:**
+///     - The `usermod -aG` command is used to add the user to the specified
+///       groups without removing them from any existing groups.
+///
+/// # Examples
+///
+/// ```
+/// # use libazureinit::User;
+/// let user = User::new("azureuser", vec![]).with_groups(["wheel".to_string()]);
+/// let user_with_new_group = User::new("azureuser", vec![]).with_groups(["adm".to_string()]);
 /// ```
 #[derive(Clone)]
 pub struct User {
@@ -97,25 +124,83 @@ impl Provisioner {
 }
 
 #[instrument(skip_all)]
+fn user_exists(username: &str) -> Result<bool, Error> {
+    let status = Command::new("getent")
+        .arg("passwd")
+        .arg(username)
+        .status()?;
+
+    Ok(status.success())
+}
+
+#[instrument(skip_all)]
 fn useradd(user: &User) -> Result<(), Error> {
+    if user_exists(&user.name)? {
+        tracing::info!(
+            "User '{}' already exists. Skipping user creation.",
+            user.name
+        );
+
+        let group_list = user.groups.join(",");
+
+        tracing::info!(
+            "User '{}' is being added to the following groups: {}",
+            user.name,
+            group_list
+        );
+
+        let usermod_command =
+            format!("usermod -aG {} {}", group_list, user.name);
+
+        tracing::debug!("Running command: {}", usermod_command);
+
+        let status = Command::new("usermod")
+            .arg("-aG")
+            .arg(&group_list)
+            .arg(&user.name)
+            .status()?;
+
+        tracing::debug!("usermod command exit status: {}", status);
+
+        if !status.success() {
+            return Err(Error::SubprocessFailed {
+                command: usermod_command,
+                status,
+            });
+        }
+
+        return Ok(());
+    }
+
     let path_useradd = env!("PATH_USERADD");
     let home_path = format!("/home/{}", user.name);
 
+    let useradd_command = format!(
+        "{} {} --comment 'azure-init created this user based on username provided in IMDS' --groups {} -d {} -m",
+        path_useradd,
+        user.name,
+        user.groups.join(","),
+        home_path
+    );
+
+    tracing::debug!("Running command: {}", useradd_command);
+
     let status = Command::new(path_useradd)
-                    .arg(&user.name)
-                    .arg("--comment")
-                    .arg(
-                      "Provisioning agent created this user based on username provided in IMDS",
-                    )
-                    .arg("--groups")
-                    .arg(user.groups.join(","))
-                    .arg("-d")
-                    .arg(home_path)
-                    .arg("-m")
-                    .status()?;
+        .arg(&user.name)
+        .arg("--comment")
+        .arg("azure-init created this user based on username provided in IMDS")
+        .arg("--groups")
+        .arg(user.groups.join(","))
+        .arg("-d")
+        .arg(home_path)
+        .arg("-m")
+        .status()?;
+
+    tracing::debug!("useradd command exit status: {}", status);
+
     if !status.success() {
         return Err(Error::SubprocessFailed {
-            command: path_useradd.to_string(),
+            command: useradd_command,
             status,
         });
     }
