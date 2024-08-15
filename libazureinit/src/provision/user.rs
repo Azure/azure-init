@@ -176,7 +176,7 @@ fn useradd(user: &User) -> Result<(), Error> {
     let home_path = format!("/home/{}", user.name);
 
     let useradd_command = format!(
-        "{} {} --comment 'Provisioning agent created this user based on username provided in IMDS' --groups {} -d {} -m",
+        "{} {} --comment 'azure-init created this user based on username provided in IMDS' --groups {} -d {} -m",
         path_useradd,
         user.name,
         user.groups.join(","),
@@ -188,7 +188,7 @@ fn useradd(user: &User) -> Result<(), Error> {
     let status = Command::new(path_useradd)
                     .arg(&user.name)
                     .arg("--comment")
-                    .arg("Provisioning agent created this user based on username provided in IMDS")
+                    .arg("azure-init created this user based on username provided in IMDS")
                     .arg("--groups")
                     .arg(user.groups.join(","))
                     .arg("-d")
