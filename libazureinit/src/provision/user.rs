@@ -186,15 +186,15 @@ fn useradd(user: &User) -> Result<(), Error> {
     tracing::debug!("Running command: {}", useradd_command);
 
     let status = Command::new(path_useradd)
-                    .arg(&user.name)
-                    .arg("--comment")
-                    .arg("azure-init created this user based on username provided in IMDS")
-                    .arg("--groups")
-                    .arg(user.groups.join(","))
-                    .arg("-d")
-                    .arg(home_path)
-                    .arg("-m")
-                    .status()?;
+        .arg(&user.name)
+        .arg("--comment")
+        .arg("azure-init created this user based on username provided in IMDS")
+        .arg("--groups")
+        .arg(user.groups.join(","))
+        .arg("-d")
+        .arg(home_path)
+        .arg("-m")
+        .status()?;
 
     tracing::debug!("useradd command exit status: {}", status);
 
