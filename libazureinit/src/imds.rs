@@ -123,6 +123,7 @@ pub async fn query(
         loop {
             if let Ok(response) = client
                 .get(url)
+                .headers(headers.clone())
                 .timeout(Duration::from_secs(30))
                 .send()
                 .await
