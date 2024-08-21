@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -130,12 +131,22 @@ async fn provision() -> Result<(), anyhow::Error> {
         .default_headers(default_headers)
         .build()?;
 
+    let imds_http_timeout_sec: u64 = 5 * 60;
+    let imds_http_retry_interval_sec: u64 = 2;
+
     // Username can be obtained either via fetching instance metadata from IMDS
     // or mounting a local device for OVF environment file. It should not fail
     // immediately in a single failure, instead it should fall back to the other
     // mechanism. So it is not a good idea to use `?` for query() or
     // get_environment().
-    let instance_metadata = imds::query(&client).await.ok();
+    let instance_metadata = imds::query(
+        &client,
+        Duration::from_secs(imds_http_retry_interval_sec),
+        Duration::from_secs(imds_http_timeout_sec),
+        None, // default IMDS URL
+    )
+    .await
+    .ok();
 
     let environment = get_environment().ok();
 
