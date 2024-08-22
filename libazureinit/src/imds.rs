@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::error::Error;
+use crate::http;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct InstanceMetadata {
@@ -90,17 +91,6 @@ where
     }
 }
 
-// Set of StatusCodes that should be retried,
-// e.g. 400, 404, 410, 429, 500, 503.
-const RETRY_CODES: &[StatusCode] = &[
-    StatusCode::BAD_REQUEST,
-    StatusCode::NOT_FOUND,
-    StatusCode::GONE,
-    StatusCode::TOO_MANY_REQUESTS,
-    StatusCode::INTERNAL_SERVER_ERROR,
-    StatusCode::SERVICE_UNAVAILABLE,
-];
-
 static DEFAULT_IMDS_URL: &str =
     "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
 
@@ -134,7 +124,7 @@ pub async fn query(
                     return response.error_for_status();
                 }
 
-                if !RETRY_CODES.contains(&statuscode) {
+                if !http::RETRY_CODES.contains(&statuscode) {
                     return response.error_for_status();
                 }
             }
@@ -155,13 +145,15 @@ pub async fn query(
 mod tests {
     use serde_json::json;
 
-    use super::{query, InstanceMetadata, OsProfile, RETRY_CODES};
+    use super::{query, InstanceMetadata, OsProfile};
 
     use reqwest::{header, Client, StatusCode};
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::time;
+
+    use crate::http;
 
     static BODY_CONTENTS: &str = r#"
 {
@@ -316,13 +308,13 @@ mod tests {
         assert!(run_imds_query_retry(&StatusCode::OK).await);
 
         // status codes that should be retried up to 5 minutes.
-        for rc in RETRY_CODES {
+        for rc in http::RETRY_CODES {
             assert!(!run_imds_query_retry(rc).await);
         }
 
         // status codes that should result into immediate failures.
-        assert!(!run_imds_query_retry(&StatusCode::UNAUTHORIZED).await);
-        assert!(!run_imds_query_retry(&StatusCode::FORBIDDEN).await);
-        assert!(!run_imds_query_retry(&StatusCode::METHOD_NOT_ALLOWED).await);
+        for rc in http::HARDFAIL_CODES {
+            assert!(!run_imds_query_retry(rc).await);
+        }
     }
 }

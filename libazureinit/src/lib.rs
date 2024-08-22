@@ -3,6 +3,7 @@
 
 pub mod error;
 pub mod goalstate;
+pub(crate) mod http;
 pub mod imds;
 pub mod media;
 
