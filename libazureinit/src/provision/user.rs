@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::process::Command;
+use std::{os::unix::fs::OpenOptionsExt, process::Command};
+
+use std::io::Write;
 
 use tracing::instrument;
 
@@ -116,7 +118,11 @@ pub enum Provisioner {
 impl Provisioner {
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
         match self {
-            Self::Useradd => useradd(user),
+            Self::Useradd => {
+                useradd(user)?;
+                let path = "/etc/sudoers.d/azure-init-user";
+                add_user_for_passwordless_sudo(user.name.as_str(), path)
+            }
             #[cfg(test)]
             Self::FakeUseradd => Ok(()),
         }
@@ -208,9 +214,31 @@ fn useradd(user: &User) -> Result<(), Error> {
     Ok(())
 }
 
+fn add_user_for_passwordless_sudo(
+    username: &str,
+    path: &str,
+) -> Result<(), Error> {
+    // Create a file under /etc/sudoers.d with azure-init-user
+    let mut sudoers_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+
+    writeln!(sudoers_file, "{} ALL=(ALL) NOPASSWD: ALL", username)?;
+    sudoers_file.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use tempfile::tempdir;
+
     use crate::User;
+
+    use super::add_user_for_passwordless_sudo;
 
     #[test]
     fn password_skipped_in_debug() {
@@ -225,6 +253,33 @@ mod tests {
         assert_eq!(
             "User { name: \"azureuser\", groups: [\"wheel\"], ssh_keys: [], password: false }",
             format!("{:?}", user_without_password)
+        );
+    }
+
+    #[test]
+    fn test_passwordless_sudo_configured_successful() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sudoers_file");
+        let path_str = path.to_str().unwrap();
+
+        let _user_insecure = User::new("azureuser", []);
+        let ret =
+            add_user_for_passwordless_sudo(&_user_insecure.name, path_str);
+
+        assert!(ret.is_ok());
+        assert!(
+            fs::metadata(path.clone()).is_ok(),
+            "{path_str} file not created"
+        );
+        let mode = fs::metadata(path_str)
+            .expect("Sudoer file not created")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "Permissions are not set properly");
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "azureuser ALL=(ALL) NOPASSWD: ALL\n",
+            "Contents of the file are not as expected"
         );
     }
 }
