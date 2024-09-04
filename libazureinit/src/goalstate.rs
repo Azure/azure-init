@@ -133,9 +133,7 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
 mod tests {
     use super::{build_report_health_file, Goalstate};
 
-    #[test]
-    fn test_parsing_goalstate() {
-        let goalstate_str = "<Goalstate>
+    static GOALSTATE_STR: &str = "<Goalstate>
             <Container>
                 <ContainerId>2</ContainerId>
                 <RoleInstanceList>
@@ -147,7 +145,25 @@ mod tests {
             <Version>example_version</Version>
             <Incarnation>test_goal_incarnation</Incarnation>
         </Goalstate>";
-        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+
+    static HEALTH_STR: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+        <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+            <GoalStateIncarnation>test_goal_incarnation</GoalStateIncarnation>\n\
+            <Container>\n\
+                <ContainerId>2</ContainerId>\n\
+                <RoleInstanceList>\n\
+                    <Role>\n\
+                        <InstanceId>test_user_instance_id</InstanceId>\n\
+                        <Health>\n\
+                            <State>Ready</State>\n\
+                        </Health>\n\
+                    </Role>\n\
+                </RoleInstanceList>\n\
+            </Container>\n\
+        </Health>";
+    #[test]
+    fn test_parsing_goalstate() {
+        let goalstate: Goalstate = serde_xml_rs::from_str(GOALSTATE_STR)
             .expect("Failed to parse the goalstate XML.");
         assert_eq!(goalstate.container.container_id, "2".to_owned());
         assert_eq!(
@@ -164,40 +180,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_report_health_file() {
-        let goalstate_str = "
-            <Goalstate>
-                <Container>
-                    <ContainerId>2</ContainerId>
-                    <RoleInstanceList>
-                        <RoleInstance>
-                            <InstanceId>test_user_instance_id</InstanceId>
-                        </RoleInstance>
-                    </RoleInstanceList>
-                </Container>
-                <Version>example_version</Version>
-                <Incarnation>test_goal_incarnation</Incarnation>
-            </Goalstate>";
-        let goalstate: Goalstate = serde_xml_rs::from_str(goalstate_str)
+        let goalstate: Goalstate = serde_xml_rs::from_str(GOALSTATE_STR)
             .expect("Failed to parse the goalstate XML.");
 
-        let expected_output =
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
-        <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
-            <GoalStateIncarnation>test_goal_incarnation</GoalStateIncarnation>\n\
-            <Container>\n\
-                <ContainerId>2</ContainerId>\n\
-                <RoleInstanceList>\n\
-                    <Role>\n\
-                        <InstanceId>test_user_instance_id</InstanceId>\n\
-                        <Health>\n\
-                            <State>Ready</State>\n\
-                        </Health>\n\
-                    </Role>\n\
-                </RoleInstanceList>\n\
-            </Container>\n\
-        </Health>";
-
         let actual_output = build_report_health_file(goalstate);
-        assert_eq!(actual_output, expected_output);
+        assert_eq!(actual_output, HEALTH_STR);
     }
 }
