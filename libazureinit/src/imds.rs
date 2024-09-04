@@ -91,21 +91,17 @@ where
     }
 }
 
-static DEFAULT_IMDS_URL: &str =
+const DEFAULT_IMDS_URL: &str =
     "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
 
 pub async fn query(
     client: &Client,
     retry_interval: Duration,
     total_timeout: Duration,
-    input_url: Option<&str>,
+    url: Option<&str>,
 ) -> Result<InstanceMetadata, Error> {
     let mut headers = HeaderMap::new();
-
-    let url = match input_url {
-        Some(url) => url,
-        None => DEFAULT_IMDS_URL,
-    };
+    let url = url.unwrap_or(DEFAULT_IMDS_URL);
 
     headers.insert("Metadata", HeaderValue::from_static("true"));
 
@@ -121,7 +117,7 @@ pub async fn query(
                 let statuscode = response.status();
 
                 if statuscode.is_success() && statuscode == StatusCode::OK {
-                    return response.error_for_status();
+                    return Ok(response);
                 }
 
                 if !http::RETRY_CODES.contains(&statuscode) {
