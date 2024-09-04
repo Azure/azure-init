@@ -22,3 +22,5 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
     StatusCode::FORBIDDEN,
     StatusCode::METHOD_NOT_ALLOWED,
 ];
+
+pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;

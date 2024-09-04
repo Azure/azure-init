@@ -110,7 +110,7 @@ pub async fn query(
             if let Ok(response) = client
                 .get(url)
                 .headers(headers.clone())
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC))
                 .send()
                 .await
             {
