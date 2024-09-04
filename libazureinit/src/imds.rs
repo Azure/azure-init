@@ -152,9 +152,7 @@ mod tests {
 
     use reqwest::{header, Client, StatusCode};
     use std::time::Duration;
-    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
-    use tokio::time;
 
     use crate::{http, unittest};
 
@@ -253,9 +251,9 @@ mod tests {
 
     // Runs a test around sending via imds::query() with a given statuscode.
     async fn run_imds_query_retry(statuscode: &StatusCode) -> bool {
-        const IMDS_HTTP_TOTAL_TIMEOUT_SEC: u64 = 5 * 60;
-        const IMDS_HTTP_PERCLIENT_TIMEOUT_SEC: u64 = 30;
-        const IMDS_HTTP_RETRY_INTERVAL_SEC: u64 = 2;
+        const IMDS_HTTP_TOTAL_TIMEOUT_SEC: u64 = 5;
+        const IMDS_HTTP_PERCLIENT_TIMEOUT_SEC: u64 = 5;
+        const IMDS_HTTP_RETRY_INTERVAL_SEC: u64 = 1;
 
         let mut default_headers = header::HeaderMap::new();
         let user_agent =
@@ -266,15 +264,13 @@ mod tests {
         let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = serverlistener.local_addr().unwrap();
 
-        tokio::spawn(async move {
-            let (mut serverstream, _) = serverlistener.accept().await.unwrap();
-            serverstream.write_all(ok_payload.as_bytes()).await.unwrap();
-        });
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
-        // Advance time to 5 minutes later, to prevent tests from being blocked
-        // for long time when retrying on RETRY_CODES.
-        time::pause();
-        time::advance(Duration::from_secs(IMDS_HTTP_TOTAL_TIMEOUT_SEC)).await;
+        let server = tokio::spawn(unittest::serve_requests(
+            serverlistener,
+            ok_payload,
+            cancel_token.clone(),
+        ));
 
         default_headers.insert(header::USER_AGENT, user_agent);
         let client = Client::builder()
@@ -293,7 +289,17 @@ mod tests {
         )
         .await;
 
-        time::resume();
+        cancel_token.cancel();
+
+        let requests = server.await.unwrap();
+
+        if http::HARDFAIL_CODES.contains(statuscode) {
+            assert_eq!(requests, 1);
+        }
+
+        if http::RETRY_CODES.contains(statuscode) {
+            assert!(requests >= 4);
+        }
 
         res.is_ok()
     }
