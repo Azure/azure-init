@@ -15,5 +15,8 @@ pub use provision::{
     Provision,
 };
 
+#[cfg(test)]
+mod unittest;
+
 // Re-export as the Client is used in our API.
 pub use reqwest;

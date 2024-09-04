@@ -149,7 +149,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::time;
 
-    use crate::http;
+    use crate::{http, unittest};
 
     static BODY_CONTENTS: &str = r#"
 {
@@ -254,21 +254,14 @@ mod tests {
         let user_agent =
             header::HeaderValue::from_str("azure-init test").unwrap();
 
-        // Run a local test server that replies with simple test data.
+        let ok_payload =
+            unittest::get_http_response_payload(statuscode, BODY_CONTENTS);
         let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = serverlistener.local_addr().unwrap();
 
-        // Reply message includes the whole body in case of OK, otherwise empty data.
-        let ok_body = match statuscode {
-            &StatusCode::OK => format!("HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", statuscode.as_u16(), statuscode.to_string(), BODY_CONTENTS.len(), BODY_CONTENTS.to_string()),
-            _ => {
-                format!("HTTP/1.1 {} {}\r\n\r\n", statuscode.as_u16(), statuscode.to_string())
-            }
-        };
-
         tokio::spawn(async move {
             let (mut serverstream, _) = serverlistener.accept().await.unwrap();
-            serverstream.write_all(ok_body.as_bytes()).await.unwrap();
+            serverstream.write_all(ok_payload.as_bytes()).await.unwrap();
         });
 
         // Advance time to 5 minutes later, to prevent tests from being blocked
