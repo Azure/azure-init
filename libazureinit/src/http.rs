@@ -24,3 +24,4 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
 ];
 
 pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;
+pub(crate) const WIRESERVER_HTTP_TIMEOUT_SEC: u64 = 30;

@@ -177,12 +177,24 @@ async fn provision() -> Result<(), anyhow::Error> {
         ])
         .provision()?;
 
-    let vm_goalstate = goalstate::get_goalstate(&client)
-        .await
-        .with_context(|| "Failed to get desired goalstate.")?;
-    goalstate::report_health(&client, vm_goalstate)
-        .await
-        .with_context(|| "Failed to report VM health.")?;
+    let vm_goalstate = goalstate::get_goalstate(
+        &client,
+        Duration::from_secs(imds_http_retry_interval_sec),
+        Duration::from_secs(imds_http_timeout_sec),
+        None, // default wireserver goalstate URL
+    )
+    .await
+    .with_context(|| "Failed to get desired goalstate.")?;
+
+    goalstate::report_health(
+        &client,
+        vm_goalstate,
+        Duration::from_secs(imds_http_retry_interval_sec),
+        Duration::from_secs(imds_http_timeout_sec),
+        None, // default wireserver health URL
+    )
+    .await
+    .with_context(|| "Failed to report VM health.")?;
 
     Ok(())
 }
