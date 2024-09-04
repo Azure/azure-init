@@ -106,6 +106,7 @@ pub async fn query(
     headers.insert("Metadata", HeaderValue::from_static("true"));
 
     let response = timeout(total_timeout, async {
+        let now = std::time::Instant::now();
         loop {
             if let Ok(response) = client
                 .get(url)
@@ -116,14 +117,20 @@ pub async fn query(
             {
                 let statuscode = response.status();
 
-                if statuscode.is_success() && statuscode == StatusCode::OK {
+                if statuscode == StatusCode::OK {
+                    tracing::info!("HTTP response succeeded with status {}", statuscode);
                     return Ok(response);
                 }
 
                 if !http::RETRY_CODES.contains(&statuscode) {
-                    return response.error_for_status();
+                    return response.error_for_status().map_err(|error| {
+                        tracing::error!(?error, "{}", format!("HTTP call failed due to status {}", statuscode));
+                        error
+                    });
                 }
             }
+
+            tracing::info!("Retrying to get HTTP response in {} sec, remaining timeout {} sec.", retry_interval.as_secs(), total_timeout.saturating_sub(now.elapsed()).as_secs());
 
             tokio::time::sleep(retry_interval).await;
         }
