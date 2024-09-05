@@ -3,6 +3,7 @@
 
 pub mod error;
 pub mod goalstate;
+pub(crate) mod http;
 pub mod imds;
 pub mod media;
 
@@ -13,6 +14,9 @@ pub use provision::{
     user::{Provisioner as UserProvisioner, User},
     Provision,
 };
+
+#[cfg(test)]
+mod unittest;
 
 // Re-export as the Client is used in our API.
 pub use reqwest;

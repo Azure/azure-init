@@ -23,8 +23,8 @@ fstab = "0.4.0"
 
 [dev-dependencies]
 tempfile = "3"
-# test-util feature is needed for time::advance in unit tests
-tokio = { version = "1", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7.11"
 whoami = "1"
 
 [lib]
