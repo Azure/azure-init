@@ -15,9 +15,9 @@ use crate::{error::Error, imds::PublicKeys};
 /// the user to log into the host. Additional configuration includes a set of
 /// supplementary groups to add the user to, and a password to set for the user.
 ///
-/// By default, the user is included in the `wheel` group which is often used to
-/// grant administrator privileges via the `sudo` command. This can be changed
-/// with the [`User::with_groups`] method.
+/// By default, the user is not included in any group. To grant administrator
+/// privileges via the `sudo` command, additional groups like "wheel" can be
+/// added with the [`User::with_groups`] method.
 ///
 /// # Example
 ///
@@ -35,7 +35,7 @@ use crate::{error::Error, imds::PublicKeys};
 ///
 /// - **User Creation:**
 ///     - If the user does not already exist, it is created with the specified
-///       groups or, if no groups are specified, with the default `wheel` group.
+///       groups.
 /// - **Existing User:**
 ///     - If the user already exists and belongs to the specified groups, no
 ///       changes are made, and the function exits.
@@ -84,7 +84,7 @@ impl User {
     ) -> Self {
         Self {
             name: name.into(),
-            groups: vec!["wheel".into()],
+            groups: vec![],
             ssh_keys: ssh_keys.into(),
             password: None,
         }
@@ -247,11 +247,11 @@ mod tests {
         let user_without_password = User::new("azureuser", []);
 
         assert_eq!(
-            "User { name: \"azureuser\", groups: [\"wheel\"], ssh_keys: [], password: true }",
+            "User { name: \"azureuser\", groups: [], ssh_keys: [], password: true }",
             format!("{:?}", user_with_password)
         );
         assert_eq!(
-            "User { name: \"azureuser\", groups: [\"wheel\"], ssh_keys: [], password: false }",
+            "User { name: \"azureuser\", groups: [], ssh_keys: [], password: false }",
             format!("{:?}", user_without_password)
         );
     }
