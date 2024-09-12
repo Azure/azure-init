@@ -38,7 +38,7 @@ struct Cli {
         short,
         env = "AZURE_INIT_USER_GROUPS",
         value_delimiter = ',',
-        default_value = "wheel"
+        default_value = ""
     )]
     groups: Vec<String>,
 }
