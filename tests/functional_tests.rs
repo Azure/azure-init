@@ -4,7 +4,7 @@
 use libazureinit::imds::PublicKeys;
 use libazureinit::User;
 use libazureinit::{
-    goalstate,
+    goalstate, imds,
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
@@ -65,6 +65,21 @@ async fn main() {
     };
 
     println!("VM Health successfully reported");
+
+    let imds_http_timeout_sec: u64 = 5 * 60;
+    let imds_http_retry_interval_sec: u64 = 2;
+
+    // Simplified version of calling imds::query. Since username is directly
+    // given by cli_args below, it is not needed to get instance metadata like
+    // how it is done in provision() in main.
+    let _ = imds::query(
+        &client,
+        Duration::from_secs(imds_http_retry_interval_sec),
+        Duration::from_secs(imds_http_timeout_sec),
+        None, // default IMDS URL
+    )
+    .await
+    .expect("Failed to query IMDS");
 
     let username = &cli_args[1];
 
