@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-// Returns expected HTTP response for the given status code and body string.
+/// Returns expected HTTP response for the given status code and body string.
 pub(crate) fn get_http_response_payload(
     statuscode: &StatusCode,
     body_str: &str,
@@ -22,8 +22,8 @@ pub(crate) fn get_http_response_payload(
     res
 }
 
-// Accept incoming connections until the cancellation token is used, then return the count
-// of accepted connections.
+/// Accept incoming connections until the cancellation token is used, then return the count
+/// of accepted connections.
 pub(crate) async fn serve_requests(
     listener: TcpListener,
     payload: String,
