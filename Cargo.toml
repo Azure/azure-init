@@ -14,8 +14,10 @@ anyhow = "1.0.81"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing = "0.1.40"
+tracing-opentelemetry = "0.18.0"
 # We work fine with any version of 4, but 4.5 bumped MSRV to 1.74
 clap = { version = "<=4.4", features = ["derive", "cargo", "env"] }
+sys-info = "0.9"
 
 [dev-dependencies]
 # Purely for the MSRV requirement.
@@ -23,9 +25,15 @@ assert_cmd = "<=2.0.13"
 predicates = "<=3.1.0"
 predicates-core = "<=1.0.6"
 predicates-tree = "<=1.0.9"
+opentelemetry_sdk = "0.21"
+opentelemetry = "0.21"
 
 [dependencies.libazureinit]
 path = "libazureinit"
+version = "0.1.0"
+
+[dependencies.azurekvp]
+path = "azurekvp"
 version = "0.1.0"
 
 [profile.dev]
@@ -42,6 +50,7 @@ path = "tests/functional_tests.rs"
 [workspace]
 members = [
     "libazureinit",
+    "azurekvp",
 ]
 
 [features]
