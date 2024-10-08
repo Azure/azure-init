@@ -1,6 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+/// Set of error codes that can be used by libazureinit.
+///
+/// # Example
+///
+/// ```rust
+/// # use libazureinit::error::Error;
+///
+/// fn do_someuser() -> Result<(), Error> {
+///     return Err(Error::UserMissing {
+///         user: "testuser1".to_string(),
+///     });
+/// }
+/// ```
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Unable to deserialize or serialize JSON data")]
