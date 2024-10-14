@@ -143,12 +143,18 @@ pub async fn query(
     })
     .await?;
 
-    let imds_body = response?.text().await?;
-    tracing::info!("IMDS response body: {}", imds_body);
-
-    let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
-
-    Ok(metadata)
+    // Log if we successfully get the response body
+    match response?.text().await {
+        Ok(imds_body) => {
+            tracing::info!("IMDS response body: {}", imds_body);
+            let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
+            Ok(metadata)
+        }
+        Err(e) => {
+            tracing::error!("Failed to read IMDS body: {:?}", e);
+            Err(Error::from(e))
+        }
+    }
 }
 
 #[cfg(test)]
