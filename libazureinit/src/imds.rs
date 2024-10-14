@@ -125,7 +125,7 @@ pub async fn query(
 
                 if statuscode == StatusCode::OK {
                     tracing::info!("HTTP response succeeded with status {}", statuscode);
-                    return Ok(response);
+                    break Ok(response);
                 }
 
                 if !http::RETRY_CODES.contains(&statuscode) {
