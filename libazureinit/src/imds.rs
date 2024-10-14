@@ -105,6 +105,12 @@ pub async fn query(
 
     headers.insert("Metadata", HeaderValue::from_static("true"));
 
+    tracing::info!(
+        "Sending IMDS request to URL: {}, with headers: {:?}",
+        url,
+        headers
+    );
+
     let response = timeout(total_timeout, async {
         let now = std::time::Instant::now();
         loop {
@@ -138,6 +144,7 @@ pub async fn query(
     .await?;
 
     let imds_body = response?.text().await?;
+    tracing::info!("IMDS response body: {}", imds_body);
 
     let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
 
