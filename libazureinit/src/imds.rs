@@ -122,13 +122,18 @@ pub async fn query(
                 .await
             {
                 let statuscode = response.status();
-
+ 
                 if statuscode == StatusCode::OK {
-                    tracing::info!("HTTP response succeeded with status {}", statuscode);
-                    break Ok(response);
-                }
+                tracing::info!("HTTP response succeeded with status {}", statuscode);
+                return Ok(response);
+            }
 
                 if !http::RETRY_CODES.contains(&statuscode) {
+                    tracing::info!(
+                        "Non-retryable HTTP status encountered: {}. Attempting to process error.", 
+                        statuscode
+                    );
+
                     return response.error_for_status().map_err(|error| {
                         tracing::error!(?error, "{}", format!("HTTP call failed due to status {}", statuscode));
                         error
@@ -143,18 +148,12 @@ pub async fn query(
     })
     .await?;
 
-    // Log if we successfully get the response body
-    match response?.text().await {
-        Ok(imds_body) => {
-            tracing::info!("IMDS response body: {}", imds_body);
-            let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
-            Ok(metadata)
-        }
-        Err(e) => {
-            tracing::error!("Failed to read IMDS body: {:?}", e);
-            Err(Error::from(e))
-        }
-    }
+    let imds_body = response?.text().await?;
+    tracing::info!("IMDS response body: {}", imds_body);
+
+    let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
+    
+    Ok(metadata)
 }
 
 #[cfg(test)]
