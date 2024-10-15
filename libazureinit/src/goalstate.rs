@@ -15,6 +15,31 @@ use tokio::time::timeout;
 use crate::error::Error;
 use crate::http;
 
+/// Azure goalstate of the virtual machine. Metadata is written in XML format.
+///
+/// Required fields are Container, Version, Incarnation.
+///
+/// # Example
+///
+/// ```
+/// # use libazureinit::goalstate::Goalstate;
+///
+/// static GOALSTATE_STR: &str = "<Goalstate>
+///         <Container>
+///             <ContainerId>2</ContainerId>
+///             <RoleInstanceList>
+///                 <RoleInstance>
+///                     <InstanceId>test_user_instance_id</InstanceId>
+///                 </RoleInstance>
+///             </RoleInstanceList>
+///         </Container>
+///         <Version>example_version</Version>
+///         <Incarnation>test_goal_incarnation</Incarnation>
+///     </Goalstate>";
+///
+/// let goalstate: Goalstate = serde_xml_rs::from_str(GOALSTATE_STR)
+///     .expect("Failed to parse the goalstate XML.");
+/// ```
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Goalstate {
     #[serde(rename = "Container")]
@@ -25,6 +50,7 @@ pub struct Goalstate {
     incarnation: String,
 }
 
+/// Container of [`Goalstate`] of the virtual machine. Metadata is written in XML format.
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct Container {
     #[serde(rename = "ContainerId")]
@@ -33,12 +59,14 @@ pub struct Container {
     role_instance_list: RoleInstanceList,
 }
 
+/// List of role instances of goalstate. Metadata is written in XML format.
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct RoleInstanceList {
     #[serde(rename = "RoleInstance")]
     role_instance: RoleInstance,
 }
 
+/// Role instance of goalstate. Metadata is written in XML format.
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct RoleInstance {
     #[serde(rename = "InstanceId")]
@@ -48,6 +76,31 @@ pub struct RoleInstance {
 const DEFAULT_GOALSTATE_URL: &str =
     "http://168.63.129.16/machine/?comp=goalstate";
 
+/// Fetch Azure goalstate of Azure wireserver.
+///
+/// Caller needs to pass 3 required parameters, client, retry_interval,
+/// total_timeout. It is therefore required to create a reqwest::Client
+/// variable with possible options, to pass it as parameter.
+///
+/// Parameter url is optional. If None is passed, it defaults to
+/// DEFAULT_GOALSTATE_URL, an internal goalstate URL available in the Azure VM.
+///
+/// # Example
+///
+/// ```
+/// # use std::time::Duration;
+/// use libazureinit::reqwest::Client;
+///
+/// let client = Client::builder()
+///     .timeout(std::time::Duration::from_secs(5))
+///     .build()
+///     .unwrap();
+///
+/// let res = libazureinit::goalstate::get_goalstate(
+///     &client, Duration::from_secs(1), Duration::from_secs(5),
+///     Some("http://127.0.0.1:8000/"),
+/// );
+/// ```
 pub async fn get_goalstate(
     client: &Client,
     retry_interval: Duration,
@@ -111,6 +164,41 @@ pub async fn get_goalstate(
 
 const DEFAULT_HEALTH_URL: &str = "http://168.63.129.16/machine/?comp=health";
 
+/// Report health stateus to Azure wireserver.
+///
+/// Caller needs to pass 4 required parameters, client, retry_interval,
+/// total_timeout, goalstate. It is therefore required to create a reqwest::Client
+/// variable with possible options, to pass it as parameter. Also caller must
+/// first run get_goalstate to get GoalState variable to pass it as parameter of
+/// report_health.
+///
+/// Parameter url optional. If None is passed, it defaults to DEFAULT_HEALTH_URL,
+/// an internal health report URL available in the Azure VM.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use std::time::Duration;
+/// use libazureinit::reqwest::Client;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let client = Client::builder()
+///         .timeout(std::time::Duration::from_secs(5))
+///         .build()
+///         .unwrap();
+///
+///     let vm_goalstate = libazureinit::goalstate::get_goalstate(
+///         &client, Duration::from_secs(1), Duration::from_secs(5),
+///         Some("http://127.0.0.1:8000/"),
+///     ).await.unwrap();
+///
+///     let res = libazureinit::goalstate::report_health(
+///         &client, vm_goalstate, Duration::from_secs(1), Duration::from_secs(5),
+///         Some("http://127.0.0.1:8000/"),
+///     );
+/// }
+/// ```
 pub async fn report_health(
     client: &Client,
     goalstate: Goalstate,
