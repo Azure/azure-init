@@ -3,14 +3,12 @@
 
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_xml_rs::from_str;
-
-use tokio::time::timeout;
 
 use crate::error::Error;
 use crate::http;
@@ -112,50 +110,17 @@ pub async fn get_goalstate(
     let mut headers = HeaderMap::new();
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
-
-    let response = timeout(total_timeout, async {
-        let now = std::time::Instant::now();
-        loop {
-            if let Ok(response) = client
-                .get(url)
-                .headers(headers.clone())
-                .timeout(Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC))
-                .send()
-                .await
-            {
-                let statuscode = response.status();
-
-                if statuscode == StatusCode::OK {
-                    tracing::info!(
-                        "HTTP response succeeded with status {}",
-                        statuscode
-                    );
-                    return Ok(response);
-                }
-
-                if !http::RETRY_CODES.contains(&statuscode) {
-                    return response.error_for_status().map_err(|error| {
-                        tracing::error!(
-                            ?error,
-                            "{}",
-                            format!(
-                                "HTTP call failed due to status {}",
-                                statuscode
-                            )
-                        );
-                        error
-                    });
-                }
-            }
-
-            tracing::info!("Retrying to get HTTP response in {} sec, remaining timeout {} sec.", retry_interval.as_secs(), total_timeout.saturating_sub(now.elapsed()).as_secs());
-
-            tokio::time::sleep(retry_interval).await;
-        }
-    })
+    let (response, _) = http::get(
+        client,
+        headers,
+        Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC),
+        retry_interval,
+        total_timeout,
+        url,
+    )
     .await?;
 
-    let goalstate_body = response?.text().await?;
+    let goalstate_body = response.text().await?;
 
     let goalstate: Goalstate = from_str(&goalstate_body)?;
 
@@ -215,40 +180,20 @@ pub async fn report_health(
         "Content-Type",
         HeaderValue::from_static("text/xml;charset=utf-8"),
     );
+    let request_timeout =
+        Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC);
 
     let post_request = build_report_health_file(goalstate);
 
-    _ = timeout(total_timeout, async {
-        let now = std::time::Instant::now();
-        loop {
-            if let Ok(response) = client
-                .post(url)
-                .headers(headers.clone())
-                .body(post_request.clone())
-                .timeout(Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC))
-                .send()
-                .await
-            {
-                let statuscode = response.status();
-
-                if statuscode == StatusCode::OK {
-                    tracing::info!("HTTP response succeeded with status {}", statuscode);
-                    return Ok(response);
-                }
-
-                if !http::RETRY_CODES.contains(&statuscode) {
-                    return response.error_for_status().map_err(|error| {
-                        tracing::error!(?error, "{}", format!("HTTP call failed due to status {}", statuscode));
-                        error
-                    });
-                }
-            }
-
-            tracing::info!("Retrying to get HTTP response in {} sec, remaining timeout {} sec.", retry_interval.as_secs(), total_timeout.saturating_sub(now.elapsed()).as_secs());
-
-            tokio::time::sleep(retry_interval).await;
-        }
-    })
+    _ = http::post(
+        client,
+        headers,
+        post_request,
+        request_timeout,
+        retry_interval,
+        total_timeout,
+        url,
+    )
     .await?;
 
     Ok(())

@@ -69,5 +69,11 @@ pub enum Error {
     )]
     NoPasswordProvisioner,
     #[error("A timeout error occurred")]
-    Timeout(#[from] tokio::time::error::Elapsed),
+    Timeout,
+}
+
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        Self::Timeout
+    }
 }

@@ -3,15 +3,13 @@
 
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer};
 use serde_json;
 use serde_json::Value;
-
-use tokio::time::timeout;
 
 use crate::error::Error;
 use crate::http;
@@ -182,39 +180,17 @@ pub async fn query(
 
     headers.insert("Metadata", HeaderValue::from_static("true"));
 
-    let response = timeout(total_timeout, async {
-        let now = std::time::Instant::now();
-        loop {
-            if let Ok(response) = client
-                .get(url)
-                .headers(headers.clone())
-                .timeout(Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC))
-                .send()
-                .await
-            {
-                let statuscode = response.status();
-
-                if statuscode == StatusCode::OK {
-                    tracing::info!("HTTP response succeeded with status {}", statuscode);
-                    return Ok(response);
-                }
-
-                if !http::RETRY_CODES.contains(&statuscode) {
-                    return response.error_for_status().map_err(|error| {
-                        tracing::error!(?error, "{}", format!("HTTP call failed due to status {}", statuscode));
-                        error
-                    });
-                }
-            }
-
-            tracing::info!("Retrying to get HTTP response in {} sec, remaining timeout {} sec.", retry_interval.as_secs(), total_timeout.saturating_sub(now.elapsed()).as_secs());
-
-            tokio::time::sleep(retry_interval).await;
-        }
-    })
+    let (response, _) = http::get(
+        client,
+        headers,
+        Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC),
+        retry_interval,
+        total_timeout,
+        url,
+    )
     .await?;
 
-    let imds_body = response?.text().await?;
+    let imds_body = response.text().await?;
 
     let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
 
