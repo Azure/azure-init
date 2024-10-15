@@ -103,6 +103,9 @@ pub async fn query(
     let mut headers = HeaderMap::new();
     headers.insert("Metadata", HeaderValue::from_static("true"));
     let url = url.unwrap_or(DEFAULT_IMDS_URL);
+
+    tracing::info!("Querying IMDS with URL: {}", url);
+
     let request_timeout = Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC);
 
     while !total_timeout.is_zero() {
@@ -117,6 +120,8 @@ pub async fn query(
         .await?;
         match response.text().await {
             Ok(text) => {
+                tracing::info!("IMDS response body: {}", text);
+
                 let metadata =
                     serde_json::from_str(text.as_str()).map_err(|error| {
                         tracing::error!(
@@ -125,6 +130,14 @@ pub async fn query(
                         );
                         error.into()
                     });
+
+                if let Ok(ref metadata_value) = metadata {
+                    tracing::info!(
+                        ?metadata_value,
+                        "Successfully retrieved and parsed metadata"
+                    );
+                }
+
                 if metadata.is_ok() {
                     return metadata;
                 }
