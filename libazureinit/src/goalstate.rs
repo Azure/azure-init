@@ -49,29 +49,48 @@ const DEFAULT_GOALSTATE_URL: &str =
 pub async fn get_goalstate(
     client: &Client,
     retry_interval: Duration,
-    total_timeout: Duration,
+    mut total_timeout: Duration,
     url: Option<&str>,
 ) -> Result<Goalstate, Error> {
-    let url = url.unwrap_or(DEFAULT_GOALSTATE_URL);
-
     let mut headers = HeaderMap::new();
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
-    let (response, _) = http::get(
-        client,
-        headers,
-        Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC),
-        retry_interval,
-        total_timeout,
-        url,
-    )
-    .await?;
+    let url = url.unwrap_or(DEFAULT_GOALSTATE_URL);
+    let request_timeout =
+        Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC);
 
-    let goalstate_body = response.text().await?;
+    while !total_timeout.is_zero() {
+        let (response, remaining_timeout) = http::get(
+            client,
+            headers.clone(),
+            request_timeout,
+            retry_interval,
+            total_timeout,
+            url,
+        )
+        .await?;
+        match response.text().await {
+            Ok(body) => {
+                let goalstate = from_str(&body).map_err(|error| {
+                    tracing::error!(
+                        ?error,
+                        "Failed to deserialize request body"
+                    );
+                    error.into()
+                });
+                if goalstate.is_ok() {
+                    return goalstate;
+                }
+            }
+            Err(error) => {
+                tracing::error!(?error, "Failed to retrieve response body")
+            }
+        }
 
-    let goalstate: Goalstate = from_str(&goalstate_body)?;
+        total_timeout = remaining_timeout;
+    }
 
-    Ok(goalstate)
+    Err(Error::Timeout)
 }
 
 const DEFAULT_HEALTH_URL: &str = "http://168.63.129.16/machine/?comp=health";
@@ -83,8 +102,6 @@ pub async fn report_health(
     total_timeout: Duration,
     url: Option<&str>,
 ) -> Result<(), Error> {
-    let url = url.unwrap_or(DEFAULT_HEALTH_URL);
-
     let mut headers = HeaderMap::new();
     headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
     headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
@@ -94,6 +111,7 @@ pub async fn report_health(
     );
     let request_timeout =
         Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC);
+    let url = url.unwrap_or(DEFAULT_HEALTH_URL);
 
     let post_request = build_report_health_file(goalstate);
 
@@ -314,5 +332,53 @@ mod tests {
         for rc in http::HARDFAIL_CODES {
             assert!(!run_goalstate_retry(rc).await);
         }
+    }
+
+    // Assert malformed responses are retried.
+    //
+    // In this case the server declares a content-type of JSON, but doesn't return JSON.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn malformed_response() {
+        let body = "You thought this was XML, but you were wrong";
+        let payload = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\n\r\n{}",
+             StatusCode::OK.as_u16(),
+             StatusCode::OK.to_string(),
+             body.len(),
+             body
+        );
+
+        let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = serverlistener.local_addr().unwrap();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let server = tokio::spawn(unittest::serve_requests(
+            serverlistener,
+            payload,
+            cancel_token.clone(),
+        ));
+
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let res = get_goalstate(
+            &client,
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Some(format!("http://{:}:{:}/", addr.ip(), addr.port()).as_str()),
+        )
+        .await;
+
+        cancel_token.cancel();
+
+        let requests = server.await.unwrap();
+        assert!(requests >= 2);
+        assert!(logs_contain("Failed to deserialize request body"));
+        match res {
+            Err(crate::error::Error::Timeout) => {}
+            _ => panic!("Response should have timed out"),
+        };
     }
 }
