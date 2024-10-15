@@ -24,13 +24,13 @@
 /// ```
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Unable to deserialize or serialize JSON data")]
+    #[error("Unable to deserialize or serialize JSON data: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("Unable to deserialize or serialize XML data")]
+    #[error("Unable to deserialize or serialize XML data: {0}")]
     Xml(#[from] serde_xml_rs::Error),
-    #[error("HTTP client error ocurred")]
+    #[error("HTTP client error occurred: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("An I/O error occurred")]
+    #[error("An I/O error occurred: {0}")]
     Io(#[from] std::io::Error),
     #[error("HTTP request did not succeed (HTTP {status} from {endpoint})")]
     HttpStatus {
@@ -44,7 +44,7 @@ pub enum Error {
     },
     #[error("failed to construct a C-style string")]
     NulError(#[from] std::ffi::NulError),
-    #[error("nix call failed")]
+    #[error("nix call failed: {0}")]
     Nix(#[from] nix::Error),
     #[error("The user {user} does not exist")]
     UserMissing { user: String },
@@ -54,7 +54,7 @@ pub enum Error {
     InstanceMetadataFailure,
     #[error("Provisioning a user with a non-empty password is not supported")]
     NonEmptyPassword,
-    #[error("Unable to get list of block devices")]
+    #[error("Unable to get list of block devices: {0}")]
     BlockUtils(#[from] block_utils::BlockUtilsError),
     #[error(
         "Failed to set the hostname; none of the provided backends succeeded"
