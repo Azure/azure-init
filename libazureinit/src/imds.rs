@@ -91,7 +91,7 @@ where
 }
 
 const DEFAULT_IMDS_URL: &str =
-    "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+    "http://169.254.169.254/metadata/instance?api-version=2021-02-01&extended=true";
 
 #[instrument(err, skip_all)]
 pub async fn query(
