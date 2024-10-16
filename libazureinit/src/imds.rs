@@ -143,7 +143,7 @@ where
 }
 
 const DEFAULT_IMDS_URL: &str =
-    "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+    "http://169.254.169.254/metadata/instance?api-version=2023-11-15&extended=true";
 
 /// Send queries to IMDS to fetch Azure instance metadata.
 ///
