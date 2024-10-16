@@ -1,6 +1,27 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+/// Set of error codes that can be used by libazureinit.
+///
+/// # Example
+///
+/// ```rust
+/// # use libazureinit::error::Error;
+/// # use std::process::Command;
+///
+/// fn run_ls() -> Result<(), Error> {
+///     let ls_status = Command::new("ls").arg("/tmp").status().unwrap();
+///     if !ls_status.success() {
+///         Err(Error::SubprocessFailed {
+///             command: "ls".to_string(),
+///             status: ls_status,
+///         })
+///     } else {
+///         Ok(())
+///     }
+/// }
+///
+/// ```
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Unable to deserialize or serialize JSON data")]
