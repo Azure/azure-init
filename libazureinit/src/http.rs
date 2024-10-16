@@ -41,7 +41,7 @@ pub(crate) async fn get(
     retry_interval: Duration,
     retry_for: Duration,
     url: &str,
-) -> Result<(reqwest::Response, Duration), Error> {
+) -> Result<(String, Duration), Error> {
     let req = client
         .get(url)
         .headers(headers)
@@ -62,7 +62,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
     retry_interval: Duration,
     retry_for: Duration,
     url: &str,
-) -> Result<(reqwest::Response, Duration), Error> {
+) -> Result<(String, Duration), Error> {
     let req = client
         .post(url)
         .headers(headers)
@@ -86,13 +86,17 @@ async fn request(
     request: Request,
     retry_interval: Duration,
     retry_for: Duration,
-) -> Result<(reqwest::Response, Duration), Error> {
+) -> Result<(String, Duration), Error> {
     timeout(retry_for, async {
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
             let span = tracing::info_span!("request", attempt);
             let req = request.try_clone().expect("The request body MUST be clone-able");
+
+            let url = req.url().clone();
+            tracing::info!("Making HTTP request to URL: {}", url);
+
             match client
                 .execute(req)
                 .instrument(span.clone())
@@ -102,11 +106,13 @@ async fn request(
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
 
-                        match response.error_for_status() {
-                            Ok(response) => {
+                        match response.error_for_status_ref() {
+                            Ok(_) => {
                                 if statuscode == StatusCode::OK {
+                                    let body = response.text().await?;
                                     tracing::info!("HTTP response succeeded with status {}", statuscode);
-                                    return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
+                                    tracing::info!("Response body: {}", body); 
+                                    return Ok((body, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }
                             },
                             Err(error) => {

@@ -60,7 +60,7 @@ pub async fn get_goalstate(
         Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC);
 
     while !total_timeout.is_zero() {
-        let (response, remaining_timeout) = http::get(
+        let (body, remaining_timeout) = http::get(
             client,
             headers.clone(),
             request_timeout,
@@ -69,22 +69,14 @@ pub async fn get_goalstate(
             url,
         )
         .await?;
-        match response.text().await {
-            Ok(body) => {
-                let goalstate = from_str(&body).map_err(|error| {
-                    tracing::error!(
-                        ?error,
-                        "Failed to deserialize request body"
-                    );
-                    error.into()
-                });
-                if goalstate.is_ok() {
-                    return goalstate;
-                }
-            }
-            Err(error) => {
-                tracing::error!(?error, "Failed to retrieve response body")
-            }
+
+        let goalstate = from_str(&body).map_err(|error| {
+            tracing::error!(?error, "Failed to deserialize request body");
+            error.into()
+        });
+
+        if goalstate.is_ok() {
+            return goalstate;
         }
 
         total_timeout = remaining_timeout;
