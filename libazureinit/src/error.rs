@@ -70,6 +70,8 @@ pub enum Error {
     NoPasswordProvisioner,
     #[error("A timeout error occurred")]
     Timeout,
+    #[error("Failed to update the sshd configuration")]
+    UpdateSshdConfig,
 }
 
 impl From<tokio::time::error::Elapsed> for Error {
