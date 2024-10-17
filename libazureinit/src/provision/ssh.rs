@@ -25,47 +25,66 @@ pub(crate) fn provision_ssh(
         .mode(0o700)
         .create(&ssh_dir)?;
     nix::unistd::chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
-    // It's possible the directory already existed if it's created with the user; make sure
-    // the permissions are correct.
+
     std::fs::set_permissions(&ssh_dir, Permissions::from_mode(0o700))?;
 
-    let authorized_keys_path = match get_authorized_keys_path_from_sshd()? {
+    let authorized_keys_path = match get_authorized_keys_path_from_config() {
         Some(path) => user.dir.join(path),
         None => user.dir.join(".ssh/authorized_keys"),
     };
-    info!("Using authorized_keys path: {:?}", authorized_keys_path);
+
+    tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
+
     let mut authorized_keys = std::fs::File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
+
     keys.iter()
         .try_for_each(|key| writeln!(authorized_keys, "{}", key.key_data))?;
+
     nix::unistd::chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
 
     Ok(())
 }
 
-pub(crate) fn get_authorized_keys_path_from_sshd() -> io::Result<Option<PathBuf>>
-{
-    let sshd_output = Command::new("sshd").arg("-T").output()?;
-    if !sshd_output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("sshd -T failed with status: {}", sshd_output.status),
-        ));
-    }
-
-    let stdout = sshd_output.stdout;
-    let sshd_output = String::from_utf8_lossy(&stdout);
-    for line in sshd_output.lines() {
-        if line.starts_with("authorizedkeysfile") {
-            let keypath: Vec<&str> = line.split_whitespace().collect();
-            if keypath.len() > 1 {
-                info!("Found authorized_keys path: {}", keypath[1]);
-                return Ok(Some(PathBuf::from(keypath[1])));
+pub(crate) fn get_authorized_keys_path_from_config() -> Option<PathBuf> {
+    let config_path = PathBuf::from("/etc/azure-init/conf.d/ssh.conf");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(config_path).ok()?;
+        for line in content.lines() {
+            if line.starts_with("authorizedkeysfile") {
+                let keypath: Vec<&str> = line.split('=').collect();
+                if keypath.len() == 2 {
+                    return Some(PathBuf::from(keypath[1].trim()));
+                }
             }
         }
     }
-    Ok(None)
+    None
 }
+
+// pub(crate) fn get_authorized_keys_path_from_sshd() -> io::Result<Option<PathBuf>>
+// {
+//     let sshd_output = Command::new("sshd").arg("-T").output()?;
+//     if !sshd_output.status.success() {
+//         return Err(io::Error::new(
+//             io::ErrorKind::Other,
+//             format!("sshd -T failed with status: {}", sshd_output.status),
+//         ));
+//     }
+
+//     let stdout = sshd_output.stdout;
+//     let sshd_output = String::from_utf8_lossy(&stdout);
+//     for line in sshd_output.lines() {
+//         if line.starts_with("authorizedkeysfile") {
+//             let keypath: Vec<&str> = line.split_whitespace().collect();
+//             if keypath.len() > 1 {
+//                 info!("Found authorized_keys path: {}", keypath[1]);
+//                 return Ok(Some(PathBuf::from(keypath[1])));
+//             }
+//         }
+//     }
+//     Ok(None)
+// }
 
 #[cfg(test)]
 mod tests {
