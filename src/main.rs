@@ -1,9 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
-use std::process::ExitCode;
-use std::time::Duration;
-
 use anyhow::Context;
 use clap::Parser;
 use libazureinit::imds::InstanceMetadata;
@@ -15,10 +11,18 @@ use libazureinit::{
     reqwest::{header, Client},
     HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
 };
+use std::process::ExitCode;
+use std::time::Duration;
 use tracing::instrument;
+use tracing::{event, Level};
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
+};
+
+use azurekvp::tracing::initialize_tracing;
+use azurekvp::EmitKVPLayer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -56,8 +60,10 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
         }
     }
 
-    environment
-        .ok_or_else(|| anyhow::anyhow!("Unable to get list of block devices"))
+    environment.ok_or_else(|| {
+        event!(Level::ERROR, "Unable to get list of block devices");
+        anyhow::anyhow!("Unable to get list of block devices")
+    })
 }
 
 #[instrument(skip_all)]
@@ -83,25 +89,40 @@ fn get_username(
                 .linux_prov_conf_set
                 .username
         })
-        .ok_or(LibError::UsernameFailure.into())
+        .ok_or_else(|| {
+            event!(Level::ERROR, "Username Failure");
+            LibError::UsernameFailure.into()
+        })
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let stderr = tracing_subscriber::fmt::layer()
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-        .with_writer(std::io::stderr);
-    let registry = tracing_subscriber::registry()
-        .with(stderr)
-        .with(EnvFilter::from_env("AZURE_INIT_LOG"));
-    tracing::subscriber::set_global_default(registry).expect(
-        "Only an application should set the global default; \
-        a library is mis-using the tracing API.",
-    );
+    let tracer = initialize_tracing();
 
-    match provision().await {
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+    let emit_kvp_layer = EmitKVPLayer::new(std::path::PathBuf::from(
+        "/var/lib/hyperv/.kvp_pool_1",
+    ));
+
+    let stderr_layer = fmt::layer()
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
+
+    let subscriber = Registry::default()
+        .with(stderr_layer)
+        .with(otel_layer)
+        .with(emit_kvp_layer);
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to set global tracing subscriber");
+
+    let result = provision().await;
+
+    match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
+            event!(Level::ERROR, "Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
             let config: u8 = exitcode::CONFIG
                 .try_into()
@@ -117,8 +138,22 @@ async fn main() -> ExitCode {
     }
 }
 
-#[instrument]
+#[instrument(name = "root")]
 async fn provision() -> Result<(), anyhow::Error> {
+    let kernel_version =
+        sys_info::os_release().unwrap_or("Unknown Kernel Version".to_string());
+    let os_version =
+        sys_info::os_type().unwrap_or("Unknown OS Version".to_string());
+    let azure_init_version = env!("CARGO_PKG_VERSION");
+
+    event!(
+        Level::INFO,
+        msg = format!(
+            "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
+            kernel_version, os_version, azure_init_version
+        )
+    );
+
     let opts = Cli::parse();
 
     let mut default_headers = header::HeaderMap::new();
@@ -184,7 +219,10 @@ async fn provision() -> Result<(), anyhow::Error> {
         None, // default wireserver goalstate URL
     )
     .await
-    .with_context(|| "Failed to get desired goalstate.")?;
+    .with_context(|| {
+        event!(Level::ERROR, "Failed to get the desired goalstate.");
+        "Failed to get desired goalstate."
+    })?;
 
     goalstate::report_health(
         &client,
@@ -194,7 +232,10 @@ async fn provision() -> Result<(), anyhow::Error> {
         None, // default wireserver health URL
     )
     .await
-    .with_context(|| "Failed to report VM health.")?;
+    .with_context(|| {
+        event!(Level::ERROR, "Failed to report VM health.");
+        "Failed to report VM health."
+    })?;
 
     Ok(())
 }
