@@ -111,7 +111,7 @@ async fn request(
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
+            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty, x_ms_request_id = tracing::field::Empty);
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
                 .execute(req)
@@ -121,6 +121,11 @@ async fn request(
                         let _enter = span.enter();
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
+                        // Wireserver doesn't include request IDs so optionally add it to the span
+                        response.headers()
+                            .get("x-ms-request-id")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|v| span.record("x_ms_request_id", v));
                         tracing::info!(url=response.url().as_str(), "HTTP response received");
 
                         match response.error_for_status() {
