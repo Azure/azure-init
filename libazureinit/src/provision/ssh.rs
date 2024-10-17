@@ -2,13 +2,14 @@
 // Licensed under the MIT License.
 
 use std::{
-    fs::Permissions,
-    io::{self, Write},
+    fs::{self, OpenOptions, Permissions},
+    io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
     process::Command,
 };
 
+use regex::Regex;
 use tracing::{info, instrument};
 
 use crate::error::Error;
@@ -67,20 +68,61 @@ pub(crate) fn get_authorized_keys_path_from_sshd() -> io::Result<Option<PathBuf>
     Ok(None)
 }
 
+pub(crate) fn update_sshd_config() -> io::Result<()> {
+    let sshd_config_path = "/etc/ssh/sshd_config";
+    let temp_sshd_config_path = "/etc/ssh/sshd_config.tmp";
+
+    let mut file_content = String::new();
+    {
+        let mut file = OpenOptions::new().read(true).open(sshd_config_path)?;
+        file.read_to_string(&mut file_content)?;
+    }
+
+    let re =
+        Regex::new(r"(?m)^\s*#?\s*PasswordAuthentication\s+no\s*$").unwrap();
+    let modified_content =
+        re.replace_all(&file_content, "PasswordAuthentication yes");
+
+    if modified_content == file_content {
+        return Ok(());
+    }
+
+    let mut temp_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(temp_sshd_config_path)?;
+    temp_file.write_all(modified_content.as_bytes())?;
+    temp_file.set_permissions(fs::Permissions::from_mode(0o644))?;
+
+    fs::rename(temp_sshd_config_path, sshd_config_path)?;
+
+    // Restart the sshd service to apply changes
+    Command::new("systemctl")
+        .arg("restart")
+        .arg("sshd")
+        .output()?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 
     use nix::unistd::User;
+    use regex::Regex;
     use tracing::info;
 
     use crate::imds::PublicKeys;
+    use crate::provision::ssh::OpenOptions;
     use std::{
-        fs::Permissions,
+        fs::{self, File, Permissions},
         io::{self, Read, Write},
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::PathBuf,
         process::Command,
     };
+    use tempfile::TempDir;
 
     fn mock_sshd_output(output: &str) -> io::Result<Option<PathBuf>> {
         let output = Command::new("echo").arg(output).output()?;
@@ -101,8 +143,36 @@ mod tests {
                 }
             }
         }
-
         Ok(None)
+    }
+
+    fn mock_update_sshd_config(sshd_config_path: &PathBuf) -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let temp_sshd_config_path = temp_dir.path().join("sshd_config.tmp");
+
+        let mut file_content = String::new();
+        {
+            let mut file =
+                OpenOptions::new().read(true).open(sshd_config_path)?;
+            file.read_to_string(&mut file_content)?;
+        }
+        let re = Regex::new(r"(?m)^\s*#?\s*PasswordAuthentication\s+no\s*$")
+            .unwrap();
+        let modified_content =
+            re.replace_all(&file_content, "PasswordAuthentication yes");
+        if modified_content == file_content {
+            return Ok(());
+        }
+        let mut temp_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_sshd_config_path)?;
+
+        temp_file.write_all(modified_content.as_bytes())?;
+        fs::rename(&temp_sshd_config_path, sshd_config_path)?;
+        info!("Restarting sshd service");
+        Ok(())
     }
 
     fn mock_provision_ssh(user: &User, keys: &[PublicKeys]) -> io::Result<()> {
@@ -264,5 +334,49 @@ mod tests {
         auth_file.read_to_string(&mut buf).unwrap();
 
         assert_eq!("not-a-real-key xyz987\n", buf);
+    }
+
+    #[test]
+    fn test_update_sshd_config_change() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+        {
+            let mut file = File::create(&sshd_config_path)?;
+            writeln!(file, "PasswordAuthentication no")?;
+        }
+        let ret: Result<(), io::Error> =
+            mock_update_sshd_config(&sshd_config_path);
+        assert!(ret.is_ok());
+        let mut updated_content = String::new();
+        {
+            let mut file = File::open(&sshd_config_path)?;
+            file.read_to_string(&mut updated_content)?;
+        }
+        assert!(updated_content.contains("PasswordAuthentication yes"));
+        assert!(!updated_content.contains("PasswordAuthentication no"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_sshd_config_no_change() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+        {
+            let mut file = File::create(&sshd_config_path)?;
+            writeln!(file, "PasswordAuthentication yes")?;
+        }
+        let ret: Result<(), io::Error> =
+            mock_update_sshd_config(&sshd_config_path);
+        assert!(ret.is_ok());
+        let mut updated_content = String::new();
+        {
+            let mut file = File::open(&sshd_config_path)?;
+            file.read_to_string(&mut updated_content)?;
+        }
+        assert!(updated_content.contains("PasswordAuthentication yes"));
+        assert!(!updated_content.contains("PasswordAuthentication no"));
+
+        Ok(())
     }
 }
