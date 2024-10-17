@@ -15,13 +15,35 @@ use serde_json::Value;
 use crate::error::Error;
 use crate::http;
 
+/// Azure instance metadata obtained from IMDS. Written in JSON format.
+///
+/// Required fields are osProfile and publicKeys.
+///
+/// # Example
+///
+/// ```
+/// # use libazureinit::imds;
+///    static TESTDATA: &str = r#"
+///{
+///  "compute": {
+///    "osProfile": {
+///      "adminUsername": "testuser",
+///      "computerName": "testcomputer",
+///      "disablePasswordAuthentication": "true"
+///    },
+///    "publicKeys": []
+///  }
+///}"#;
+/// let metadata: imds::InstanceMetadata =
+///     serde_json::from_str(&TESTDATA.to_string()).unwrap();
+/// ```
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct InstanceMetadata {
     /// Compute metadata
     pub compute: Compute,
 }
 
-/// Metadata about the instance's virtual machine.
+/// Metadata about the instance's virtual machine. Written in JSON format.
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct Compute {
     /// Metadata about the operating system.
@@ -32,7 +54,24 @@ pub struct Compute {
     pub public_keys: Vec<PublicKeys>,
 }
 
-/// Metadata about the virtual machine's operating system.
+/// Azure Metadata about the virtual machine's operating system, obtained from IMDS.
+/// Written in JSON format.
+///
+/// Required fields are adminUsername, computerName, disablePasswordAuthentication.
+///
+/// # Example
+///
+/// ```
+/// # use serde_json::json;
+/// # use libazureinit::imds::OsProfile;
+///
+/// let TESTDATA = json!({
+///     "adminUsername": "testuser",
+///     "computerName": "testcomputer",
+///     "disablePasswordAuthentication": "true"
+/// });
+/// let os_profile: OsProfile = serde_json::from_value(TESTDATA).unwrap();
+/// ```
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct OsProfile {
     /// The admin account's username.
@@ -49,7 +88,20 @@ pub struct OsProfile {
     pub disable_password_authentication: bool,
 }
 
-/// An SSH public key.
+/// Azure Metadata's SSH public key obtained from IMDS. Written in JSON format.
+///
+/// # Example
+///
+/// ```
+/// # use serde_json::json;
+/// # use libazureinit::imds::PublicKeys;
+///
+/// let TESTDATA = json!({
+///     "keyData": "ssh-rsa test_key1",
+///     "path": "/path/to/.ssh/authorized_keys"
+/// });
+/// let ssh_key: PublicKeys = serde_json::from_value(TESTDATA).unwrap();
+/// ```
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct PublicKeys {
     /// The SSH public key certificate used to authenticate with the virtual machine.
@@ -91,8 +143,33 @@ where
 }
 
 const DEFAULT_IMDS_URL: &str =
-    "http://169.254.169.254/metadata/instance?api-version=2021-02-01&extended=true";
+    "http://169.254.169.254/metadata/instance?api-version=2023-11-15&extended=true";
 
+/// Send queries to IMDS to fetch Azure instance metadata.
+///
+/// Caller needs to pass 3 required parameters, client, retry_interval,
+/// total_timeout. It is therefore required to create a reqwest::Client
+/// variable with possible options, to pass it as parameter.
+///
+/// Parameter url optional. If None is passed, it defaults to
+/// DEFAULT_IMDS_URL, an internal IMDS URL available in the Azure VM.
+///
+/// # Example
+///
+/// ```
+/// # use reqwest::Client;
+/// # use std::time::Duration;
+///
+/// let client = Client::builder()
+///     .timeout(std::time::Duration::from_secs(5))
+///     .build()
+///     .unwrap();
+///
+/// let res = libazureinit::imds::query(
+///     &client, Duration::from_secs(1), Duration::from_secs(5),
+///     Some("http://127.0.0.1:8000/"),
+/// );
+/// ```
 #[instrument(err, skip_all)]
 pub async fn query(
     client: &Client,
@@ -103,13 +180,10 @@ pub async fn query(
     let mut headers = HeaderMap::new();
     headers.insert("Metadata", HeaderValue::from_static("true"));
     let url = url.unwrap_or(DEFAULT_IMDS_URL);
-
-    tracing::info!("Querying IMDS with URL: {}", url);
-
     let request_timeout = Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC);
 
     while !total_timeout.is_zero() {
-        let (body, remaining_timeout) = http::get(
+        let (response, remaining_timeout) = http::get(
             client,
             headers.clone(),
             request_timeout,
@@ -118,23 +192,23 @@ pub async fn query(
             url,
         )
         .await?;
-
-        tracing::info!("IMDS response body: {}", body);
-
-        let metadata = serde_json::from_str(&body).map_err(|error| {
-            tracing::error!(?error, "Failed to deserialize request body");
-            error.into()
-        });
-
-        if let Ok(ref metadata_value) = metadata {
-            tracing::info!(
-                ?metadata_value,
-                "Successfully retrieved and parsed metadata"
-            );
-        }
-
-        if metadata.is_ok() {
-            return metadata;
+        match response.text().await {
+            Ok(text) => {
+                let metadata =
+                    serde_json::from_str(text.as_str()).map_err(|error| {
+                        tracing::warn!(
+                            ?error,
+                            "The response body was invalid and could not be deserialized"
+                        );
+                        error.into()
+                    });
+                if metadata.is_ok() {
+                    return metadata;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(?error, "Failed to read the full response body")
+            }
         }
 
         total_timeout = remaining_timeout;
@@ -360,7 +434,9 @@ mod tests {
 
         let requests = server.await.unwrap();
         assert!(requests >= 2);
-        assert!(logs_contain("Failed to deserialize request body error"));
+        assert!(logs_contain(
+            "The response body was invalid and could not be deserialized"
+        ));
         match res {
             Err(crate::error::Error::Timeout) => {}
             _ => panic!("Response should have timed out"),

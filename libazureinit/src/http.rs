@@ -11,6 +11,15 @@ use crate::error::Error;
 
 /// Set of StatusCodes that should be retried,
 /// e.g. 400, 404, 410, 429, 500, 503.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// # use libazureinit::http::RETRY_CODES;
+/// # use reqwest::StatusCode;
+///
+/// assert!(RETRY_CODES.contains(StatusCode::NOT_FOUND));
+/// ```
 pub(crate) const RETRY_CODES: &[StatusCode] = &[
     StatusCode::BAD_REQUEST,
     StatusCode::NOT_FOUND,
@@ -22,6 +31,15 @@ pub(crate) const RETRY_CODES: &[StatusCode] = &[
 
 /// Set of StatusCodes that should immediately fail,
 /// e.g. 401, 403, 405.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// # use libazureinit::http::HARDFAIL_CODES;
+/// # use reqwest::StatusCode;
+///
+/// assert!(HARDFAIL_CODES.contains(StatusCode::FORBIDDEN));
+/// ```
 #[allow(dead_code)]
 pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
     StatusCode::UNAUTHORIZED,
@@ -29,7 +47,9 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
     StatusCode::METHOD_NOT_ALLOWED,
 ];
 
+/// Timeout for communicating with IMDS.
 pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;
+/// Timeout for communicating with wireserver for goalstate, health.
 pub(crate) const WIRESERVER_HTTP_TIMEOUT_SEC: u64 = 30;
 
 /// Send an HTTP GET request to the given URL with an empty body.
@@ -41,7 +61,7 @@ pub(crate) async fn get(
     retry_interval: Duration,
     retry_for: Duration,
     url: &str,
-) -> Result<(String, Duration), Error> {
+) -> Result<(reqwest::Response, Duration), Error> {
     let req = client
         .get(url)
         .headers(headers)
@@ -62,7 +82,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
     retry_interval: Duration,
     retry_for: Duration,
     url: &str,
-) -> Result<(String, Duration), Error> {
+) -> Result<(reqwest::Response, Duration), Error> {
     let req = client
         .post(url)
         .headers(headers)
@@ -86,17 +106,13 @@ async fn request(
     request: Request,
     retry_interval: Duration,
     retry_for: Duration,
-) -> Result<(String, Duration), Error> {
+) -> Result<(reqwest::Response, Duration), Error> {
     timeout(retry_for, async {
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt);
+            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
             let req = request.try_clone().expect("The request body MUST be clone-able");
-
-            let url = req.url().clone();
-            tracing::info!("Making HTTP request to URL: {}", url);
-
             match client
                 .execute(req)
                 .instrument(span.clone())
@@ -105,22 +121,20 @@ async fn request(
                         let _enter = span.enter();
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
+                        tracing::info!(url=response.url().as_str(), "HTTP response received");
 
-                        match response.error_for_status_ref() {
-                            Ok(_) => {
+                        match response.error_for_status() {
+                            Ok(response) => {
                                 if statuscode == StatusCode::OK {
-                                    let body = response.text().await?;
                                     tracing::info!("HTTP response succeeded with status {}", statuscode);
-                                    tracing::info!("Response body: {}", body); 
-                                    return Ok((body, retry_for.saturating_sub(now.elapsed() + retry_interval)));
+                                    return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }
                             },
                             Err(error) => {
                                 if !RETRY_CODES.contains(&statuscode) {
                                     tracing::error!(
                                         ?error,
-                                        "HTTP response cannot be retried due to status {}",
-                                        statuscode
+                                        "HTTP response status code is fatal and the request will not be retried",
                                     );
                                     return Err(error.into());
                                 }
@@ -133,12 +147,17 @@ async fn request(
                         tracing::error!(?error, "HTTP request failed to complete");
                     },
                 }
+            span.in_scope(||{
+                tracing::warn!(
+                    "Failed to get a successful HTTP response, retrying in {} sec, remaining timeout {} sec.",
+                    retry_interval.as_secs(),
+                    retry_for.saturating_sub(now.elapsed()).as_secs()
+                );
+            });
+            // Explicitly dropping here to ensure the sleep isn't included in the request timings
+            drop(span);
+
             attempt += 1;
-            tracing::info!(
-                "Retrying to get HTTP response in {} sec, remaining timeout {} sec.",
-                retry_interval.as_secs(),
-                retry_for.saturating_sub(now.elapsed()).as_secs()
-            );
             tokio::time::sleep(retry_interval).await;
         }
     }).await?
@@ -220,8 +239,14 @@ pub(crate) mod tests {
                     _ = async {
                         let (mut serverstream, _) = serverlistener.accept().await.unwrap();
                         requests_accepted += 1;
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        let _ = serverstream.write_all("we should not get here".as_bytes()).await;
+                        // Do this asynchronously so we accept the next request in a timely manner;
+                        // there's a separate test for slow accepts.
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            let _ = serverstream.write_all(
+                                get_http_response_payload(&StatusCode::FORBIDDEN, "too slow").as_bytes()
+                            ).await;
+                        });
                     } => {}
                 }
             }
