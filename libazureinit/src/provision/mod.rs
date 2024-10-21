@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+pub mod config;
 pub mod hostname;
 pub mod password;
 pub(crate) mod ssh;
@@ -131,7 +132,7 @@ impl Provision {
                     user: self.user.name,
                 },
             )?;
-            ssh::provision_ssh(&user, &self.user.ssh_keys)?;
+            ssh::provision_ssh(&user, &self.user.ssh_keys, None)?;
         }
 
         self.hostname_backends

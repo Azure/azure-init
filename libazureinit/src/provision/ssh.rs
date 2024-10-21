@@ -1,70 +1,81 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
-use std::{
-    fs::Permissions,
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
-    process::Command,
-};
-
-use tracing::{info, instrument};
-
 use crate::error::Error;
 use crate::imds::PublicKeys;
+use crate::provision::config::Config;
+use nix::unistd::{chown, User};
+use std::{
+    fs::{File, Permissions},
+    io::Write,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    process::Command,
+};
+use tracing::instrument;
 
 #[instrument(skip_all, name = "ssh")]
 pub(crate) fn provision_ssh(
-    user: &nix::unistd::User,
+    user: &User,
     keys: &[PublicKeys],
+    config_path: Option<&str>,
 ) -> Result<(), Error> {
+    let config = Config::load(config_path)?;
+
+    let authorized_keys_path;
+
+    if config.get_ssh_authorized_keys_query_mode() == "sshd -G" {
+        tracing::info!("authorized_keys_path_query_mode is set to sshd -G. Attempting to get path via sshd -G.");
+        let sshd_output = Command::new("sshd").arg("-G").output()?;
+        if !sshd_output.status.success() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("sshd -G failed with status: {}", sshd_output.status),
+            )));
+        }
+
+        let stdout = sshd_output.stdout;
+        let sshd_output = String::from_utf8_lossy(&stdout);
+        authorized_keys_path = sshd_output
+            .lines()
+            .find_map(|line| {
+                if line.starts_with("authorizedkeysfile") {
+                    let keypath: Vec<&str> = line.split_whitespace().collect();
+                    keypath.get(1).map(|path| user.dir.join(path))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                user.dir.join(config.get_ssh_authorized_keys_path())
+            });
+    } else if config.get_ssh_authorized_keys_query_mode() == "disabled" {
+        tracing::warn!("authorized_keys_path_query_mode is disabled. Proceeding with configured authorized_keys path.");
+        authorized_keys_path =
+            user.dir.join(config.get_ssh_authorized_keys_path());
+    } else {
+        tracing::error!("Invalid authorized_keys_path_query_mode value. Defaulting to configured authorized_keys path.");
+        authorized_keys_path =
+            user.dir.join(config.get_ssh_authorized_keys_path());
+    }
+
     let ssh_dir = user.dir.join(".ssh");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&ssh_dir)?;
-    nix::unistd::chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
-    // It's possible the directory already existed if it's created with the user; make sure
-    // the permissions are correct.
-    std::fs::set_permissions(&ssh_dir, Permissions::from_mode(0o700))?;
 
-    let authorized_keys_path = match get_authorized_keys_path_from_sshd()? {
-        Some(path) => user.dir.join(path),
-        None => user.dir.join(".ssh/authorized_keys"),
-    };
-    info!("Using authorized_keys path: {:?}", authorized_keys_path);
-    let mut authorized_keys = std::fs::File::create(&authorized_keys_path)?;
+    chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
+
+    tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
+
+    let mut authorized_keys = File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
+
     keys.iter()
         .try_for_each(|key| writeln!(authorized_keys, "{}", key.key_data))?;
-    nix::unistd::chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
+
+    chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
 
     Ok(())
-}
-
-pub(crate) fn get_authorized_keys_path_from_sshd() -> io::Result<Option<PathBuf>>
-{
-    let sshd_output = Command::new("sshd").arg("-T").output()?;
-    if !sshd_output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("sshd -T failed with status: {}", sshd_output.status),
-        ));
-    }
-
-    let stdout = sshd_output.stdout;
-    let sshd_output = String::from_utf8_lossy(&stdout);
-    for line in sshd_output.lines() {
-        if line.starts_with("authorizedkeysfile") {
-            let keypath: Vec<&str> = line.split_whitespace().collect();
-            if keypath.len() > 1 {
-                info!("Found authorized_keys path: {}", keypath[1]);
-                return Ok(Some(PathBuf::from(keypath[1])));
-            }
-        }
-    }
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -87,7 +98,7 @@ mod tests {
         if !output.status.success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Failed to execute mock sshd -T",
+                "Failed to execute mock sshd -G",
             ));
         }
 
