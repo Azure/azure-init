@@ -1,13 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+use crate::config::SshAuthorizedKeysPathQueryMode;
 use crate::error::Error;
 use crate::imds::PublicKeys;
-use crate::provision::config::Config;
 use nix::unistd::{chown, User};
 use std::{
     fs::{File, Permissions},
     io::Write,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
+    path::PathBuf,
     process::Command,
 };
 use tracing::instrument;
@@ -16,46 +17,49 @@ use tracing::instrument;
 pub(crate) fn provision_ssh(
     user: &User,
     keys: &[PublicKeys],
-    config_path: Option<&str>,
+    authorized_keys_path: Option<PathBuf>,
+    query_mode: SshAuthorizedKeysPathQueryMode,
 ) -> Result<(), Error> {
-    let config = Config::load(config_path)?;
+    let authorized_keys_path = match query_mode {
+        SshAuthorizedKeysPathQueryMode::SshdG => {
+            tracing::info!("Attempting to get authorized keys path via sshd -G as configured.");
+            let sshd_output = Command::new("sshd").arg("-G").output()?;
+            if !sshd_output.status.success() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "sshd -G failed with status: {}",
+                        sshd_output.status
+                    ),
+                )));
+            }
 
-    let authorized_keys_path;
-
-    if config.get_ssh_authorized_keys_query_mode() == "sshd -G" {
-        tracing::info!("authorized_keys_path_query_mode is set to sshd -G. Attempting to get path via sshd -G.");
-        let sshd_output = Command::new("sshd").arg("-G").output()?;
-        if !sshd_output.status.success() {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("sshd -G failed with status: {}", sshd_output.status),
-            )));
+            let stdout = sshd_output.stdout;
+            let sshd_output = String::from_utf8_lossy(&stdout);
+            sshd_output
+                .lines()
+                .find_map(|line| {
+                    if line.starts_with("authorizedkeysfile") {
+                        let keypath: Vec<&str> =
+                            line.split_whitespace().collect();
+                        keypath.get(1).map(|path| user.dir.join(path))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| {
+                    user.dir.join(authorized_keys_path.as_deref().unwrap_or(
+                        PathBuf::from("~/.ssh/authorized_keys").as_path(),
+                    ))
+                })
         }
-
-        let stdout = sshd_output.stdout;
-        let sshd_output = String::from_utf8_lossy(&stdout);
-        authorized_keys_path = sshd_output
-            .lines()
-            .find_map(|line| {
-                if line.starts_with("authorizedkeysfile") {
-                    let keypath: Vec<&str> = line.split_whitespace().collect();
-                    keypath.get(1).map(|path| user.dir.join(path))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                user.dir.join(config.get_ssh_authorized_keys_path())
-            });
-    } else if config.get_ssh_authorized_keys_query_mode() == "disabled" {
-        tracing::warn!("authorized_keys_path_query_mode is disabled. Proceeding with configured authorized_keys path.");
-        authorized_keys_path =
-            user.dir.join(config.get_ssh_authorized_keys_path());
-    } else {
-        tracing::error!("Invalid authorized_keys_path_query_mode value. Defaulting to configured authorized_keys path.");
-        authorized_keys_path =
-            user.dir.join(config.get_ssh_authorized_keys_path());
-    }
+        SshAuthorizedKeysPathQueryMode::Disabled => {
+            tracing::warn!(
+                "SSH provisioning is disabled; skipping SSH key setup."
+            );
+            return Ok(());
+        }
+    };
 
     let ssh_dir = user.dir.join(".ssh");
     std::fs::DirBuilder::new()
@@ -66,7 +70,6 @@ pub(crate) fn provision_ssh(
     chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
 
     tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
-
     let mut authorized_keys = File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
 

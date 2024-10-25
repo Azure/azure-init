@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
+pub mod config;
 pub mod error;
 pub mod goalstate;
 pub(crate) mod http;
