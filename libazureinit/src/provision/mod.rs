@@ -5,16 +5,12 @@ pub mod password;
 pub(crate) mod ssh;
 pub mod user;
 
-//use nix::libc::USER_PROCESS;
-//use strum::IntoEnumIterator;
-use tracing::instrument;
-
 use crate::config::{
     Config, HostnameProvisioner, PasswordProvisioner, UserProvisioner,
 };
-
 use crate::error::Error;
 use crate::User;
+use tracing::instrument;
 
 /// The interface for applying the desired configuration to the host.
 ///
@@ -28,7 +24,7 @@ use crate::User;
 pub struct Provision {
     hostname: String,
     user: User,
-    config: Config, // Include `Config` to access provisioner settings
+    config: Config,
 }
 
 impl Provision {
@@ -110,9 +106,6 @@ impl Provision {
 #[cfg(test)]
 mod tests {
     use super::{Config, Provision};
-    //use crate::hostname::Provisioner as HostnameProvisioner;
-    //use crate::password::Provisioner as PasswordProvisioner;
-    //use crate::user::Provisioner as UserProvisioner;
     use crate::config::{
         HostnameProvisioner, PasswordProvisioner, UserProvisioner,
     };
@@ -123,7 +116,6 @@ mod tests {
 
     #[test]
     fn test_successful_provision() {
-        // Mock config with fake provisioners for testing
         let mock_config = Config {
             hostname_provisioners: HostnameProvisioners {
                 backends: vec![HostnameProvisioner::FakeHostnamectl],
@@ -134,14 +126,13 @@ mod tests {
             password_provisioners: PasswordProvisioners {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
-            ..Config::default() // Fill in other defaults
+            ..Config::default()
         };
 
-        // Initialize Provision with the mock config
         let _p = Provision::new(
             "my-hostname".to_string(),
             User::new("azureuser", vec![]),
-            mock_config, // Pass in the mock config
+            mock_config,
         )
         .provision()
         .unwrap();

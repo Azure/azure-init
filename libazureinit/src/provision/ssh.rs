@@ -23,8 +23,18 @@ pub(crate) fn provision_ssh(
     let authorized_keys_path = match query_mode {
         SshAuthorizedKeysPathQueryMode::SshdG => {
             tracing::info!("Attempting to get authorized keys path via sshd -G as configured.");
+
             let sshd_output = Command::new("sshd").arg("-G").output()?;
+            tracing::info!(
+                "sshd -G output: {}",
+                String::from_utf8_lossy(&sshd_output.stdout)
+            );
+
             if !sshd_output.status.success() {
+                tracing::error!(
+                    "sshd -G failed with stderr: {}",
+                    String::from_utf8_lossy(&sshd_output.stderr)
+                );
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!(
@@ -34,30 +44,41 @@ pub(crate) fn provision_ssh(
                 )));
             }
 
-            let stdout = sshd_output.stdout;
-            let sshd_output = String::from_utf8_lossy(&stdout);
-            sshd_output
-                .lines()
-                .find_map(|line| {
-                    if line.starts_with("authorizedkeysfile") {
-                        let keypath: Vec<&str> =
-                            line.split_whitespace().collect();
-                        keypath.get(1).map(|path| user.dir.join(path))
-                    } else {
-                        None
+            let sshd_output_text = String::from_utf8_lossy(&sshd_output.stdout);
+            match sshd_output_text.lines().find_map(|line| {
+                if line.starts_with("authorizedkeysfile") {
+                    let keypath: Vec<&str> = line.split_whitespace().collect();
+                    if keypath.len() > 1 {
+                        tracing::info!(
+                            "Found authorized_keys path: {}",
+                            keypath[1]
+                        );
+                        return Some(user.dir.join(keypath[1]));
                     }
-                })
-                .unwrap_or_else(|| {
-                    user.dir.join(authorized_keys_path.as_deref().unwrap_or(
-                        PathBuf::from("~/.ssh/authorized_keys").as_path(),
-                    ))
-                })
+                }
+                None
+            }) {
+                Some(path) => path,
+                None => {
+                    tracing::error!(
+                        "Failed to find authorized_keys path in sshd -G output. Please verify sshd configuration."
+                    );
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Missing authorized_keys path in sshd -G output",
+                    )));
+                }
+            }
         }
         SshAuthorizedKeysPathQueryMode::Disabled => {
-            tracing::warn!(
-                "SSH provisioning is disabled; skipping SSH key setup."
-            );
-            return Ok(());
+            tracing::info!("SSH provisioning is disabled; using provided authorized_keys_path.");
+            authorized_keys_path.ok_or_else(|| {
+                tracing::error!("No authorized_keys_path provided in configuration while SSH provisioning is disabled.");
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "authorized_keys_path is required when SSH provisioning is disabled",
+                ))
+            })?
         }
     };
 

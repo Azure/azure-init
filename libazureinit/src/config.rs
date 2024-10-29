@@ -8,14 +8,6 @@ use toml;
 use tracing;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy)]
-pub enum NetworkManager {
-    NetworkManager,
-    #[serde(rename = "systemd-networkd")]
-    #[default]
-    SystemdNetworkd,
-}
-
-#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum SshAuthorizedKeysPathQueryMode {
     #[serde(rename = "sshd -G")]
     SshdG,
@@ -49,21 +41,6 @@ pub enum PasswordProvisioner {
     Passwd,
     #[cfg(test)]
     FakePasswd,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Network {
-    pub manage_configuration: bool,
-    pub network_manager: NetworkManager,
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Self {
-            manage_configuration: true,
-            network_manager: NetworkManager::SystemdNetworkd,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -126,16 +103,16 @@ impl Default for PasswordProvisioners {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Imds {
     pub connection_timeout_secs: f64,
-    pub read_timeout_secs: u32,
-    pub retry_timeout_secs: u32,
+    pub read_timeout_secs: f64,
+    pub total_retry_timeout_secs: f64,
 }
 
 impl Default for Imds {
     fn default() -> Self {
         Self {
             connection_timeout_secs: 2.0,
-            read_timeout_secs: 60,
-            retry_timeout_secs: 300,
+            read_timeout_secs: 60.0,
+            total_retry_timeout_secs: 300.0,
         }
     }
 }
@@ -165,16 +142,16 @@ impl Default for AzureProxyAgent {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Wireserver {
     pub connection_timeout_secs: f64,
-    pub read_timeout_secs: u32,
-    pub retry_timeout_secs: u32,
+    pub read_timeout_secs: f64,
+    pub total_retry_timeout_secs: f64,
 }
 
 impl Default for Wireserver {
     fn default() -> Self {
         Self {
             connection_timeout_secs: 2.0,
-            read_timeout_secs: 60,
-            retry_timeout_secs: 1200,
+            read_timeout_secs: 60.0,
+            total_retry_timeout_secs: 1200.0,
         }
     }
 }
@@ -195,7 +172,6 @@ impl Default for Telemetry {
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Config {
-    pub network: Network,
     pub ssh: Ssh,
     pub hostname_provisioners: HostnameProvisioners,
     pub user_provisioners: UserProvisioners,
@@ -266,7 +242,6 @@ impl Config {
     }
 
     fn merge(mut self, other: Config) -> Config {
-        self.network = other.network;
         self.ssh = other.ssh;
         self.hostname_provisioners = other.hostname_provisioners;
         self.user_provisioners = other.user_provisioners;
