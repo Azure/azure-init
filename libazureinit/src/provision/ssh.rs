@@ -97,7 +97,7 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(stdout);
     for line in output.lines() {
         if line.starts_with("authorizedkeysfile") {
-            let keypath = line.split_whitespace().skip(1).next().map(|s| {
+            let keypath = line.split_whitespace().nth(1).map(|s| {
                 info!(
                     authorizedkeysfile = %s,
                     "Using sshd's authorizedkeysfile path configuration"
