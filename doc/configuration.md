@@ -115,6 +115,9 @@ authorized_keys_path_query_mode = "disabled"
 - **authorized_keys_path_query_mode**: `SshAuthorizedKeysPathQueryMode`
   - **Default**: `Disabled` (as per `Ssh` enum)
   - **Description**: Determines if SSH key paths should be queried dynamically using `sshd -G` or rely on the default path.
+- **fallback_sshd_default**: `bool`
+  - **Default**: `true`
+  - **Description**: Determines whether to use the default path `.ssh/authorized_keys` if `sshd -G` fails to return a valid path.
 
 
 #### HostnameProvisioners Struct
@@ -181,6 +184,7 @@ authorized_keys_path_query_mode = "disabled"
 authorized_keys_path = "~/.ssh/authorized_keys"
 configure_password_authentication = false
 authorized_keys_path_query_mode = "disabled"
+fallback_sshd_default = true
 
 [hostname_provisioners]
 backends = ["hostnamectl"]
@@ -234,7 +238,10 @@ kvp_diagnostics = true
 ### 3. Missing or Invalid SSH Configuration
 
 - **Using `sshd -G`**:
-  - If `sshd -G` fails or cannot retrieve the `authorizedkeysfile`, `azure-init` logs an error and stops, as no fallback path is used.
+  - If `sshd -G` fails or cannot retrieve the `authorizedkeysfile`, `azure-init` checks the `fallback_sshd_default` setting: 
+    - If `fallback_sshd_default` is enabled (default): `azure-init` uses `.ssh/authorized_keys` as a fallback path.
+    - If `fallback_sshd_default` is disabled: `azure-init` logs an error and stops, as no fallback path is used.
+
 - **When `sshd -G` is Disabled**:
   - If `authorized_keys_path` is missing while SSH provisioning is disabled, `azure-init` logs an error and fails, requiring an explicit path configuration.
 

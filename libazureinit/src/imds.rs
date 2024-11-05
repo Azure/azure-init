@@ -3,15 +3,14 @@
 
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
+use tracing::instrument;
 
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer};
 use serde_json;
 use serde_json::Value;
-
-use tokio::time::timeout;
 
 use crate::error::Error;
 use crate::http;
@@ -144,7 +143,7 @@ where
 }
 
 const DEFAULT_IMDS_URL: &str =
-    "http://169.254.169.254/metadata/instance?api-version=2021-02-01";
+    "http://169.254.169.254/metadata/instance?api-version=2023-11-15&extended=true";
 
 /// Send queries to IMDS to fetch Azure instance metadata.
 ///
@@ -171,54 +170,51 @@ const DEFAULT_IMDS_URL: &str =
 ///     Some("http://127.0.0.1:8000/"),
 /// );
 /// ```
+#[instrument(err, skip_all)]
 pub async fn query(
     client: &Client,
     retry_interval: Duration,
-    total_timeout: Duration,
+    mut total_timeout: Duration,
     url: Option<&str>,
 ) -> Result<InstanceMetadata, Error> {
     let mut headers = HeaderMap::new();
-    let url = url.unwrap_or(DEFAULT_IMDS_URL);
-
     headers.insert("Metadata", HeaderValue::from_static("true"));
+    let url = url.unwrap_or(DEFAULT_IMDS_URL);
+    let request_timeout = Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC);
 
-    let response = timeout(total_timeout, async {
-        let now = std::time::Instant::now();
-        loop {
-            if let Ok(response) = client
-                .get(url)
-                .headers(headers.clone())
-                .timeout(Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC))
-                .send()
-                .await
-            {
-                let statuscode = response.status();
-
-                if statuscode == StatusCode::OK {
-                    tracing::info!("HTTP response succeeded with status {}", statuscode);
-                    return Ok(response);
-                }
-
-                if !http::RETRY_CODES.contains(&statuscode) {
-                    return response.error_for_status().map_err(|error| {
-                        tracing::error!(?error, "{}", format!("HTTP call failed due to status {}", statuscode));
-                        error
+    while !total_timeout.is_zero() {
+        let (response, remaining_timeout) = http::get(
+            client,
+            headers.clone(),
+            request_timeout,
+            retry_interval,
+            total_timeout,
+            url,
+        )
+        .await?;
+        match response.text().await {
+            Ok(text) => {
+                let metadata =
+                    serde_json::from_str(text.as_str()).map_err(|error| {
+                        tracing::warn!(
+                            ?error,
+                            "The response body was invalid and could not be deserialized"
+                        );
+                        error.into()
                     });
+                if metadata.is_ok() {
+                    return metadata;
                 }
             }
-
-            tracing::info!("Retrying to get HTTP response in {} sec, remaining timeout {} sec.", retry_interval.as_secs(), total_timeout.saturating_sub(now.elapsed()).as_secs());
-
-            tokio::time::sleep(retry_interval).await;
+            Err(error) => {
+                tracing::warn!(?error, "Failed to read the full response body")
+            }
         }
-    })
-    .await?;
 
-    let imds_body = response?.text().await?;
+        total_timeout = remaining_timeout;
+    }
 
-    let metadata: InstanceMetadata = serde_json::from_str(&imds_body)?;
-
-    Ok(metadata)
+    Err(Error::Timeout)
 }
 
 #[cfg(test)]
@@ -395,5 +391,55 @@ mod tests {
         for rc in http::HARDFAIL_CODES {
             assert!(!run_imds_query_retry(rc).await);
         }
+    }
+
+    // Assert malformed responses are retried.
+    //
+    // In this case the server declares a content-type of JSON, but doesn't return JSON.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn malformed_response() {
+        let body = "not json, whoops";
+        let payload = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+             StatusCode::OK.as_u16(),
+             StatusCode::OK.to_string(),
+             body.len(),
+             body
+        );
+
+        let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = serverlistener.local_addr().unwrap();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let server = tokio::spawn(unittest::serve_requests(
+            serverlistener,
+            payload,
+            cancel_token.clone(),
+        ));
+
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let res = query(
+            &client,
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Some(format!("http://{:}:{:}/", addr.ip(), addr.port()).as_str()),
+        )
+        .await;
+
+        cancel_token.cancel();
+
+        let requests = server.await.unwrap();
+        assert!(requests >= 2);
+        assert!(logs_contain(
+            "The response body was invalid and could not be deserialized"
+        ));
+        match res {
+            Err(crate::error::Error::Timeout) => {}
+            _ => panic!("Response should have timed out"),
+        };
     }
 }
