@@ -83,9 +83,8 @@ impl Provision {
 
         if !self.user.ssh_keys.is_empty() {
             let authorized_keys_path =
-                Some(self.config.ssh.authorized_keys_path.clone());
-            let query_mode = self.config.ssh.authorized_keys_path_query_mode;
-            let fallback_sshd_default = self.config.ssh.fallback_sshd_default;
+                self.config.ssh.authorized_keys_path.clone();
+            let query_sshd_config = self.config.ssh.query_sshd_config;
 
             let user = nix::unistd::User::from_name(&self.user.name)?.ok_or(
                 Error::UserMissing {
@@ -96,8 +95,7 @@ impl Provision {
                 &user,
                 &self.user.ssh_keys,
                 authorized_keys_path,
-                query_mode,
-                fallback_sshd_default,
+                query_sshd_config,
             )?;
         }
 

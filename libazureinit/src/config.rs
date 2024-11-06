@@ -15,15 +15,6 @@ use toml;
 use tracing;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-pub enum SshAuthorizedKeysPathQueryMode {
-    #[serde(rename = "sshd -G")]
-    SshdG,
-    #[serde(rename = "disabled")]
-    #[default]
-    Disabled,
-}
-
-#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum HostnameProvisioner {
     #[default]
@@ -52,31 +43,24 @@ pub enum PasswordProvisioner {
 
 /// SSH configuration struct.
 ///
-/// Holds settings for managing SSH behavior, including the authorized keys path,
-/// configuration for password authentication, and the query mode for determining
-/// the authorized keys path.
+/// Holds settings for managing SSH behavior, including the authorized keys path and options for querying the SSH configuration.
 ///
-/// - `authorized_keys_path: PathBuf` -> Path to the authorized keys file for SSH. Defaults to `~/.ssh/authorized_keys`.
-/// - `configure_password_authentication: bool` -> Configures whether password authentication is allowed in SSH.
-/// - `authorized_keys_path_query_mode: SshAuthorizedKeysPathQueryMode` -> Determines the mode for querying the SSH authorized keys path.
-///                                                                         Options include `sshd -G` and `disabled`.
+/// - `authorized_keys_path: PathBuf` -> Specifies the path to the authorized keys file for SSH. Defaults to `~/.ssh/authorized_keys`.
+/// - `query_sshd_config: bool` -> When `true`, `azure-init` attempts to dynamically query the authorized keys path via `sshd -G`.
+///                                If `sshd -G` fails, `azure-init` reports the failure but continues using `authorized_keys_path`.
+///                                When `false`, `azure-init` directly uses the `authorized_keys_path` as specified.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Ssh {
     pub authorized_keys_path: PathBuf,
-    pub configure_password_authentication: bool,
-    pub authorized_keys_path_query_mode: SshAuthorizedKeysPathQueryMode,
-    pub fallback_sshd_default: bool,
+    pub query_sshd_config: bool,
 }
 
 impl Default for Ssh {
     fn default() -> Self {
         Self {
             authorized_keys_path: PathBuf::from("~/.ssh/authorized_keys"),
-            configure_password_authentication: false,
-            authorized_keys_path_query_mode:
-                SshAuthorizedKeysPathQueryMode::Disabled,
-            fallback_sshd_default: true,
+            query_sshd_config: true,
         }
     }
 }
@@ -372,7 +356,7 @@ mod tests {
             r#"
             [ssh]
             authorized_keys_path = "~/.ssh/authorized_keys"
-            configure_password_authentication = "not_a_boolean"
+            query_sshd_config = "not_a_boolean"
             "#
         )
         .unwrap();
@@ -511,11 +495,8 @@ mod tests {
             config.ssh.authorized_keys_path.to_str().unwrap(),
             "~/.ssh/authorized_keys"
         );
-        assert!(!config.ssh.configure_password_authentication);
-        assert_eq!(
-            config.ssh.authorized_keys_path_query_mode,
-            SshAuthorizedKeysPathQueryMode::Disabled
-        );
+
+        assert!(config.ssh.query_sshd_config);
 
         assert_eq!(
             config.hostname_provisioners.backends,
@@ -566,8 +547,8 @@ mod tests {
             r#"
             [ssh]
             authorized_keys_path = "~/.ssh/authorized_keys"
-            configure_password_authentication = true
-    
+            query_sshd_config = false
+
             [user_provisioners]
             backends = ["useradd"]
     
@@ -601,11 +582,7 @@ mod tests {
             config.ssh.authorized_keys_path.to_str().unwrap(),
             "~/.ssh/authorized_keys"
         );
-        assert!(config.ssh.configure_password_authentication);
-        assert_eq!(
-            config.ssh.authorized_keys_path_query_mode,
-            SshAuthorizedKeysPathQueryMode::Disabled
-        );
+        assert!(!config.ssh.query_sshd_config);
 
         tracing::info!(
             "Verifying default hostname provisioner configuration..."
@@ -660,11 +637,7 @@ mod tests {
             config.ssh.authorized_keys_path.to_str().unwrap(),
             "~/.ssh/authorized_keys"
         );
-        assert!(!config.ssh.configure_password_authentication);
-        assert_eq!(
-            config.ssh.authorized_keys_path_query_mode,
-            SshAuthorizedKeysPathQueryMode::Disabled
-        );
+        assert!(config.ssh.query_sshd_config);
 
         tracing::info!("Verifying default hostname provisioner...");
         assert_eq!(

@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-use crate::config::SshAuthorizedKeysPathQueryMode;
 use crate::error::Error;
 use crate::imds::PublicKeys;
 use nix::unistd::{chown, User};
@@ -17,46 +16,25 @@ use tracing::{error, info, instrument};
 pub(crate) fn provision_ssh(
     user: &User,
     keys: &[PublicKeys],
-    authorized_keys_path: Option<PathBuf>,
-    query_mode: SshAuthorizedKeysPathQueryMode,
-    fallback_ssh_default: bool,
+    authorized_keys_path: PathBuf,
+    query_sshd_config: bool,
 ) -> Result<(), Error> {
-    let authorized_keys_path = match query_mode {
-        SshAuthorizedKeysPathQueryMode::SshdG => {
-            tracing::info!("Attempting to get authorized keys path via sshd -G as configured.");
+    let authorized_keys_path = if query_sshd_config {
+        tracing::info!(
+            "Attempting to get authorized keys path via sshd -G as configured."
+        );
 
-            // Attempt to get the authorized_keys path from `sshd -G`. If `sshd -G` fails:
-            // - Use the default path `~/.ssh/authorized_keys` if `fallback_ssh_default` is enabled.
-            match get_authorized_keys_path_from_sshd(|| {
-                Command::new("sshd").arg("-G").output()
-            }) {
-                Some(path) => user.dir.join(path),
-                None => {
-                    if fallback_ssh_default {
-                        tracing::warn!("sshd -G failed; using default authorized_keys path.");
-                        user.dir.join(".ssh/authorized_keys")
-                    } else {
-                        tracing::error!(
-                            "sshd -G failed and fallback is disabled."
-                        );
-                        return Err(Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "Failed to retrieve authorized_keys path from sshd -G, and fallback is disabled",
-                        )));
-                    }
-                }
+        match get_authorized_keys_path_from_sshd(|| {
+            Command::new("sshd").arg("-G").output()
+        }) {
+            Some(path) => user.dir.join(path),
+            None => {
+                tracing::warn!("sshd -G failed; using configured authorized_keys_path as fallback.");
+                user.dir.join(authorized_keys_path)
             }
         }
-        SshAuthorizedKeysPathQueryMode::Disabled => {
-            tracing::info!("SSH provisioning is disabled; using provided authorized_keys_path.");
-            authorized_keys_path.ok_or_else(|| {
-                tracing::error!("No authorized_keys_path provided in configuration while SSH provisioning is disabled.");
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "authorized_keys_path is required when SSH provisioning is disabled",
-                ))
-            })?
-        }
+    } else {
+        user.dir.join(authorized_keys_path)
     };
 
     let ssh_dir = user.dir.join(".ssh");
@@ -149,7 +127,7 @@ mod tests {
     use crate::imds::PublicKeys;
     use crate::provision::ssh::{
         extract_authorized_keys_file_path, get_authorized_keys_path_from_sshd,
-        provision_ssh, run_sshd_command, SshAuthorizedKeysPathQueryMode,
+        provision_ssh, run_sshd_command,
     };
     use std::{
         fs::Permissions,
@@ -311,14 +289,8 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(
-            &user,
-            &keys,
-            Some(authorized_keys_path.clone()),
-            SshAuthorizedKeysPathQueryMode::Disabled,
-            true,
-        )
-        .unwrap();
+        provision_ssh(&user, &keys, authorized_keys_path.clone(), false)
+            .unwrap();
 
         let ssh_path = user.dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
@@ -357,14 +329,8 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(
-            &user,
-            &keys,
-            Some(authorized_keys_path.clone()),
-            SshAuthorizedKeysPathQueryMode::Disabled,
-            true,
-        )
-        .unwrap();
+        provision_ssh(&user, &keys, authorized_keys_path.clone(), false)
+            .unwrap();
 
         let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
         assert_eq!(
@@ -390,23 +356,11 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(
-            &user,
-            &keys[..1],
-            Some(authorized_keys_path.clone()),
-            SshAuthorizedKeysPathQueryMode::Disabled,
-            true,
-        )
-        .unwrap();
+        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
+            .unwrap();
 
-        provision_ssh(
-            &user,
-            &keys[1..],
-            Some(authorized_keys_path.clone()),
-            SshAuthorizedKeysPathQueryMode::Disabled,
-            true,
-        )
-        .unwrap();
+        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
+            .unwrap();
 
         let mut auth_file =
             std::fs::File::open(user.dir.join(".ssh/xauthorized_keys"))

@@ -8,7 +8,7 @@ The system is designed to support default configurations, while allowing for use
 
 ### Key Features
 - **Override Support**: Default configurations are defined inside `config.rs`, with the option to override these settings via a specified configuration file or the CLI at runtime. CLI arguments take precedence over default configuration settings and any other configuration files.
-- **Config Validation**: Custom enum types for for fields such as `SshAuthorizedKeysPathQueryMode` validate that user-set config settings match the supported options. Invalid values will cause deserialization to fail.
+- **Config Validation**: Custom enum types for for fields such as `pub enum HostnameProvisioner` validate that user-set config settings match the supported options. Invalid values will cause deserialization to fail.
 - **Built-in Defaults**: The system defines defaults directly in the code using Rust's `Default` trait, eliminating the need for a separate default config file.
 - **Merging of Configurations**: The `load()` and `merge()` methods merge multiple sources of configuration data. Defaults are loaded first, then overridden by values from a config file, and finally by CLI-specified configurations.
 
@@ -94,30 +94,27 @@ azure-init --config /path/to/custom-config-directory
 
 ## Validation Behaviors
 
-Custom enum types for fields like `SshAuthorizedKeysPathQueryMode` validate that config settings set by the user match the supported options. If a user enters an unsupported config value, deserialization will fail because Serde will not be able to map that value to one of the enum variants.
+Custom enum types for fields validate that config settings set by the user match the supported options. If a user enters an unsupported config value, 
+deserialization will fail because Serde will not be able to map that value to one of the enum variants.
 
 ### Example: 
 ```toml
-# Configure the authorized_keys_path_query_mode type.
+# Configure the query_sshd_config field.
 [ssh]
-authorized_keys_path_query_mode = "disabled"
+query_sshd_config = false
 ```
 
 ## Configuration Fields
 
-#### Ssh Struct:
+#### Ssh Struct
 - **authorized_keys_path**: `PathBuf`
   - **Default**: `~/.ssh/authorized_keys`
-  - **Description**: Specifies the file path to the SSH authorized keys.
-- **configure_password_authentication**: `bool`
-  - **Default**: `false`
-  - **Description**: Controls whether password authentication is configured for SSH.
-- **authorized_keys_path_query_mode**: `SshAuthorizedKeysPathQueryMode`
-  - **Default**: `Disabled` (as per `Ssh` enum)
-  - **Description**: Determines if SSH key paths should be queried dynamically using `sshd -G` or rely on the default path.
-- **fallback_sshd_default**: `bool`
+  - **Description**: Specifies the file path for storing SSH authorized keys when configuring SSH access.
+- **query_sshd_config**: `bool`
   - **Default**: `true`
-  - **Description**: Determines whether to use the default path `.ssh/authorized_keys` if `sshd -G` fails to return a valid path.
+  - **Description**: Controls whether `azure-init` queries the SSH configuration dynamically via `sshd -G`. If set to `true` and `sshd -G` succeeds, 
+                     the authorized keys path is set according to the SSH configuration. If `sshd -G` fails, `azure-init` reports the error but 
+                     continues with `authorized_keys_path`.
 
 
 #### HostnameProvisioners Struct
@@ -184,7 +181,7 @@ authorized_keys_path_query_mode = "disabled"
 authorized_keys_path = "~/.ssh/authorized_keys"
 configure_password_authentication = false
 authorized_keys_path_query_mode = "disabled"
-fallback_sshd_default = true
+query_sshd_config = true
 
 [hostname_provisioners]
 backends = ["hostnamectl"]
@@ -230,7 +227,7 @@ kvp_diagnostics = true
 
 ### 2. Unsupported Values for Enum Settings
 
-- **Description**: If a configuration option has a value that does not match the supported enum options (e.g., for `NetworkManager` or `SshAuthorizedKeysPathQueryMode`), `azure-init` will be unable to deserialize these settings.
+- **Description**: If a configuration option has a value that does not match the supported enum options, `azure-init` will be unable to deserialize these settings.
 - **Behavior**:
   - Logs a descriptive error message, indicating the unsupported value and the expected options.
   - Continues using defaults or halts only the affected component (depending on the criticality of the setting), while allowing other components to run normally.
@@ -238,12 +235,14 @@ kvp_diagnostics = true
 ### 3. Missing or Invalid SSH Configuration
 
 - **Using `sshd -G`**:
-  - If `sshd -G` fails or cannot retrieve the `authorizedkeysfile`, `azure-init` checks the `fallback_sshd_default` setting: 
-    - If `fallback_sshd_default` is enabled (default): `azure-init` uses `.ssh/authorized_keys` as a fallback path.
-    - If `fallback_sshd_default` is disabled: `azure-init` logs an error and stops, as no fallback path is used.
+  - If `sshd -G` succeeds, the authorized keys path is determined dynamically based on the output of the `sshd -G` command.
+  - If `sshd -G` fails or cannot retrieve the `authorizedkeysfile`:
+    - If `query_sshd_config` is enabled (default): `azure-init` will report the failure but will continue, using the path specified in `authorized_keys_path`, typically `.ssh/authorized_keys`.
+    - If `query_sshd_config` is disabled, `azure-init` does not query `sshd -G` and instead directly uses `authorized_keys_path` as provided.
 
 - **When `sshd -G` is Disabled**:
-  - If `authorized_keys_path` is missing while SSH provisioning is disabled, `azure-init` logs an error and fails, requiring an explicit path configuration.
+  - If `query_sshd_config` is set to `false`, `azure-init` will use the specified `authorized_keys_path` as-is without attempting to retrieve the path from `sshd -G`.
+  - If `authorized_keys_path` is not configured and `sshd -G` is disabled, `azure-init` logs an error and halts, as an explicit authorized keys path is required in this case.
 
 ### 4. Handling of Provisioners in `azure-init`
 
