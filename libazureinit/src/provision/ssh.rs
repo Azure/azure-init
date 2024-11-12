@@ -2,16 +2,28 @@
 // Licensed under the MIT License.
 
 use std::{
-    fs::Permissions,
-    io::{self, Write},
+    fs::{self, OpenOptions, Permissions},
+    io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
+    path::PathBuf,
     process::{Command, Output},
 };
 
-use tracing::{error, info, instrument};
-
 use crate::error::Error;
 use crate::imds::PublicKeys;
+use lazy_static::lazy_static;
+use regex::Regex;
+use tempfile::NamedTempFile;
+use tracing::{error, info, instrument};
+
+lazy_static! {
+    static ref PASSWORD_REGEX: Regex = Regex::new(
+        r"(?m)^\s*#?\s*PasswordAuthentication\s+(yes|no)\s*$"
+    )
+    .expect(
+        "The regular expression is invalid or exceeds the default regex size"
+    );
+}
 
 #[instrument(skip_all, name = "ssh")]
 pub(crate) fn provision_ssh(
@@ -112,20 +124,64 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     None
 }
 
+pub(crate) fn update_sshd_config(
+    sshd_config_path: &str,
+) -> Result<(), io::Error> {
+    // Check if the path exists otherwise create it
+    let sshd_config_path = PathBuf::from(sshd_config_path);
+    if !sshd_config_path.exists() {
+        let mut file = std::fs::File::create(&sshd_config_path)?;
+        file.set_permissions(Permissions::from_mode(0o644))?;
+        file.write_all(b"PasswordAuthentication yes\n")?;
+        return Ok(());
+    }
+
+    let mut file_content = String::new();
+    {
+        let mut file = OpenOptions::new().read(true).open(&sshd_config_path)?;
+        file.read_to_string(&mut file_content)?;
+    }
+
+    let re = &PASSWORD_REGEX;
+    if re.is_match(&file_content) {
+        let modified_content =
+            re.replace_all(&file_content, "PasswordAuthentication yes\n");
+
+        let temp_sshd_config = NamedTempFile::new()?;
+        let temp_sshd_config_path = temp_sshd_config.path();
+        let mut temp_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(temp_sshd_config_path)?;
+        temp_file.write_all(modified_content.as_bytes())?;
+        temp_file.set_permissions(fs::Permissions::from_mode(0o644))?;
+
+        fs::rename(temp_sshd_config_path, &sshd_config_path)?;
+    } else {
+        let mut file =
+            OpenOptions::new().append(true).open(&sshd_config_path)?;
+        file.write_all(b"PasswordAuthentication yes\n")?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::imds::PublicKeys;
     use crate::provision::ssh::{
         extract_authorized_keys_file_path, get_authorized_keys_path_from_sshd,
-        provision_ssh, run_sshd_command,
+        provision_ssh, run_sshd_command, update_sshd_config,
     };
     use std::{
-        fs::Permissions,
-        io::{self, Read},
+        fs::{File, Permissions},
+        io::{self, Read, Write},
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         os::unix::process::ExitStatusExt,
         process::{ExitStatus, Output},
     };
+    use tempfile::TempDir;
 
     fn create_output(status_code: i32, stdout: &str, stderr: &str) -> Output {
         Output {
@@ -360,5 +416,65 @@ mod tests {
         auth_file.read_to_string(&mut buf).unwrap();
 
         assert_eq!("not-a-real-key xyz987\n", buf);
+    }
+
+    #[test]
+    fn test_update_sshd_config_create_new() -> io::Result<()> {
+        let temp_dir = TempDir::new().unwrap();
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+        let ret: Result<(), io::Error> =
+            update_sshd_config(sshd_config_path.to_str().unwrap());
+        assert!(ret.is_ok());
+
+        let mut updated_content = String::new();
+        let mut file = File::open(&sshd_config_path).unwrap();
+        file.read_to_string(&mut updated_content).unwrap();
+        assert!(updated_content.contains("PasswordAuthentication yes"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_sshd_config_change() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+        {
+            let mut file = File::create(&sshd_config_path)?;
+            writeln!(file, "PasswordAuthentication no")?;
+        }
+
+        let ret: Result<(), io::Error> =
+            update_sshd_config(sshd_config_path.to_str().unwrap());
+        assert!(ret.is_ok());
+        let mut updated_content = String::new();
+        {
+            let mut file = File::open(&sshd_config_path)?;
+            file.read_to_string(&mut updated_content)?;
+        }
+        assert!(updated_content.contains("PasswordAuthentication yes"));
+        assert!(!updated_content.contains("PasswordAuthentication no"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_sshd_config_no_change() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+        {
+            let mut file = File::create(&sshd_config_path)?;
+            writeln!(file, "PasswordAuthentication yes")?;
+        }
+        let ret: Result<(), io::Error> =
+            update_sshd_config(sshd_config_path.to_str().unwrap());
+        assert!(ret.is_ok());
+        let mut updated_content = String::new();
+        {
+            let mut file = File::open(&sshd_config_path)?;
+            file.read_to_string(&mut updated_content)?;
+        }
+        assert!(updated_content.contains("PasswordAuthentication yes"));
+        assert!(!updated_content.contains("PasswordAuthentication no"));
+
+        Ok(())
     }
 }
