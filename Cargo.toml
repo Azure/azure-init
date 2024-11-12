@@ -17,7 +17,7 @@ tracing = "0.1.40"
 tracing-opentelemetry = "0.18.0"
 # We work fine with any version of 4, but 4.5 bumped MSRV to 1.74
 clap = { version = "<=4.4", features = ["derive", "cargo", "env"] }
-sys-info = "0.9"
+sysinfo = "0.27"
 
 [dev-dependencies]
 # Purely for the MSRV requirement.
@@ -30,10 +30,6 @@ opentelemetry = "0.21"
 
 [dependencies.libazureinit]
 path = "libazureinit"
-version = "0.1.0"
-
-[dependencies.azurekvp]
-path = "azurekvp"
 version = "0.1.0"
 
 [profile.dev]
@@ -50,7 +46,6 @@ path = "tests/functional_tests.rs"
 [workspace]
 members = [
     "libazureinit",
-    "azurekvp",
 ]
 
 [features]

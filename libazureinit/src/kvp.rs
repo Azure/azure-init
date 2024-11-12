@@ -10,30 +10,60 @@
 //! - `HV_KVP_AZURE_MAX_VALUE_SIZE`: Maximum value size before splitting into multiple slices.
 //!
 
-use std::fmt as std_fmt;
-use std::fmt::Write as std_write;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::field::Visit;
-use tracing_subscriber::Layer;
+use std::{
+    fmt::{self as std_fmt, Write as std_write},
+    fs::{File, OpenOptions},
+    io::{self, Error, ErrorKind, Write},
+    os::unix::fs::MetadataExt,
+    path::Path,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
-use crate::tracing::{handle_event, handle_span, MyInstant};
+use tracing::{
+    field::Visit,
+    span::{Attributes, Id},
+    Subscriber,
+};
 
-use tracing::span::{Attributes, Id};
-use tracing::Subscriber;
-use tracing_subscriber::layer::Context as TracingContext;
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{
+    layer::Context as TracingContext, registry::LookupSpan, Layer,
+};
 
-use nix::fcntl::{flock, FlockArg};
-use std::fs::OpenOptions;
-use std::io::{self, Error, ErrorKind, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use sysinfo::{System, SystemExt};
+
+use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
+
+//use crate::tracing::{handle_event, handle_span};
+
+use chrono::{DateTime, Utc};
+use std::fmt;
+use uuid::Uuid;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
 const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1024;
 const EVENT_PREFIX: &str = concat!("azure-init-", env!("CARGO_PKG_VERSION"));
+
+/// A wrapper around `std::time::Instant` that provides convenient methods
+/// for time tracking in spans and events. Implements the `Deref` trait, allowing
+/// access to the underlying `Instant` methods.
+///
+/// This struct captures the start time of spans/events and measures the elapsed time.
+#[derive(Clone)]
+struct MyInstant(Instant);
+
+impl std::ops::Deref for MyInstant {
+    type Target = Instant;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl MyInstant {
+    pub fn now() -> Self {
+        MyInstant(Instant::now())
+    }
+}
 
 /// A custom visitor that captures the value of the `msg` field from a tracing event.
 /// It implements the `tracing::field::Visit` trait and records the value into
@@ -59,17 +89,97 @@ impl<'a> Visit for StringVisitor<'a> {
         write!(self.string, "{:?}", value).unwrap();
     }
 }
-/// A custom tracing layer that emits span data as key-value pairs (KVP)
-/// to a file for consumption by the Hyper-V daemon. This struct captures
-/// spans and events from the tracing system and writes them to a
-/// specified file in KVP format.
+
+/// Represents the state of a span within the `EmitKVPLayer`.
+enum SpanStatus {
+    Success,
+    Failure,
+}
+
+impl SpanStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SpanStatus::Success => "success",
+            SpanStatus::Failure => "failure",
+        }
+    }
+
+    fn level(&self) -> &'static str {
+        match self {
+            SpanStatus::Success => "INFO",
+            SpanStatus::Failure => "ERROR",
+        }
+    }
+}
+
+impl fmt::Display for SpanStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+/// A custom tracing layer that emits span and event data as key-value pairs (KVP)
+/// to a file for Hyper-V telemetry consumption. The layer manages the asynchronous
+/// writing of telemetry data to a specified file in KVP format.
+///
+/// `EmitKVPLayer` initializes the file at creation, manages a dedicated writer
+/// task, and provides functions to send encoded data for logging.
 pub struct EmitKVPLayer {
-    file_path: std::path::PathBuf,
+    events_tx: UnboundedSender<Vec<u8>>,
 }
 
 impl EmitKVPLayer {
-    pub fn new(file_path: std::path::PathBuf) -> Self {
-        Self { file_path }
+    /// Creates a new `EmitKVPLayer`, initializing the log file and starting
+    /// an asynchronous writer task for handling incoming KVP data.
+    ///
+    /// # Arguments
+    /// * `file_path` - The file path where the KVP data will be stored.
+    ///
+    pub fn new(file_path: std::path::PathBuf) -> Result<Self, std::io::Error> {
+        truncate_guest_pool_file(&file_path)?;
+
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&file_path)?;
+
+        let (events_tx, events_rx): (
+            UnboundedSender<Vec<u8>>,
+            UnboundedReceiver<Vec<u8>>,
+        ) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn(Self::kvp_writer(file, events_rx));
+
+        Ok(Self { events_tx })
+    }
+
+    /// An asynchronous task that serializes incoming KVP data to the specified file.
+    /// This function manages the file I/O operations to ensure the data is written
+    /// and flushed consistently.
+    ///
+    /// # Arguments
+    /// * `file` - The file where KVP data will be written.
+    /// * `events` - A receiver that provides encoded KVP data as it arrives.
+    async fn kvp_writer(
+        mut file: File,
+        mut events: UnboundedReceiver<Vec<u8>>,
+    ) -> io::Result<()> {
+        while let Some(encoded_kvp) = events.recv().await {
+            if let Err(e) = file.write_all(&encoded_kvp) {
+                eprintln!("Failed to write to log file: {}", e);
+            }
+            if let Err(e) = file.flush() {
+                eprintln!("Failed to flush the log file: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends encoded KVP data to the writer task for asynchronous logging.
+    ///
+    /// # Arguments
+    /// * `message` - The encoded data to send as a vector of bytes (Vec<u8>).
+    pub fn send_event(&self, message: Vec<u8>) {
+        let _ = self.events_tx.send(message);
     }
 }
 
@@ -77,13 +187,20 @@ impl<S> Layer<S> for EmitKVPLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    /// Handles event occurrences within a span by extracting the `msg` field,
-    /// recording the event, and writing the event as key-value pairs (KVP) to a log file.
+    /// Handles event occurrences within a span, capturing and recording the event's message
+    /// and context metadata as key-value pairs (KVP) for logging.
     ///
-    /// This method uses the `StringVisitor` to capture the message of the event and
-    /// links the event to the span by writing both span and event data into the same file.
+    /// This function extracts the event's `msg` field using `StringVisitor`, constructs a
+    /// formatted event string, and then encodes it as KVP data to be sent to the
+    /// `EmitKVPLayer` for asynchronous file storage.
     ///
-    /// If an `ERROR` level event is encountered, a failure flag is inserted into the span's extensions.
+    /// If an `ERROR` level event is encountered, it marks the span's status as a failure,
+    /// which will be reflected in the span's data upon closure.
+    ///
+    /// # Arguments
+    /// * `event` - The tracing event instance containing the message and metadata.
+    /// * `ctx` - The current tracing context, which is used to access the span associated
+    ///   with the event.
     ///
     /// # Example
     /// ```rust
@@ -103,12 +220,34 @@ where
             let mut extensions = span.extensions_mut();
 
             if event.metadata().level() == &tracing::Level::ERROR {
-                extensions.insert("failure".to_string());
+                extensions.insert(SpanStatus::Failure);
             }
 
-            let event_instant = MyInstant::now();
+            let span_context = span.metadata();
+            let span_id: Uuid = Uuid::new_v4();
 
-            handle_event(&event_message, &span, &self.file_path, event_instant);
+            let event_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_else(|_| {
+                    span.extensions()
+                        .get::<MyInstant>()
+                        .map(|instant| instant.elapsed())
+                        .unwrap_or_default()
+                });
+
+            let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+            let event_value =
+                format!("Time: {} | Event: {}", event_time_dt, event_message);
+
+            handle_kvp_operation(
+                self,
+                "INFO",
+                span_context.name(),
+                &span_id.to_string(),
+                &event_value,
+            );
         }
     }
 
@@ -126,58 +265,83 @@ where
             span.extensions_mut().insert(start_instant);
         }
     }
-
-    /// Called when a span is closed and checks for any logged errors to report.
-    /// This method handles encoding and writing the span data
-    /// (start and end times) to the specified KVP file for Hyper-V telemetry.
+    /// Called when a span is closed, finalizing and logging the span's data. This method
+    /// records the span's start and end times, status (e.g., success or failure), and other metadata,
+    /// then sends it to `EmitKVPLayer` for KVP logging.
+    ///
+    /// If any errors were recorded in the span (such as `ERROR` level events), the span
+    /// status is marked as `Failure`; otherwise, it is marked as `Success`.
     ///
     /// # Arguments
     /// * `id` - The unique identifier for the span.
-    /// * `ctx` - The current tracing context, which can be used to access the span.
+    /// * `ctx` - The current tracing context, used to access the span's metadata and status.
     fn on_close(&self, id: Id, ctx: TracingContext<S>) {
         if let Some(span) = ctx.span(&id) {
-            let mut status = "success".to_string();
-            let mut event_level = "INFO".to_string();
-
-            if let Some(recorded_status) = span.extensions().get::<String>() {
-                if recorded_status == "failure" {
-                    status = "failure".to_string();
-                    event_level = "ERROR".to_string();
-                }
-            }
+            let span_status = if span.extensions().get::<SpanStatus>().is_some()
+            {
+                SpanStatus::Failure
+            } else {
+                SpanStatus::Success
+            };
 
             let end_time = SystemTime::now();
 
-            handle_span(
-                &span,
-                self.file_path.as_path(),
-                &status,
-                &event_level,
-                end_time,
-            );
+            let span_context = span.metadata();
+            let span_id = Uuid::new_v4();
+
+            if let Some(start_instant) = span.extensions().get::<MyInstant>() {
+                let elapsed = start_instant.elapsed();
+
+                let start_time =
+                    end_time.checked_sub(elapsed).unwrap_or(UNIX_EPOCH);
+
+                let start_time_dt = DateTime::<Utc>::from(
+                    UNIX_EPOCH
+                        + start_time
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default(),
+                )
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+                let end_time_dt = DateTime::<Utc>::from(
+                    UNIX_EPOCH
+                        + end_time
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default(),
+                )
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+                let event_value = format!(
+                    "Start: {} | End: {} | Status: {}",
+                    start_time_dt, end_time_dt, span_status
+                );
+
+                handle_kvp_operation(
+                    self,
+                    span_status.level(),
+                    span_context.name(),
+                    &span_id.to_string(),
+                    &event_value,
+                );
+            }
         }
     }
 }
 
-/// This function serves as a wrapper that orchestrates the necessary steps to log
-/// telemetry data to a file. It first truncates the guest pool file if needed, then
-/// generates a unique event key using the provided event metadata, encodes the key-value
-/// pair, and writes the result to the KVP file.
+/// Handles the orchestration of key-value pair (KVP) encoding and logging operations
+/// by generating a unique event key, encoding it with the provided value, and sending
+/// it to the `EmitKVPLayer` for logging.
 pub fn handle_kvp_operation(
-    file_path: &Path,
+    emit_kvp_layer: &EmitKVPLayer,
     event_level: &str,
     event_name: &str,
     span_id: &str,
     event_value: &str,
 ) {
-    truncate_guest_pool_file(file_path).expect("Failed to truncate KVP file");
-
     let event_key = generate_event_key(event_level, event_name, span_id);
-
     let encoded_kvp = encode_kvp_item(&event_key, event_value);
-    if let Err(e) = write_to_kvp_file(file_path, &encoded_kvp) {
-        eprintln!("Error writing to KVP file: {}", e);
-    }
+    let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
+    emit_kvp_layer.send_event(encoded_kvp_flattened);
 }
 
 /// Generates a unique event key by combining the event level, name, and span ID.
@@ -195,57 +359,6 @@ fn generate_event_key(
         "{}|{}|{}|{}",
         EVENT_PREFIX, event_level, event_name, span_id
     )
-}
-
-/// Writes the encoded key-value pair (KVP) data to a specified KVP file.
-///
-/// This function appends the provided encoded KVP data to the specified file and ensures
-/// that file locking is handled properly to avoid race conditions. It locks the file exclusively,
-/// writes the data, flushes the output, and then unlocks the file.
-fn write_to_kvp_file(
-    file_path: &Path,
-    encoded_kvp: &Vec<Vec<u8>>,
-) -> io::Result<()> {
-    let mut file =
-        match OpenOptions::new().append(true).create(true).open(file_path) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("Failed to open log file: {}", e);
-                return Err(e); // Return the error if the file can't be opened
-            }
-        };
-
-    let fd = file.as_raw_fd();
-    if let Err(e) = flock(fd, FlockArg::LockExclusive) {
-        eprintln!("Failed to lock the file: {}", e);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "File locking failed",
-        ));
-    }
-
-    // Write the encoded KVP data
-    for kvp in encoded_kvp {
-        if let Err(e) = file.write_all(&kvp[..]) {
-            eprintln!("Failed to write to log file: {}", e);
-            return Err(e); // Return the error if writing fails
-        }
-    }
-
-    if let Err(e) = file.flush() {
-        eprintln!("Failed to flush the log file: {}", e);
-        return Err(e); // Return the error if flushing fails
-    }
-
-    if let Err(e) = flock(fd, FlockArg::Unlock) {
-        eprintln!("Failed to unlock the file: {}", e);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "File unlocking failed",
-        ));
-    }
-
-    Ok(())
 }
 
 /// Encodes a key-value pair (KVP) into one or more byte slices. If the value
@@ -365,18 +478,15 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Reads the system's uptime from `/proc/uptime`, which can be used for
-/// various time-based calculations or checks, such as determining whether
-/// a file contains stale data.
+/// Retrieves the system's uptime using the `sysinfo` crate, returning the duration
+/// since the system booted. This can be useful for time-based calculations or checks,
+/// such as determining whether data is stale or calculating the approximate boot time.
 fn get_uptime() -> Result<Duration, Error> {
-    let uptime = std::fs::read_to_string("/proc/uptime")?;
-    let uptime_seconds: f64 = uptime
-        .split_whitespace()
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0.0);
-    Ok(Duration::from_secs(uptime_seconds as u64))
+    let mut system = System::new();
+    system.refresh_system();
+
+    let uptime_seconds = system.uptime();
+    Ok(Duration::from_secs(uptime_seconds))
 }
 
 #[cfg(test)]
@@ -399,10 +509,15 @@ mod tests {
 
     #[instrument]
     async fn mock_provision() -> Result<(), anyhow::Error> {
-        let kernel_version = sys_info::os_release()
+        let mut system = System::new();
+        system.refresh_system();
+
+        let kernel_version = system
+            .kernel_version()
             .unwrap_or("Unknown Kernel Version".to_string());
-        let os_version =
-            sys_info::os_type().unwrap_or("Unknown OS Version".to_string());
+        let os_version = system
+            .os_version()
+            .unwrap_or("Unknown OS Version".to_string());
         let azure_init_version = env!("CARGO_PKG_VERSION");
 
         event!(
@@ -439,13 +554,16 @@ mod tests {
             NamedTempFile::new().expect("Failed to create tempfile");
         let temp_path = temp_file.path().to_path_buf();
 
-        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone());
+        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone())
+            .expect("Failed to create EmitKVPLayer");
 
         let subscriber = Registry::default().with(emit_kvp_layer);
         let default_guard = tracing::subscriber::set_default(subscriber);
 
         let _ = mock_provision().await;
         let _ = mock_failure_function().await;
+
+        sleep(Duration::from_secs(1)).await;
 
         drop(default_guard);
 
@@ -498,6 +616,34 @@ mod tests {
                 "Value section in slice {} should contain non-zero bytes",
                 i
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_truncate_guest_pool_file() {
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+
+        std::fs::write(&temp_path, "Some initial data")
+            .expect("Failed to write initial data");
+
+        let result = truncate_guest_pool_file(&temp_path);
+
+        assert!(
+            result.is_ok(),
+            "truncate_guest_pool_file returned an error: {:?}",
+            result
+        );
+
+        if let Ok(contents) = std::fs::read_to_string(&temp_path) {
+            if contents.is_empty() {
+                println!("File was truncated as expected.");
+            } else {
+                println!("File was not truncated (this is expected if file has been truncated since boot).");
+            }
+        } else {
+            panic!("Failed to read the temp file after truncation attempt.");
         }
     }
 }

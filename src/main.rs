@@ -13,6 +13,7 @@ use libazureinit::{
 };
 use std::process::ExitCode;
 use std::time::Duration;
+use sysinfo::{System, SystemExt};
 use tracing::instrument;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -21,8 +22,8 @@ use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
-use azurekvp::tracing::initialize_tracing;
-use azurekvp::EmitKVPLayer;
+use libazureinit::tracing::initialize_tracing;
+use libazureinit::EmitKVPLayer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -100,9 +101,15 @@ async fn main() -> ExitCode {
     let tracer = initialize_tracing();
 
     let otel_layer = OpenTelemetryLayer::new(tracer);
-    let emit_kvp_layer = EmitKVPLayer::new(std::path::PathBuf::from(
+    let emit_kvp_layer = match EmitKVPLayer::new(std::path::PathBuf::from(
         "/var/lib/hyperv/.kvp_pool_1",
-    ));
+    )) {
+        Ok(layer) => Some(layer),
+        Err(e) => {
+            event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
+            None
+        }
+    };
 
     let stderr_layer = fmt::layer()
         .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
@@ -140,10 +147,13 @@ async fn main() -> ExitCode {
 
 #[instrument(name = "root")]
 async fn provision() -> Result<(), anyhow::Error> {
-    let kernel_version =
-        sys_info::os_release().unwrap_or("Unknown Kernel Version".to_string());
-    let os_version =
-        sys_info::os_type().unwrap_or("Unknown OS Version".to_string());
+    let system = System::new();
+    let kernel_version = system
+        .kernel_version()
+        .unwrap_or("Unknown Kernel Version".to_string());
+    let os_version = system
+        .os_version()
+        .unwrap_or("Unknown OS Version".to_string());
     let azure_init_version = env!("CARGO_PKG_VERSION");
 
     event!(

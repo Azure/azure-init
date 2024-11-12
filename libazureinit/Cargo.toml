@@ -20,8 +20,15 @@ block-utils = "0.11.1"
 tracing = "0.1.40"
 strum = { version = "0.26.3", features = ["derive"] }
 fstab = "0.4.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+opentelemetry = "0.18.0"
+uuid = { version = "1.2", features = ["v4"] }
+anyhow = "1.0.81"
+sysinfo = "0.27"
+chrono = "0.4"
 
 [dev-dependencies]
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.11"
