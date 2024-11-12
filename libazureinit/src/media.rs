@@ -19,6 +19,7 @@ use tracing::instrument;
 use crate::error::Error;
 use fstab::FsTab;
 
+/// Environment configuration data.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
@@ -27,6 +28,7 @@ pub struct Environment {
     pub platform_settings_section: PlatformSettingsSection,
 }
 
+/// Provisioning section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct ProvisioningSection {
     #[serde(rename = "Version")]
@@ -35,6 +37,7 @@ pub struct ProvisioningSection {
     pub linux_prov_conf_set: LinuxProvisioningConfigurationSet,
 }
 
+/// Linux provisioning configuration set.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct LinuxProvisioningConfigurationSet {
     #[serde(rename = "UserName")]
@@ -45,6 +48,7 @@ pub struct LinuxProvisioningConfigurationSet {
     pub hostname: String,
 }
 
+/// Platform settings section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettingsSection {
     #[serde(rename = "Version")]
@@ -53,6 +57,7 @@ pub struct PlatformSettingsSection {
     pub platform_settings: PlatformSettings,
 }
 
+/// Platform settings details.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettings {
     #[serde(default = "default_preprov", rename = "PreprovisionedVm")]
