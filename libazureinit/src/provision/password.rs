@@ -7,6 +7,8 @@ use tracing::instrument;
 
 use crate::{error::Error, User};
 
+use super::ssh::update_sshd_config;
+
 /// Available tools to set the user's password (if a password is provided).
 #[derive(strum::EnumIter, Debug, Clone)]
 #[non_exhaustive]
@@ -29,6 +31,12 @@ impl Provisioner {
 
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
+    // Update the sshd configuration to allow password authentication.
+    let sshd_config_path = "/etc/ssh/sshd_config.d/50-azure-init.conf";
+    let ret = update_sshd_config(sshd_config_path);
+    if ret.is_err() {
+        return Err(Error::UpdateSshdConfig);
+    }
     let path_passwd = env!("PATH_PASSWD");
 
     if user.password.is_none() {

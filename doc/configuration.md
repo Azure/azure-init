@@ -41,7 +41,7 @@ This document outlines the configuration system for `azure-init`, which allows f
      ```text
      /etc/azure-init/
      ├── azure-init.toml            # Base configuration
-     └── .d/
+     └── azure-init.toml.d/
          ├── 01-network.toml        # Additional network configuration
          ├── 02-ssh.toml            # Additional SSH configuration
          └── 99-overrides.toml      # Final overrides
@@ -55,10 +55,13 @@ This document outlines the configuration system for `azure-init`, which allows f
 ```sh
 azure-init --config /path/to/custom-config.toml
 ```
-**Order of Merging:**
-1. Loads `/path/to/custom-config.toml`.
-2. Applies any CLI overrides if present.
-3. Fills in missing values with defaults from `config.rs`.
+**Order of Precedence for Merging Configurations** (lowest to highest):
+1. Compile-time defaults from `config.rs`.
+2. Custom configuration file, such as `/path/to/azure-init.toml`.
+3. Additional configurations found in `/path/to/azure-init.toml.d`, applied in lexicographical order.
+4. CLI options, which override all other settings.
+
+Each level of configuration overwrites values from previous levels, with CLI options taking highest precedence.
 
 ### Example 2: Directory with Multiple .toml Files
 
@@ -70,7 +73,7 @@ azure-init --config /path/to/custom-config-directory
 ```bash
 /path/to/custom-config-directory/
 ├── azure-init.toml                # Base configuration
-└── .d/
+└── azure-init.toml.d/
     ├── 01-network.toml            # Network configuration
     ├── 02-ssh.toml                # SSH configuration
     └── 99-overrides.toml          # Overrides
@@ -92,17 +95,38 @@ azure-init --config /path/to/custom-config-directory
 
 1. Loads configuration directly from defaults specified in `config.rs`.
 
-## Validation Behaviors
+## Validation and Deserialization Process
 
-Custom enum types for fields validate that config settings set by the user match the supported options. If a user enters an unsupported config value, 
-deserialization will fail because Serde will not be able to map that value to one of the enum variants.
+Azure Init uses strict validation on configuration fields to ensure they match expected types and values. For fields defined as enums or specific types, the system checks that values provided by the user align with supported options. If a configuration includes an unsupported value or incorrect type, deserialization will fail.
 
-### Example: 
+### Configuration Struct and Field Definitions
+
+- The `Config` struct in Azure Init includes fields that are defined with specific types or enums, like `bool` for `query_sshd_config`.
+- Each field is expected to be of a specific type when deserialized by Serde (the library used for parsing configuration files).
+
+### Error Handling During Deserialization
+- When `Config::load()` attempts to load a configuration file (either from a specified file, directory, or default
+path), it reads the file content and uses `toml::from_str` to convert it into a `Config` struct.
+
+- If a field value in the configuration file doesn’t match its expected type (e.g., if `query_sshd_config` is set to `"not_a_boolean"` instead of `true` or `false`), Serde encounters a deserialization error because it can’t map the provided value to the expected type.
+
+### Propagation of Deserialization Errors 
+ - When deserialization fails, an error is generated and logged by `Config::load_from_file`, indicating that the configuration file could not be parsed correctly. This error is wrapped in an `Error::Io` type and returned by the function.
+- This `Error::Io` is propagated up the call stack to the `Config::load()` function, which in turn returns the error to the caller.
+- In the main application, `Config::load()` is called with `.expect("Failed to load configuration")`. As a result, any failure in loading the configuration causes the application to terminate immediately with a clear error message. This prevents the provisioning process from proceeding with an invalid configuration and provides immediate feedback to the user about the issue.
+
+
+
+### Example of an Unsupported Value
+
+Here’s an example configuration with an invalid value for `query_sshd_config`. This field expects a boolean (`true` or `false`), but in this case, an unsupported string value `"not_a_boolean"` is provided.
+
 ```toml
-# Configure the query_sshd_config field.
+# Invalid value for query_sshd_config (not a boolean)
 [ssh]
-query_sshd_config = false
+query_sshd_config = "not_a_boolean" # This will cause a validation failure
 ```
+
 
 ## Configuration Fields
 
