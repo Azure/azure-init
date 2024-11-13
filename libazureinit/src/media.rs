@@ -84,7 +84,23 @@ pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
 const MTAB_PATH: &str = "/etc/mtab";
 
-// Get a mounted device with any filesystem for CDROM
+/// Retrieves a list of mounted devices with CDROM-type filesystems.
+///
+/// # Arguments
+///
+/// * `path` - Optional path to the mount table file.
+///
+/// # Returns
+///
+/// A `Result` containing a vector of device paths as strings, or an `Error`.
+///
+/// # Example
+///
+/// ```
+/// use libazureinit::media::get_mount_device;
+///
+/// let devices = get_mount_device(None).unwrap();
+/// ```
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
