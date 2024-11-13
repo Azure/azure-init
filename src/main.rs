@@ -66,13 +66,7 @@ fn get_username(
     environment: Option<&Environment>,
 ) -> Result<String, anyhow::Error> {
     if let Some(metadata) = instance_metadata {
-        if metadata.compute.os_profile.disable_password_authentication {
-            // If password authentication is disabled,
-            // simply read from IMDS metadata if available.
-            return Ok(metadata.compute.os_profile.admin_username.clone());
-        }
-        // If password authentication is enabled,
-        // fall back to reading from OVF environment file.
+        return Ok(metadata.compute.os_profile.admin_username.clone());
     }
 
     // Read username from OVF environment via mounted local device.

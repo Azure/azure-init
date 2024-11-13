@@ -131,7 +131,7 @@ impl Provision {
                     user: self.user.name,
                 },
             )?;
-            ssh::provision_ssh(&user, &self.user.ssh_keys)?;
+            ssh::provision_ssh(&user, &self.user.ssh_keys, None)?;
         }
 
         self.hostname_backends
