@@ -199,6 +199,11 @@ impl Media<Mounted> {
         }
     }
 
+    /// Reads the OVF environment data to a string.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the OVF environment data as a string, or an `Error`.
     #[instrument]
     pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
         let mut file_path = self.mount_path.clone();
@@ -212,6 +217,50 @@ impl Media<Mounted> {
     }
 }
 
+/// Parses the OVF environment data.
+///
+/// # Arguments
+///
+/// * `ovf_body` - A string slice containing the OVF environment data.
+///
+/// # Returns
+///
+/// A `Result` containing the parsed `Environment` struct, or an `Error`.
+///
+/// # Example
+///
+/// ```
+/// use libazureinit::media::parse_ovf_env;
+///
+/// // Example dummy OVF environment data 
+/// let ovf_body = r#"
+/// <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1">
+///     <ProvisioningSection>
+///         <Version>1.0</Version>
+///         <LinuxProvisioningConfigurationSet>
+///             <UserName>myusername</UserName>
+///             <UserPassword></UserPassword>
+///             <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
+///             <HostName>myhostname</HostName>
+///         </LinuxProvisioningConfigurationSet>
+///     </ProvisioningSection>
+///     <PlatformSettingsSection>
+///         <Version>1.0</Version>
+///         <PlatformSettings>
+///             <PreprovisionedVm>false</PreprovisionedVm>
+///             <PreprovisionedVmType>None</PreprovisionedVmType>
+///         </PlatformSettings>
+///     </PlatformSettingsSection>
+/// </Environment>
+/// "#;
+///
+/// let environment = parse_ovf_env(ovf_body).unwrap();
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.username, "myusername");
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.password, "");
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.hostname, "myhostname");
+/// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm, false);
+/// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm_type, "None");
+/// ```
 #[instrument(skip_all)]
 pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
