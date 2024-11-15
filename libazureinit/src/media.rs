@@ -19,7 +19,11 @@ use tracing::instrument;
 use crate::error::Error;
 use fstab::FsTab;
 
-/// Environment configuration data.
+/// Represents a media device.
+///
+/// # Type Parameters
+///
+/// * `State` - The state of the media, either `Mounted` or `Unmounted`.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
@@ -66,14 +70,29 @@ pub struct PlatformSettings {
     pub preprovisioned_vm_type: String,
 }
 
+/// Returns an empty string as the default password.
+///
+/// # Returns
+///
+/// A `String` containing an empty password.
 fn default_password() -> String {
     "".to_owned()
 }
 
+/// Returns `false` as the default value for preprovisioned VM.
+///
+/// # Returns
+///
+/// A `bool` indicating that the VM is not preprovisioned.
 fn default_preprov() -> bool {
     false
 }
 
+/// Returns "None" as the default type for preprovisioned VM.
+///
+/// # Returns
+///
+/// A `String` containing "None" as the default preprovisioned VM type.
 fn default_preprov_type() -> String {
     "None".to_owned()
 }
@@ -99,7 +118,11 @@ const MTAB_PATH: &str = "/etc/mtab";
 /// ```
 /// use libazureinit::media::get_mount_device;
 ///
-/// let devices = get_mount_device(None).unwrap();
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+///
+/// let devices = get_mount_device(None)?;
+/// #  Ok(())
+/// # }
 /// ```
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
@@ -121,12 +144,19 @@ pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     Ok(cdrom_devices)
 }
 
-// Some zero-sized structs that just provide states for our state machine
+/// Represents the state of a mounted media.
 #[derive(Debug)]
 pub struct Mounted;
+
+/// Represents the state of an unmounted media.
 #[derive(Debug)]
 pub struct Unmounted;
 
+/// Represents a media device.
+///
+/// # Type Parameters
+///
+/// * `State` - The state of the media, either `Mounted` or `Unmounted`.
 #[derive(Debug)]
 pub struct Media<State = Unmounted> {
     device_path: PathBuf,
@@ -135,6 +165,25 @@ pub struct Media<State = Unmounted> {
 }
 
 impl Media<Unmounted> {
+    /// Creates a new `Media` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `device_path` - The path to the media device.
+    /// * `mount_path` - The path where the media will be mounted.
+    ///
+    /// # Returns
+    ///
+    /// A new `Media` instance in the `Unmounted` state.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use libazureinit::media::Media;
+    /// use std::path::PathBuf;
+    ///
+    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
+    /// ```
     pub fn new(device_path: PathBuf, mount_path: PathBuf) -> Media<Unmounted> {
         Media {
             device_path,
@@ -143,6 +192,21 @@ impl Media<Unmounted> {
         }
     }
 
+    /// Mounts the media device.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the `Media` instance in the `Mounted` state, or an `Error`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use libazureinit::media::Media;
+    /// use std::path::PathBuf;
+    ///
+    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
+    /// let mounted_media = media.mount().unwrap();
+    /// ```
     #[instrument]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
@@ -176,6 +240,22 @@ impl Media<Unmounted> {
 }
 
 impl Media<Mounted> {
+    /// Unmounts the media device.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use libazureinit::media::Media;
+    /// use std::path::PathBuf;
+    ///
+    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
+    /// let mounted_media = media.mount().unwrap();
+    /// mounted_media.unmount().unwrap();
+    /// ```
     #[instrument]
     pub fn unmount(self) -> Result<(), Error> {
         let umount_status =
@@ -232,7 +312,7 @@ impl Media<Mounted> {
 /// ```
 /// use libazureinit::media::parse_ovf_env;
 ///
-/// // Example dummy OVF environment data 
+/// // Example dummy OVF environment data
 /// let ovf_body = r#"
 /// <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1">
 ///     <ProvisioningSection>
@@ -277,7 +357,15 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     }
 }
 
-// Mount the given device, get OVF environment data, return it.
+/// Mounts the given device, gets OVF environment data, and returns it.
+///
+/// # Arguments
+///
+/// * `dev` - A string containing the device path.
+///
+/// # Returns
+///
+/// A `Result` containing the parsed `Environment` struct, or an `Error`.
 #[instrument(skip_all)]
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
