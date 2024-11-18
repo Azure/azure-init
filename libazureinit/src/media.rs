@@ -97,10 +97,14 @@ fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
+/// Path to the default mount device.
 pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
+/// Path to the default mount point.
 pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 
+/// Valid filesystems for CDROM devices.
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
+/// Path to the mount table file.
 const MTAB_PATH: &str = "/etc/mtab";
 
 /// Retrieves a list of mounted devices with CDROM-type filesystems.
@@ -112,18 +116,6 @@ const MTAB_PATH: &str = "/etc/mtab";
 /// # Returns
 ///
 /// A `Result` containing a vector of device paths as strings, or an `Error`.
-///
-/// # Example
-///
-/// ```
-/// use libazureinit::media::get_mount_device;
-///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-///
-/// let devices = get_mount_device(None)?;
-/// #  Ok(())
-/// # }
-/// ```
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
@@ -175,15 +167,6 @@ impl Media<Unmounted> {
     /// # Returns
     ///
     /// A new `Media` instance in the `Unmounted` state.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use libazureinit::media::Media;
-    /// use std::path::PathBuf;
-    ///
-    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
-    /// ```
     pub fn new(device_path: PathBuf, mount_path: PathBuf) -> Media<Unmounted> {
         Media {
             device_path,
@@ -197,16 +180,6 @@ impl Media<Unmounted> {
     /// # Returns
     ///
     /// A `Result` containing the `Media` instance in the `Mounted` state, or an `Error`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use libazureinit::media::Media;
-    /// use std::path::PathBuf;
-    ///
-    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
-    /// let mounted_media = media.mount().unwrap();
-    /// ```
     #[instrument]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
@@ -245,17 +218,6 @@ impl Media<Mounted> {
     /// # Returns
     ///
     /// A `Result` indicating success or failure.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use libazureinit::media::Media;
-    /// use std::path::PathBuf;
-    ///
-    /// let media = Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt"));
-    /// let mounted_media = media.mount().unwrap();
-    /// mounted_media.unmount().unwrap();
-    /// ```
     #[instrument]
     pub fn unmount(self) -> Result<(), Error> {
         let umount_status =
