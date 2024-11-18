@@ -1,6 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! This module provides functionality for handling media devices, including mounting,
+//! unmounting, and reading OVF (Open Virtualization Format) environment data. It defines
+//! the [`Media`] struct with state management for [`Mounted`] and [`Unmounted`] states, as well
+//! as utility functions for parsing OVF environment data and retrieving mounted devices
+//! with CDROM-type filesystems.
+//!
+//! # Overview
+//!
+//! The `media` module is designed to manage media devices in a cloud environment. It
+//! includes functionality to mount and unmount media devices, read OVF environment data,
+//! and parse the data into structured formats. This is particularly useful for provisioning
+//! virtual machines with specific configurations.
+//!
+//! # Key Components
+//!
+//! - [`Media`]: A struct representing a media device, with state management for [`Mounted`] and [`Unmounted`] states.
+//! - [`Mounted`] and [`Unmounted`]: Zero-sized structs used to indicate the state of a [`Media`] instance.
+//! - [`parse_ovf_env`]: A function to parse OVF environment data from a string.
+//! - [`mount_parse_ovf_env`]: A function to mount a media device, read its OVF environment data, and return the parsed data.
+//! - [`get_mount_device`]: A function to retrieve a list of mounted devices with CDROM-type filesystems.
+//!
+//! [`Media`]: struct.Media.html
+//! [`Mounted`]: struct.Mounted.html
+//! [`Unmounted`]: struct.Unmounted.html
+//! [`parse_ovf_env`]: fn.parse_ovf_env.html
+//! [`mount_parse_ovf_env`]: fn.mount_parse_ovf_env.html
+//! [`get_mount_device`]: fn.get_mount_device.html
+
 use std::fs;
 use std::fs::create_dir_all;
 use std::fs::File;
