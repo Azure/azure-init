@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! This module provides functionality for handling media devices, including mounting,
-//! unmounting, and reading OVF (Open Virtualization Format) environment data. It defines
+//! unmounting, and reading [`OVF`] (Open Virtualization Format) environment data. It defines
 //! the [`Media`] struct with state management for [`Mounted`] and [`Unmounted`] states, as well
 //! as utility functions for parsing OVF environment data and retrieving mounted devices
 //! with CDROM-type filesystems.
