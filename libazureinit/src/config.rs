@@ -449,6 +449,31 @@ mod tests {
     use tempfile::tempdir;
     use tracing;
 
+    #[derive(Debug)]
+    struct MockCli {
+        config: Option<std::path::PathBuf>,
+    }
+
+    impl MockCli {
+        fn parse_from(args: Vec<&str>) -> Self {
+            let mut config = None;
+
+            let mut args_iter = args.into_iter();
+            while let Some(arg) = args_iter.next() {
+                match arg {
+                    "--config" => {
+                        if let Some(path) = args_iter.next() {
+                            config = Some(PathBuf::from(path));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Self { config }
+        }
+    }
+
     #[test]
     fn test_load_invalid_config() -> Result<(), Error> {
         tracing::info!("Starting test_load_invalid_config...");
@@ -835,6 +860,99 @@ mod tests {
         assert!(config.telemetry.kvp_diagnostics);
 
         tracing::info!("test_default_config completed successfully.");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_custom_config_via_cli() -> Result<(), Error> {
+        let dir = tempdir()?;
+        let override_file_path = dir.path().join("override_config.toml");
+
+        fs::write(
+            &override_file_path,
+            r#"
+            [ssh]
+            authorized_keys_path = ".ssh/authorized_keys"
+            query_sshd_config = false
+
+            [user_provisioners]
+            backends = ["useradd"]
+        
+            [password_provisioners]
+            backends = ["passwd"]
+        
+            [imds]
+            connection_timeout_secs = 5.0
+            read_timeout_secs = 120.0
+        
+            [provisioning_media]
+            enable = false
+        
+            [azure_proxy_agent]
+            enable = false
+        
+            [telemetry]
+            kvp_diagnostics = false
+            "#,
+        )?;
+
+        let args = vec![
+            "azure-init",
+            "--config",
+            override_file_path.to_str().unwrap(),
+        ];
+
+        let opts = MockCli::parse_from(args);
+
+        assert_eq!(opts.config, Some(override_file_path.clone()));
+
+        let config = Config::load(opts.config)?;
+
+        assert_eq!(
+            config.ssh.authorized_keys_path.to_str().unwrap(),
+            ".ssh/authorized_keys"
+        );
+        assert!(!config.ssh.query_sshd_config);
+
+        assert_eq!(
+            config.user_provisioners.backends,
+            vec![UserProvisioner::Useradd]
+        );
+
+        assert_eq!(
+            config.password_provisioners.backends,
+            vec![PasswordProvisioner::Passwd]
+        );
+
+        assert_eq!(config.imds.connection_timeout_secs, 5.0);
+        assert_eq!(config.imds.read_timeout_secs, 120.0);
+        assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
+
+        assert!(!config.provisioning_media.enable);
+        assert!(!config.azure_proxy_agent.enable);
+        assert!(!config.telemetry.kvp_diagnostics);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_directory_config_via_cli() -> Result<(), Error> {
+        let dir = tempdir()?;
+
+        let args = vec!["azure-init", "--config", dir.path().to_str().unwrap()];
+
+        let opts = MockCli::parse_from(args);
+
+        assert_eq!(opts.config, Some(dir.path().to_path_buf()));
+
+        let config = Config::load(opts.config)?;
+
+        assert!(config.ssh.authorized_keys_path.is_relative());
+        assert_eq!(
+            config.ssh.authorized_keys_path.to_str().unwrap(),
+            ".ssh/authorized_keys"
+        );
 
         Ok(())
     }

@@ -42,6 +42,12 @@ struct Cli {
         default_value = ""
     )]
     groups: Vec<String>,
+
+    #[arg(
+        long,
+        help = "Path to the configuration file",
+        env = "AZURE_INIT_CONFIG"
+    )]
     config: Option<PathBuf>,
 }
 
