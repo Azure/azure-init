@@ -40,6 +40,10 @@ impl Provision {
         }
     }
 
+    /// Provisioning can fail if the host lacks the necessary tools. For example,
+    /// if there is no useradd command on the system's PATH, or if the command
+    /// returns an error, this will return an error. It does not attempt to undo
+    /// partial provisioning.
     #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         self.config

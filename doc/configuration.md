@@ -161,6 +161,7 @@ query_sshd_config = "not_a_boolean" # This will cause a validation failure
   - **Description**: Specifies the tool used to set user passwords.
   - **Variants**:
     - **FakePasswd**: Testing provisioner that simulates `passwd`.
+    
 #### Imds Struct:
 - **connection_timeout_secs**: `f64`
   - **Default**: `2.0` seconds
