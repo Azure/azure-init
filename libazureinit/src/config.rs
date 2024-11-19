@@ -9,9 +9,10 @@
 //! provisioners, IMDS, provisioning media, and telemetry.
 use crate::error::Error;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
+use std::{fmt, fs};
 use toml;
+use toml::Value;
 use tracing;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -43,23 +44,24 @@ pub enum PasswordProvisioner {
 
 /// SSH configuration struct.
 ///
-/// Holds settings for managing SSH behavior, including the authorized keys path and options for querying the SSH configuration.
-///
-/// - `authorized_keys_path: PathBuf` -> Specifies the path to the authorized keys file for SSH. Defaults to `~/.ssh/authorized_keys`.
-/// - `query_sshd_config: bool` -> When `true`, `azure-init` attempts to dynamically query the authorized keys path via `sshd -G`.
-///                                If `sshd -G` fails, `azure-init` reports the failure but continues using `authorized_keys_path`.
-///                                When `false`, `azure-init` directly uses the `authorized_keys_path` as specified.
+/// Holds settings for managing SSH behavior, including the authorized keys path
+/// and options for querying the SSH configuration.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Ssh {
+    /// Specifies the path to the authorized keys file for SSH. Defaults to `.ssh/authorized_keys`.
     pub authorized_keys_path: PathBuf,
+
+    /// When `true`, `azure-init` attempts to dynamically query the authorized keys path via `sshd -G`.
+    /// If `sshd -G` fails, `azure-init` reports the failure but continues using `authorized_keys_path`.
+    /// When `false`, `azure-init` directly uses the `authorized_keys_path` as specified.
     pub query_sshd_config: bool,
 }
 
 impl Default for Ssh {
     fn default() -> Self {
         Self {
-            authorized_keys_path: PathBuf::from("~/.ssh/authorized_keys"),
+            authorized_keys_path: PathBuf::from(".ssh/authorized_keys"),
             query_sshd_config: true,
         }
     }
@@ -69,10 +71,9 @@ impl Default for Ssh {
 ///
 /// Holds settings for hostname management, allowing specification of provisioner
 /// backends for hostname configuration.
-///
-/// - `backends: Vec<HostnameProvisioner>` -> List of hostname provisioner backends to use. Defaults to `hostnamectl`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HostnameProvisioners {
+    /// List of hostname provisioner backends to use. Defaults to `hostnamectl`.
     pub backends: Vec<HostnameProvisioner>,
 }
 
@@ -87,10 +88,9 @@ impl Default for HostnameProvisioners {
 /// User provisioner configuration struct.
 ///
 /// Configures provisioners responsible for user account creation and management.
-///
-/// - `backends: Vec<UserProvisioner>` -> List of user provisioner backends to use. Defaults to `useradd`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserProvisioners {
+    /// List of user provisioner backends to use. Defaults to `useradd`.
     pub backends: Vec<UserProvisioner>,
 }
 
@@ -105,10 +105,9 @@ impl Default for UserProvisioners {
 /// Password provisioner configuration struct.
 ///
 /// Configures provisioners responsible for managing user passwords.
-///
-/// - `backends: Vec<PasswordProvisioner>` -> List of password provisioner backends to use. Defaults to `passwd`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PasswordProvisioners {
+    /// List of password provisioner backends to use. Defaults to `passwd`.
     pub backends: Vec<PasswordProvisioner>,
 }
 
@@ -123,15 +122,16 @@ impl Default for PasswordProvisioners {
 /// IMDS (Instance Metadata Service) configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Instance Metadata Service.
-///
-/// - `connection_timeout_secs: f64` -> Timeout in seconds for establishing a connection to the IMDS.
-/// - `read_timeout_secs: f64` -> Timeout in seconds for reading data from the IMDS.
-/// - `total_retry_timeout_secs: f64` -> Total retry timeout in seconds for IMDS requests.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Imds {
+    /// Timeout in seconds for establishing a connection to the IMDS.
     pub connection_timeout_secs: f64,
+
+    /// Timeout in seconds for reading data from the IMDS.
     pub read_timeout_secs: f64,
+
+    /// Total retry timeout in seconds for IMDS requests.
     pub total_retry_timeout_secs: f64,
 }
 
@@ -148,10 +148,9 @@ impl Default for Imds {
 /// Provisioning media configuration struct.
 ///
 /// Determines whether provisioning media is enabled.
-///
-/// - `enable: bool` -> Flag to enable or disable provisioning media. Defaults to `true`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProvisioningMedia {
+    /// Flag to enable or disable provisioning media. Defaults to `true`.
     pub enable: bool,
 }
 
@@ -164,10 +163,9 @@ impl Default for ProvisioningMedia {
 /// Azure proxy agent configuration struct.
 ///
 /// Configures whether the Azure proxy agent is enabled.
-///
-/// - `enable: bool` -> Flag to enable or disable the Azure proxy agent. Defaults to `true`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AzureProxyAgent {
+    /// Flag to enable or disable the Azure proxy agent. Defaults to `true`.
     pub enable: bool,
 }
 
@@ -180,15 +178,16 @@ impl Default for AzureProxyAgent {
 /// Wire server configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Azure wire server.
-///
-/// - `connection_timeout_secs: f64` -> Timeout in seconds for establishing a connection to the wire server.
-/// - `read_timeout_secs: f64` -> Timeout in seconds for reading data from the wire server.
-/// - `total_retry_timeout_secs: f64` -> Total retry timeout in seconds for wire server requests.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Wireserver {
+    /// Timeout in seconds for establishing a connection to the wire server.
     pub connection_timeout_secs: f64,
+
+    /// Timeout in seconds for reading data from the wire server.
     pub read_timeout_secs: f64,
+
+    /// Total retry timeout in seconds for wire server requests.
     pub total_retry_timeout_secs: f64,
 }
 
@@ -202,8 +201,12 @@ impl Default for Wireserver {
     }
 }
 
+/// Telemetry configuration struct.
+///
+/// Configures telemetry behavior, including diagnostic settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Telemetry {
+    /// Flag to enable or disable KVP diagnostics. Defaults to `true`.
     pub kvp_diagnostics: bool,
 }
 
@@ -231,6 +234,21 @@ pub struct Config {
     pub azure_proxy_agent: AzureProxyAgent,
     pub wireserver: Wireserver,
     pub telemetry: Telemetry,
+}
+
+/// Implements `Display` for `Config`, formatting it as a readable TOML string.
+///
+/// Uses `toml::to_string_pretty` to serialize the configuration. If serialization fails,
+/// a fallback message is displayed..
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            toml::to_string_pretty(self)
+                .unwrap_or_else(|_| "Unable to serialize config.".to_string())
+        )
+    }
 }
 
 /// Loads the configuration, optionally taking a CLI override path.
@@ -317,49 +335,80 @@ impl Config {
     /// Merges two configurations, giving priority to values from `other`.
     ///
     /// This method combines two configurations, with each field in `other` overwriting the
-    /// corresponding field in `self`. This allows for merging multiple configurations in
-    /// order of precedence, for example, applying CLI-specified configurations over defaults.
-    fn merge(mut self, other: Config) -> Config {
-        self.ssh = other.ssh;
-        self.hostname_provisioners = other.hostname_provisioners;
-        self.user_provisioners = other.user_provisioners;
-        self.password_provisioners = other.password_provisioners;
-        self.imds = other.imds;
-        self.provisioning_media = other.provisioning_media;
-        self.azure_proxy_agent = other.azure_proxy_agent;
-        self.wireserver = other.wireserver;
-        self.telemetry = other.telemetry;
+    /// corresponding field in `self`.
+    ///
+    /// If serialization or deserialization fails, logs an error and returns the default configuration.
+    fn merge(self, other: Config) -> Config {
+        let self_toml = toml::Value::try_from(&self)
+            .unwrap_or_else(|_| Value::Table(Default::default()));
+        let other_toml = toml::Value::try_from(&other)
+            .unwrap_or_else(|_| Value::Table(Default::default()));
 
-        self
+        // Merge TOML values
+        let merged_toml = Self::merge_toml(self_toml, other_toml);
+
+        // Deserialize back into Config
+        toml::from_str(&toml::to_string(&merged_toml).unwrap()).unwrap_or_else(|_| {
+            tracing::error!("Failed to deserialize merged TOML into Config. Returning default Config.");
+            Config::default()
+        })
+    }
+
+    /// Merges two TOML `Value` objects recursively, merging at the individual key level.
+    fn merge_toml(mut base: Value, additional: Value) -> Value {
+        if let (Some(base_table), Some(additional_table)) =
+            (base.as_table_mut(), additional.as_table())
+        {
+            for (key, additional_value) in additional_table {
+                match base_table.get_mut(key) {
+                    // If both are tables, merge recursively
+                    Some(base_value)
+                        if base_value.is_table()
+                            && additional_value.is_table() =>
+                    {
+                        let merged = Self::merge_toml(
+                            base_value.clone(),
+                            additional_value.clone(),
+                        );
+                        base_table.insert(key.clone(), merged);
+                    }
+                    // Otherwise, overwrite or insert the key from `additional`
+                    _ => {
+                        base_table
+                            .insert(key.clone(), additional_value.clone());
+                    }
+                }
+            }
+        }
+        base
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Error, Ok};
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
     use tracing;
 
     #[test]
-    fn test_load_invalid_config() {
+    fn test_load_invalid_config() -> Result<(), Error> {
         tracing::info!("Starting test_load_invalid_config...");
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?;
         let file_path = dir.path().join("invalid_config.toml");
 
         tracing::info!("Writing an invalid configuration file...");
-        let mut file = fs::File::create(&file_path).unwrap();
+        let mut file = fs::File::create(&file_path)?;
         writeln!(
             file,
             r#"
             [ssh]
-            authorized_keys_path = "~/.ssh/authorized_keys"
+            authorized_keys_path = ".ssh/authorized_keys"
             query_sshd_config = "not_a_boolean"
             "#
-        )
-        .unwrap();
+        )?;
 
         tracing::info!("Attempting to load configuration from file...");
         let result = Config::load(Some(file_path));
@@ -368,30 +417,31 @@ mod tests {
         tracing::info!(
             "test_load_invalid_config completed with expected error."
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_load_invalid_hostname_provisioner_config() {
+    fn test_load_invalid_hostname_provisioner_config() -> Result<(), Error> {
         tracing::info!(
             "Starting test_load_invalid_hostname_provisioner_config..."
         );
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?;
         let file_path =
             dir.path().join("invalid_hostname_provisioner_config.toml");
 
         tracing::info!(
             "Writing an invalid hostname provisioner configuration file..."
         );
-        let mut file = fs::File::create(&file_path).unwrap();
+        let mut file = fs::File::create(&file_path)?;
         writeln!(
             file,
             r#"
             [hostname_provisioners]
             backends = ["invalid_backend"]
             "#
-        )
-        .unwrap();
+        )?;
 
         tracing::info!("Attempting to load hostname provisioner configuration from file...");
         let result = Config::load(Some(file_path));
@@ -401,27 +451,28 @@ mod tests {
         );
 
         tracing::info!("test_load_invalid_hostname_provisioner_config completed with expected error.");
+
+        Ok(())
     }
 
     #[test]
-    fn test_load_invalid_user_provisioner_config() {
+    fn test_load_invalid_user_provisioner_config() -> Result<(), Error> {
         tracing::info!("Starting test_load_invalid_user_provisioner_config...");
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?;
         let file_path = dir.path().join("invalid_user_provisioner_config.toml");
 
         tracing::info!(
             "Writing an invalid user provisioner configuration file..."
         );
-        let mut file = fs::File::create(&file_path).unwrap();
+        let mut file = fs::File::create(&file_path)?;
         writeln!(
             file,
             r#"
             [user_provisioners]
             backends = ["invalid_user_backend"]
             "#
-        )
-        .unwrap();
+        )?;
 
         tracing::info!(
             "Attempting to load user provisioner configuration from file..."
@@ -433,30 +484,31 @@ mod tests {
         );
 
         tracing::info!("test_load_invalid_user_provisioner_config completed with expected error.");
+
+        Ok(())
     }
 
     #[test]
-    fn test_load_invalid_password_provisioner_config() {
+    fn test_load_invalid_password_provisioner_config() -> Result<(), Error> {
         tracing::info!(
             "Starting test_load_invalid_password_provisioner_config..."
         );
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?;
         let file_path =
             dir.path().join("invalid_password_provisioner_config.toml");
 
         tracing::info!(
             "Writing an invalid password provisioner configuration file..."
         );
-        let mut file = fs::File::create(&file_path).unwrap();
+        let mut file = fs::File::create(&file_path)?;
         writeln!(
             file,
             r#"
             [password_provisioners]
             backends = ["invalid_password_backend"]
             "#
-        )
-        .unwrap();
+        )?;
 
         tracing::info!("Attempting to load password provisioner configuration from file...");
         let result = Config::load(Some(file_path));
@@ -466,25 +518,27 @@ mod tests {
         );
 
         tracing::info!("test_load_invalid_password_provisioner_config completed with expected error.");
+
+        Ok(())
     }
 
     #[test]
-    fn test_empty_config_file() {
+    fn test_empty_config_file() -> Result<(), Error> {
         tracing::info!(
             "Starting test_empty_config_file_uses_defaults_when_merged..."
         );
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?;
         let empty_file_path = dir.path().join("empty_config.toml");
 
         tracing::info!("Creating an empty configuration file...");
-        fs::File::create(&empty_file_path).unwrap();
+        fs::File::create(&empty_file_path)?;
 
         tracing::info!("Loading default configuration as base...");
         let mut config = Config::default();
 
         tracing::info!("Loading and merging configuration from empty file...");
-        let empty_config = Config::load(Some(empty_file_path)).unwrap();
+        let empty_config = Config::load(Some(empty_file_path))?;
         config = config.merge(empty_config);
 
         tracing::info!(
@@ -493,7 +547,7 @@ mod tests {
 
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
-            "~/.ssh/authorized_keys"
+            ".ssh/authorized_keys"
         );
 
         assert!(config.ssh.query_sshd_config);
@@ -528,11 +582,95 @@ mod tests {
         assert!(config.telemetry.kvp_diagnostics);
 
         tracing::info!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
+
+        Ok(())
     }
 
     #[test]
-    fn test_custom_config() {
-        let dir = tempdir().unwrap();
+    fn test_merge_multiple_configs() -> Result<(), Error> {
+        println!("Starting test_merge_multiple_configs...");
+
+        // Create a temporary directory
+        let dir = tempdir()?;
+        println!("Temporary directory created at {:?}", dir.path());
+
+        // Base configuration file
+        let base_config_path = dir.path().join("azure-init.toml");
+        fs::write(
+            &base_config_path,
+            r#"
+            [ssh]
+            authorized_keys_path = ".ssh/authorized_keys"
+            query_sshd_config = true
+
+            [imds]
+            connection_timeout_secs = 1.0
+            read_timeout_secs = 10.0
+            "#,
+        )?;
+
+        let override_1_path = dir.path().join("01-override.toml");
+        fs::write(
+            &override_1_path,
+            r#"
+            [ssh]
+            query_sshd_config = false
+            "#,
+        )?;
+
+        let override_2_path = dir.path().join("02-override.toml");
+        fs::write(
+            &override_2_path,
+            r#"
+            [imds]
+            total_retry_timeout_secs = 500.0
+            "#,
+        )?;
+
+        let override_3_path = dir.path().join("03-override.toml");
+        fs::write(
+            &override_3_path,
+            r#"
+            [ssh]
+            authorized_keys_path = "/custom/.ssh/authorized_keys"
+
+            [provisioning_media]
+            enable = false
+            "#,
+        )?;
+
+        let base_config = Config::load(Some(base_config_path))?;
+        let overrides = vec![override_1_path, override_2_path, override_3_path];
+
+        let merged_config =
+            overrides.into_iter().fold(base_config, |config, file| {
+                let override_config =
+                    Config::load_from_file(file).unwrap_or_default();
+                config.merge(override_config)
+            });
+
+        println!("Final Merged Config: {:?}", merged_config);
+
+        assert_eq!(
+            merged_config.ssh.authorized_keys_path.to_str().unwrap(),
+            "/custom/.ssh/authorized_keys"
+        );
+        assert_eq!(merged_config.ssh.query_sshd_config, false); // Overridden by 01-override
+        assert_eq!(merged_config.imds.connection_timeout_secs, 1.0); // From base config
+        assert_eq!(merged_config.imds.read_timeout_secs, 10.0); // From base config
+        assert_eq!(merged_config.imds.total_retry_timeout_secs, 500.0); // From 02-override
+        assert_eq!(merged_config.provisioning_media.enable, false); // From 03-override
+
+        assert!(merged_config.azure_proxy_agent.enable);
+        assert!(merged_config.telemetry.kvp_diagnostics);
+
+        println!("test_merge_multiple_configs completed successfully.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_custom_config() -> Result<(), Error> {
+        let dir = tempdir()?;
         let override_file_path = dir.path().join("override_config.toml");
 
         tracing::info!("Loading default configuration as the base...");
@@ -541,12 +679,12 @@ mod tests {
         tracing::info!(
             "Writing an override configuration file with custom values..."
         );
-        let mut override_file = fs::File::create(&override_file_path).unwrap();
+        let mut override_file = fs::File::create(&override_file_path)?;
         writeln!(
             override_file,
             r#"
             [ssh]
-            authorized_keys_path = "~/.ssh/authorized_keys"
+            authorized_keys_path = ".ssh/authorized_keys"
             query_sshd_config = false
 
             [user_provisioners]
@@ -568,8 +706,7 @@ mod tests {
             [telemetry]
             kvp_diagnostics = false
             "#
-        )
-        .unwrap();
+        )?;
 
         tracing::info!(
             "Loading override configuration from file and merging it..."
@@ -580,7 +717,7 @@ mod tests {
         tracing::info!("Verifying merged SSH configuration values...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
-            "~/.ssh/authorized_keys"
+            ".ssh/authorized_keys"
         );
         assert!(!config.ssh.query_sshd_config);
 
@@ -623,19 +760,21 @@ mod tests {
         tracing::info!(
             "test_load_and_merge_with_default_config completed successfully."
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config() -> Result<(), Error> {
         tracing::info!("Starting test_default_config...");
 
         tracing::info!("Loading default configuration without overrides...");
-        let config = Config::load(None).unwrap();
+        let config = Config::load(None)?;
 
         tracing::info!("Verifying default SSH configuration values...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
-            "~/.ssh/authorized_keys"
+            ".ssh/authorized_keys"
         );
         assert!(config.ssh.query_sshd_config);
 
@@ -677,5 +816,7 @@ mod tests {
         assert!(config.telemetry.kvp_diagnostics);
 
         tracing::info!("test_default_config completed successfully.");
+
+        Ok(())
     }
 }

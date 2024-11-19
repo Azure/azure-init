@@ -97,8 +97,14 @@ async fn main() -> ExitCode {
 
     let opts = Cli::parse();
 
-    let config = Config::load(opts.config.clone())
-        .expect("Failed to load configuration");
+    let config = match Config::load(opts.config.clone()) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("Failed to load configuration: {error:?}");
+            eprintln!("Example configuration:\n\n{}", Config::default());
+            return ExitCode::FAILURE;
+        }
+    };
 
     match provision(config, opts).await {
         Ok(_) => ExitCode::SUCCESS,

@@ -132,7 +132,7 @@ query_sshd_config = "not_a_boolean" # This will cause a validation failure
 
 #### Ssh Struct
 - **authorized_keys_path**: `PathBuf`
-  - **Default**: `~/.ssh/authorized_keys`
+  - **Default**: `.ssh/authorized_keys`
   - **Description**: Specifies the file path for storing SSH authorized keys when configuring SSH access.
 - **query_sshd_config**: `bool`
   - **Default**: `true`
@@ -202,7 +202,7 @@ query_sshd_config = "not_a_boolean" # This will cause a validation failure
 
 ```toml
 [ssh]
-authorized_keys_path = "~/.ssh/authorized_keys"
+authorized_keys_path = ".ssh/authorized_keys"
 configure_password_authentication = false
 authorized_keys_path_query_mode = "disabled"
 query_sshd_config = true

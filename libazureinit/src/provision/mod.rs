@@ -53,7 +53,7 @@ impl Provision {
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or(Error::NoHostnameProvisioner)?;
+            .ok_or_else(|| Error::NoHostnameProvisioner)?;
 
         self.config
             .user_provisioners
@@ -66,7 +66,7 @@ impl Provision {
                 #[cfg(test)]
                 UserProvisioner::FakeUseradd => Some(()),
             })
-            .ok_or(Error::NoUserProvisioner)?;
+            .ok_or_else(|| Error::NoUserProvisioner)?;
 
         self.config
             .password_provisioners
@@ -79,7 +79,7 @@ impl Provision {
                 #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
             })
-            .ok_or(Error::NoPasswordProvisioner)?;
+            .ok_or_else(|| Error::NoPasswordProvisioner)?;
 
         if !self.user.ssh_keys.is_empty() {
             let authorized_keys_path =
