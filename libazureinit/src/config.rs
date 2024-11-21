@@ -486,10 +486,10 @@ mod tests {
         writeln!(
             file,
             r#"
-            [ssh]
-            authorized_keys_path = ".ssh/authorized_keys"
-            query_sshd_config = "not_a_boolean"
-            "#
+        [ssh]
+        authorized_keys_path = ".ssh/authorized_keys"
+        query_sshd_config = "not_a_boolean"
+        "#
         )?;
 
         tracing::info!("Attempting to load configuration from file...");
@@ -709,30 +709,23 @@ mod tests {
         let mut override_file = fs::File::create(&override_file_path)?;
         writeln!(
             override_file,
-            r#"
-            [ssh]
-            authorized_keys_path = ".ssh/authorized_keys"
-            query_sshd_config = false
-
-            [user_provisioners]
-            backends = ["useradd"]
-    
-            [password_provisioners]
-            backends = ["passwd"]
-    
-            [imds]
-            connection_timeout_secs = 5.0
-            read_timeout_secs = 120.0
-    
-            [provisioning_media]
-            enable = false
-    
-            [azure_proxy_agent]
-            enable = false
-    
-            [telemetry]
-            kvp_diagnostics = false
-            "#
+            r#"[ssh]
+        authorized_keys_path = ".ssh/authorized_keys"
+        query_sshd_config = false
+        [user_provisioners]
+        backends = ["useradd"]
+        [password_provisioners]
+        backends = ["passwd"]
+        [imds]
+        connection_timeout_secs = 5.0
+        read_timeout_secs = 120.0
+        [provisioning_media]
+        enable = false
+        [azure_proxy_agent]
+        enable = false
+        [telemetry]
+        kvp_diagnostics = false
+        "#
         )?;
 
         tracing::info!(
@@ -871,30 +864,23 @@ mod tests {
 
         fs::write(
             &override_file_path,
-            r#"
-            [ssh]
-            authorized_keys_path = ".ssh/authorized_keys"
-            query_sshd_config = false
-
-            [user_provisioners]
-            backends = ["useradd"]
-        
-            [password_provisioners]
-            backends = ["passwd"]
-        
-            [imds]
-            connection_timeout_secs = 5.0
-            read_timeout_secs = 120.0
-        
-            [provisioning_media]
-            enable = false
-        
-            [azure_proxy_agent]
-            enable = false
-        
-            [telemetry]
-            kvp_diagnostics = false
-            "#,
+            r#"[ssh]
+        authorized_keys_path = ".ssh/authorized_keys"
+        query_sshd_config = false
+        [user_provisioners]
+        backends = ["useradd"]
+        [password_provisioners]
+        backends = ["passwd"]
+        [imds]
+        connection_timeout_secs = 5.0
+        read_timeout_secs = 120.0
+        [provisioning_media]
+        enable = false
+        [azure_proxy_agent]
+        enable = false
+        [telemetry]
+        kvp_diagnostics = false
+        "#,
         )?;
 
         let args = vec![
@@ -963,29 +949,27 @@ mod tests {
 
         let base_toml: toml::Value = toml::from_str(
             r#"
-            [ssh]
-            query_sshd_config = true
-    
-            [telemetry]
-            kvp_diagnostics = true
-            "#,
+        [ssh]
+        query_sshd_config = true
+        [telemetry]
+        kvp_diagnostics = true
+        "#,
         )?;
 
         let additional_toml_01: toml::Value = toml::from_str(
             r#"
-            [ssh]
-            authorized_keys_path = "/custom/.ssh/authorized_keys"
-            "#,
+        [ssh]
+        authorized_keys_path = "/custom/.ssh/authorized_keys"
+        "#,
         )?;
 
         let additional_toml_02: toml::Value = toml::from_str(
             r#"
-            [ssh]
-            query_sshd_config = false
-    
-            [telemetry]
-            kvp_diagnostics = false
-            "#,
+        [ssh]
+        query_sshd_config = false
+        [telemetry]
+        kvp_diagnostics = false
+        "#,
         )?;
 
         tracing::info!("Merging TOML progressively...");

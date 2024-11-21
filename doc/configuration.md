@@ -1,30 +1,27 @@
 # Custom Configuration Design for azure-init
 
 ## Objective
-The azure-init custom configuration architecture enables dynamic and flexible management of various settings for virtual machines provisioned with the light-weight agent. Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry. This flexible design ensures that users can adapt configurations to their specific needs.
+The azure-init custom configuration architecture enables dynamic and flexible management of various settings for virtual machines provisioned with the light-weight agent. Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry.
 
 ## Design
-The system is designed to support default configurations, while allowing for user-specified overrides through config files or the command line interface. 
+The system supports default configurations with user-specified overrides via configuration files or CLI parameters.
 
 ### Key Features
-- **Override Support**: Default configurations are defined inside `config.rs`, with the option to override these settings via a specified configuration file or the CLI at runtime. CLI arguments take precedence over default configuration settings and any other configuration files.
-- **Config Validation**: Custom enum types for for fields such as `pub enum HostnameProvisioner` validate that user-set config settings match the supported options. Invalid values will cause deserialization to fail.
-- **Built-in Defaults**: The system defines defaults directly in the code using Rust's `Default` trait, eliminating the need for a separate default config file.
-- **Merging of Configurations**: The `load()` and `merge()` methods merge multiple sources of configuration data. Defaults are loaded first, then overridden by values from a config file, and finally by CLI-specified configurations.
+- **Config Validation**: Validates user-provided settings against supported options, rejecting invalid values during deserialization.
+- **Built-in Defaults**: The system defines defaults directly in the code, eliminating the need for a separate default config file.
+- **Merging of Configurations**: Combines configuration sources hierarchically, applying defaults first, followed by file-based overrides, and finally CLI parameters for the highest precedence.
 
 ## Config File Structure
 **Format**: TOML
 
-- The configuration relies on default values defined in the source code (`config.rs`).
-- Users can override these defaults by providing a TOML configuration file.
-- A custom configuration file can be passed via the CLI or added by the user.
+- Users can override default settings by supplying a single configuration file or multiple `.toml` files in a directory.
 
 ### CLI Parameters
 Example: `--config /etc/azure-init/`
 
 ## Configuration Hierarchy for `azure-init`
 
-This document outlines the configuration system for `azure-init`, which allows flexibility by merging settings from multiple sources. Configuration can be set via a single file, a directory containing multiple files, or default values defined in the code.
+Configuration can be set via a single file, a directory containing multiple files, or default values defined in the code.
 
 ### Configuration Loading Order
 
@@ -35,9 +32,8 @@ This document outlines the configuration system for `azure-init`, which allows f
    - **Example:** `azure-init --config /path/to/custom-config.toml`
 
 #### 2. Directory Loading Logic
-   - If the `--config` parameter points to a directory, `azure-init` follows this hierarchy:
-     - First, it looks for a base file named `azure-init.toml` in the directory.
-     - Then, it merges any additional `.toml` files in a `.d` subdirectory within the specified directory, in lexicographical order.
+   - If the `--config` parameter points to a directory, `azure-init` loads a base `azure-init.toml` file and merges aditional `.toml` files from a `.d` subdirectory in lexicographical order.
+
      ```text
      /etc/azure-init/
      ├── azure-init.toml            # Base configuration
@@ -48,22 +44,9 @@ This document outlines the configuration system for `azure-init`, which allows f
      ```
 
 #### 3. Defaults in Code
-   - If neither a file nor a directory is provided, `azure-init` falls back to using the default values specified in `config.rs`.
+   - If no `--config` is specified, the system users built-in defaults.
 
-### Example 1: Single Configuration File
-**Command:**
-```sh
-azure-init --config /path/to/custom-config.toml
-```
-**Order of Precedence for Merging Configurations** (lowest to highest):
-1. Compile-time defaults from `config.rs`.
-2. Custom configuration file, such as `/path/to/azure-init.toml`.
-3. Additional configurations found in `/path/to/azure-init.toml.d`, applied in lexicographical order.
-4. CLI options, which override all other settings.
-
-Each level of configuration overwrites values from previous levels, with CLI options taking highest precedence.
-
-### Example 2: Directory with Multiple .toml Files
+### Example: Directory with Multiple .toml Files
 
 **Command:**
 ```sh
@@ -88,34 +71,15 @@ azure-init --config /path/to/custom-config-directory
 3. Applies any CLI overrides if present.
 4. Fills in missing values with defaults from `config.rs`.
 
-### Example 3: Default Path without --config
-**Assumption:** If no `--config` path is specified, `azure-init` will only use the default values set within `config.rs`.
-
-**Order of Loading:**
-
-1. Loads configuration directly from defaults specified in `config.rs`.
-
 ## Validation and Deserialization Process
 
-Azure Init uses strict validation on configuration fields to ensure they match expected types and values. For fields defined as enums or specific types, the system checks that values provided by the user align with supported options. If a configuration includes an unsupported value or incorrect type, deserialization will fail.
-
-### Configuration Struct and Field Definitions
-
-- The `Config` struct in Azure Init includes fields that are defined with specific types or enums, like `bool` for `query_sshd_config`.
-- Each field is expected to be of a specific type when deserialized by Serde (the library used for parsing configuration files).
+Azure Init uses strict validation on configuration fields to ensure they match expected types and values. If a configuration includes an unsupported value or incorrect type, deserialization will fail.
 
 ### Error Handling During Deserialization
-- When `Config::load()` attempts to load a configuration file (either from a specified file, directory, or default
-path), it reads the file content and uses `toml::from_str` to convert it into a `Config` struct.
-
-- If a field value in the configuration file doesn’t match its expected type (e.g., if `query_sshd_config` is set to `"not_a_boolean"` instead of `true` or `false`), Serde encounters a deserialization error because it can’t map the provided value to the expected type.
+- When a configuration file is loaded, its contents are parsed and converted from `.toml` into structured data. If a field in the file contains an invalid value (e.g., `query_sshd_config` is set to `"not_a_boolean"` instead of `true``or `false`), the parsing process will fail with a deserialization error due to the mismatched type.
 
 ### Propagation of Deserialization Errors 
- - When deserialization fails, an error is generated and logged by `Config::load_from_file`, indicating that the configuration file could not be parsed correctly. This error is wrapped in an `Error::Io` type and returned by the function.
-- This `Error::Io` is propagated up the call stack to the `Config::load()` function, which in turn returns the error to the caller.
-- In the main application, `Config::load()` is called with `.expect("Failed to load configuration")`. As a result, any failure in loading the configuration causes the application to terminate immediately with a clear error message. This prevents the provisioning process from proceeding with an invalid configuration and provides immediate feedback to the user about the issue.
-
-
+ - When deserialization fails, an error is logged to indicate that the configuration file could not be parsed correctly. This error propagates through the application, causing the provisioning process to fail. The application will not proceed with provisioning if the configuration is invalid.
 
 ### Example of an Unsupported Value
 
@@ -127,85 +91,11 @@ Here’s an example configuration with an invalid value for `query_sshd_config`.
 query_sshd_config = "not_a_boolean" # This will cause a validation failure
 ```
 
-
-## Configuration Fields
-
-#### Ssh Struct
-- **authorized_keys_path**: `PathBuf`
-  - **Default**: `.ssh/authorized_keys`
-  - **Description**: Specifies the file path for storing SSH authorized keys when configuring SSH access.
-- **query_sshd_config**: `bool`
-  - **Default**: `true`
-  - **Description**: Controls whether `azure-init` queries the SSH configuration dynamically via `sshd -G`. If set to `true` and `sshd -G` succeeds, 
-                     the authorized keys path is set according to the SSH configuration. If `sshd -G` fails, `azure-init` reports the error but 
-                     continues with `authorized_keys_path`.
-
-
-#### HostnameProvisioners Struct
-- **backends**: `HostnameProvisioner`
-  - **Default**: `Hostnamectl`
-  - **Description**: Defines the provisioner used to set the hostname.
-  - **Variants**:
-    - **FakeHostnamectl**: Testing provisioner that simulates `hostnamectl`.
-
-#### UserProvisioners Struct
-- **backends**: `UserProvisioner`
-  - **Default**: `Useradd`
-  - **Description**: Specifies the tool used to create a user on the system.
-  - **Variants**:
-    - **FakeUseradd**: Testing provisioner that simulates `useradd`.
-
-#### PasswordProvisioners Struct
-- **backends**: `PasswordProvisioner`
-  - **Default**: `Passwd`
-  - **Description**: Specifies the tool used to set user passwords.
-  - **Variants**:
-    - **FakePasswd**: Testing provisioner that simulates `passwd`.
-    
-#### Imds Struct:
-- **connection_timeout_secs**: `f64`
-  - **Default**: `2.0` seconds
-  - **Description**: Specifies the timeout for IMDS connection attempts.
-- **read_timeout_secs**: `u32`
-  - **Default**: `60` seconds
-  - **Description**: Specifies the timeout for reading from IMDS.
-- **total_retry_timeout_secs**: `u32`
-  - **Default**: `600` seconds
-  - **Description**: Specifies the total retry timeout period for IMDS requests.
-
-#### ProvisioningMedia Struct:
-- **enable**: `bool`
-  - **Default**: `true`
-  - **Description**: Controls whether provisioning media (e.g., cloud-init metadata) is enabled.
-
-#### AzureProxyAgent Struct:
-- **enable**: `bool`
-  - **Default**: `true`
-  - **Description**: Controls whether the Azure Proxy Agent (used for communication with Azure services) is enabled.
-
-#### Wireserver Struct:
-- **connection_timeout_secs**: `f64`
-  - **Default**: `2.0` seconds
-  - **Description**: Specifies the timeout for connecting to the WireServer.
-- **read_timeout_secs**: `u32`
-  - **Default**: `60` seconds
-  - **Description**: Specifies the timeout for reading data from the WireServer.
-- **total_retry_timeout_secs**: `u32`
-  - **Default**: `1200` seconds
-  - **Description**: Specifies the total retry timeout period for WireServer requests.
-
-#### Telemetry Struct:
-- **kvp_diagnostics**: `bool`
-  - **Default**: `true`
-  - **Description**: Controls whether key-value pair diagnostics are enabled for telemetry.
-
-## Sample Configuration File
+## Sample of Valid Configuration File
 
 ```toml
 [ssh]
 authorized_keys_path = ".ssh/authorized_keys"
-configure_password_authentication = false
-authorized_keys_path_query_mode = "disabled"
 query_sshd_config = true
 
 [hostname_provisioners]
@@ -239,75 +129,28 @@ kvp_diagnostics = true
 
 ## Behavior of `azure-init` on Invalid Configuration
 
-`azure-init` has built-in handling for various types of configuration issues. When a misconfiguration is detected, it logs errors and, depending on the severity, either continues with default values or halts the affected functionality. Here’s a breakdown of its behavior for different types of issues:
+`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue. Here’s how it responds to different types of problems:
 
-## Behavior of `azure-init` on Invalid Configuration or Other Configuration Errors
+### 1. Invalid Configuration
 
-`azure-init` has built-in handling for various types of configuration issues. When a misconfiguration is detected, it logs errors and, depending on the severity, either continues with default values or halts the affected functionality. Below is a breakdown of its behavior for different types of issues:
+- If a configuration file contains syntax errors (e.g., malformed TOML) or unsupported values for fields (e.g., invalid enums),  `azure-init` logs the error and terminates. The provisioning process does not proceed when configuration parsing fails.
 
-### 1. Invalid Configuration Syntax
+### 2. Missing or Invalid SSH Configuration
 
-- **Description**: If a configuration file contains syntax errors (e.g., malformed TOML), `azure-init` logs the parsing error and fails.
-- **Behavior**: This prevents `azure-init` from proceeding with potentially corrupted settings.
+- `query_sshd_config = true`:
+  - `azure-init` attempts to dynamically query the authorized keys path using the `sshd -G` command.
+  - If `sshd -G` succeeds: The dynamically queried path is used for the authorized keys.
+  - If `sshd -G fail`s: The failure is logged, but azure-init continues using the fallback path specified in authorized_keys_path (default: `.ssh/authorized_keys`).
+- `query_sshd_config = false`:
+  - `azure-init` skips querying `sshd -G` entirely
+  - The value in `authorized_keys_path` is used directly, without any dynamic path detection.
 
-### 2. Unsupported Values for Enum Settings
+### 3. Handling of Provisioners in `azure-init`
 
-- **Description**: If a configuration option has a value that does not match the supported enum options, `azure-init` will be unable to deserialize these settings.
-- **Behavior**:
-  - Logs a descriptive error message, indicating the unsupported value and the expected options.
-  - Continues using defaults or halts only the affected component (depending on the criticality of the setting), while allowing other components to run normally.
-
-### 3. Missing or Invalid SSH Configuration
-
-- **Using `sshd -G`**:
-  - If `sshd -G` succeeds, the authorized keys path is determined dynamically based on the output of the `sshd -G` command.
-  - If `sshd -G` fails or cannot retrieve the `authorizedkeysfile`:
-    - If `query_sshd_config` is enabled (default): `azure-init` will report the failure but will continue, using the path specified in `authorized_keys_path`, typically `.ssh/authorized_keys`.
-    - If `query_sshd_config` is disabled, `azure-init` does not query `sshd -G` and instead directly uses `authorized_keys_path` as provided.
-
-- **When `sshd -G` is Disabled**:
-  - If `query_sshd_config` is set to `false`, `azure-init` will use the specified `authorized_keys_path` as-is without attempting to retrieve the path from `sshd -G`.
-  - If `authorized_keys_path` is not configured and `sshd -G` is disabled, `azure-init` logs an error and halts, as an explicit authorized keys path is required in this case.
-
-### 4. Handling of Provisioners in `azure-init`
-
-The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. If no provisioner is specified, `azure-init` defaults to the following settings:
-
-- **HostnameProvisioner**: Defaults to `Hostnamectl`.
-- **UserProvisioner**: Defaults to `Useradd`.
-- **PasswordProvisioner**: Defaults to `Passwd`.
-
-If `backends` are specified but do not contain a usable provisioner, `azure-init` will halt and log an error, indicating that no valid provisioner was found. Here’s the breakdown:
-
-1. **HostnameProvisioner**:
-   - **Default**: If unspecified, `HostnameProvisioner::Hostnamectl` is used.
-   - **Failure**: If no backend can set the hostname, `azure-init` logs an error (`Error::NoHostnameProvisioner`) and halts.
-
-2. **UserProvisioner**:
-   - **Default**: If unspecified, `UserProvisioner::Useradd` is used.
-   - **Failure**: If no backend can create the user, `azure-init` logs an error (`Error::NoUserProvisioner`) and halts.
-
-3. **PasswordProvisioner**:
-   - **Default**: If unspecified, `PasswordProvisioner::Passwd` is used.
-   - **Failure**: If no backend can set the password, `azure-init` logs an error (`Error::NoPasswordProvisioner`) and halts.
-
-### 5. Missing Non-Critical Configuration Settings
-
-- **Description**: For optional settings (e.g., `telemetry`, `wireserver`), if configuration values are not provided, `azure-init` defaults to values in `Config::default()`.
-- **Behavior**: Allows `azure-init` to proceed while logging any defaults used for transparency.
-
-### 6. Logging and Tracing for Troubleshooting
-
-- **Description**: All configuration issues are logged at appropriate levels (`error`, `warn`, or `info`) to aid in debugging.
-- **Behavior**:
-  - Enables tracing output for debugging and identifying root causes in a step-by-step manner.
-  - Logs a summary at the end of initialization, detailing any settings that defaulted due to errors.
+The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error  and halts provisioning. 
 
 ## Package Considerations
-When packaging `azure-init`, it is essential to configure the default settings to ensure smooth operation and compatibility across distributions. Below are key recommendations for maintaining configuration consistency:
 
-- **Service File Configuration**: The service file for `azure-init` should specify `--config` pointing to `/etc/azure-init` by default. This setup ensures that `azure-init` references the correct configuration directory for each instance.
+To ensure smooth operation and compatibility across distrubtions, `azure-init`, should be packaged with a consistent configuration setup.
 
-- **Distribution Responsibility**: Distributions packaging `azure-init` are expected to maintain the primary configuration file at `/etc/azure-init/azure-init.toml`. This file serves as the base configuration, with any necessary overrides applied from the `.d` subdirectory (if configured). 
-
-This setup enables system administrators and package maintainers to manage system-wide configurations centrally while allowing flexibility through additional configuration layers if required.
+- Distributions packaging `azure-init` are expected to maintain the base configuration file at `/etc/azure-init/azure-init.toml`, with necessary overrides applied from a `.d` subdirectory.
