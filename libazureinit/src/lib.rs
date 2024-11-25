@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 pub mod config;
+pub use config::HostnameProvisioner;
 pub mod error;
 pub mod goalstate;
 pub(crate) mod http;
@@ -9,7 +10,6 @@ pub mod media;
 
 mod provision;
 pub use provision::{
-    hostname::Provisioner as HostnameProvisioner,
     password::Provisioner as PasswordProvisioner,
     user::{Provisioner as UserProvisioner, User},
     Provision,

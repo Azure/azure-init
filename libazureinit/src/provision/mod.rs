@@ -52,12 +52,12 @@ impl Provision {
             .iter()
             .find_map(|backend| match backend {
                 HostnameProvisioner::Hostnamectl => {
-                    hostname::Provisioner::Hostnamectl.set(&self.hostname).ok()
+                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
                 }
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or_else(|| Error::NoHostnameProvisioner)?;
+            .ok_or(Error::NoHostnameProvisioner)?;
 
         self.config
             .user_provisioners
@@ -70,7 +70,7 @@ impl Provision {
                 #[cfg(test)]
                 UserProvisioner::FakeUseradd => Some(()),
             })
-            .ok_or_else(|| Error::NoUserProvisioner)?;
+            .ok_or(Error::NoUserProvisioner)?;
 
         self.config
             .password_provisioners
@@ -83,7 +83,7 @@ impl Provision {
                 #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
             })
-            .ok_or_else(|| Error::NoPasswordProvisioner)?;
+            .ok_or(Error::NoPasswordProvisioner)?;
 
         if !self.user.ssh_keys.is_empty() {
             let authorized_keys_path =

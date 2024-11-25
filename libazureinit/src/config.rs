@@ -16,6 +16,7 @@ use tracing;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum HostnameProvisioner {
     #[default]
     Hostnamectl,
