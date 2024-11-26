@@ -29,24 +29,14 @@ Azure-init includes two types of tests: unit tests and end-to-end (e2e) tests.
 
 ### Running Unit Tests
 
-To run unit tests, use the following commands based on the scope of testing:
-
-1. **Repository-Wide Unit Tests:**
 From the root directory of the repository, run:
 
 ```
-cargo test
+cargo test --verbose --all-features --workspace
 ```
 
-This will execute the unit tests defined in the top-level binaries and modules but will **not** include tests from submodules like libazureinit.
-
-2. **Unit Tests in** `libazureinit`:
-
-To run the full set of unit tests, including those within the `libazureinit` library, navigate to the `libazureinit` directory and run:
-```
-cd libazureinit
-cargo test
-```
+This will run the unit tests for every library in the repository, not just for azure-init. 
+Doing so ensures your testing will match what is run in the CI pipeline. 
 
 ### Running End-to-End (e2e) Tests
 End-to-end tests validate the integration of the entire system. These tests require additional setup, such as setting a subscription ID. To run e2e tests, use the following command from the repository root:
