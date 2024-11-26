@@ -1,6 +1,35 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! This module provides functionality for handling media devices, including mounting,
+//! unmounting, and reading [`OVF`] (Open Virtualization Format) environment data. It defines
+//! the [`Media`] struct with state management for [`Mounted`] and [`Unmounted`] states, as well
+//! as utility functions for parsing [`OVF`] environment data and retrieving mounted devices
+//! with CDROM-type filesystems.
+//!
+//! # Overview
+//!
+//! The `media` module is designed to manage media devices in a cloud environment. It
+//! includes functionality to mount and unmount media devices, read [`OVF`] environment data,
+//! and parse the data into structured formats. This is particularly useful for provisioning
+//! virtual machines with specific configurations.
+//!
+//! # Key Components
+//!
+//! - [`Media`]: A struct representing a media device, with state management for [`Mounted`] and [`Unmounted`] states.
+//! - [`Mounted`] and [`Unmounted`]: Zero-sized structs used to indicate the state of a [`Media`] instance.
+//! - [`parse_ovf_env`]: A function to parse [`OVF`] environment data from a string.
+//! - [`mount_parse_ovf_env`]: A function to mount a media device, read its [`OVF`] environment data, and return the parsed data.
+//! - [`get_mount_device`]: A function to retrieve a list of mounted devices with CDROM-type filesystems.
+//!
+//! [`Media`]: struct.Media.html
+//! [`Mounted`]: struct.Mounted.html
+//! [`Unmounted`]: struct.Unmounted.html
+//! [`parse_ovf_env`]: fn.parse_ovf_env.html
+//! [`mount_parse_ovf_env`]: fn.mount_parse_ovf_env.html
+//! [`get_mount_device`]: fn.get_mount_device.html
+//! [`OVF`]: https://www.dmtf.org/standards/ovf
+
 use std::fs;
 use std::fs::create_dir_all;
 use std::fs::File;
@@ -19,6 +48,11 @@ use tracing::instrument;
 use crate::error::Error;
 use fstab::FsTab;
 
+/// Represents a media device.
+///
+/// # Type Parameters
+///
+/// * `State` - The state of the media, either `Mounted` or `Unmounted`.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
     #[serde(rename = "ProvisioningSection")]
@@ -27,6 +61,7 @@ pub struct Environment {
     pub platform_settings_section: PlatformSettingsSection,
 }
 
+/// Provisioning section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct ProvisioningSection {
     #[serde(rename = "Version")]
@@ -35,6 +70,7 @@ pub struct ProvisioningSection {
     pub linux_prov_conf_set: LinuxProvisioningConfigurationSet,
 }
 
+/// Linux provisioning configuration set.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct LinuxProvisioningConfigurationSet {
     #[serde(rename = "UserName")]
@@ -45,6 +81,7 @@ pub struct LinuxProvisioningConfigurationSet {
     pub hostname: String,
 }
 
+/// Platform settings section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettingsSection {
     #[serde(rename = "Version")]
@@ -53,6 +90,7 @@ pub struct PlatformSettingsSection {
     pub platform_settings: PlatformSettings,
 }
 
+/// Platform settings details.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettings {
     #[serde(default = "default_preprov", rename = "PreprovisionedVm")]
@@ -61,25 +99,52 @@ pub struct PlatformSettings {
     pub preprovisioned_vm_type: String,
 }
 
+/// Returns an empty string as the default password.
+///
+/// # Returns
+///
+/// A `String` containing an empty password.
 fn default_password() -> String {
     "".to_owned()
 }
 
+/// Returns `false` as the default value for preprovisioned VM.
+///
+/// # Returns
+///
+/// A `bool` indicating that the VM is not preprovisioned.
 fn default_preprov() -> bool {
     false
 }
 
+/// Returns "None" as the default type for preprovisioned VM.
+///
+/// # Returns
+///
+/// A `String` containing "None" as the default preprovisioned VM type.
 fn default_preprov_type() -> String {
     "None".to_owned()
 }
 
+/// Path to the default mount device.
 pub const PATH_MOUNT_DEVICE: &str = "/dev/sr0";
+/// Path to the default mount point.
 pub const PATH_MOUNT_POINT: &str = "/run/azure-init/media/";
 
+/// Valid filesystems for CDROM devices.
 const CDROM_VALID_FS: &[&str] = &["iso9660", "udf"];
+/// Path to the mount table file.
 const MTAB_PATH: &str = "/etc/mtab";
 
-// Get a mounted device with any filesystem for CDROM
+/// Retrieves a list of mounted devices with CDROM-type filesystems.
+///
+/// # Arguments
+///
+/// * `path` - Optional path to the mount table file.
+///
+/// # Returns
+///
+/// A `Result` containing a vector of device paths as strings, or an `Error`.
 #[instrument]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
@@ -100,12 +165,19 @@ pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     Ok(cdrom_devices)
 }
 
-// Some zero-sized structs that just provide states for our state machine
+/// Represents the state of a mounted media.
 #[derive(Debug)]
 pub struct Mounted;
+
+/// Represents the state of an unmounted media.
 #[derive(Debug)]
 pub struct Unmounted;
 
+/// Represents a media device.
+///
+/// # Type Parameters
+///
+/// * `State` - The state of the media, either `Mounted` or `Unmounted`.
 #[derive(Debug)]
 pub struct Media<State = Unmounted> {
     device_path: PathBuf,
@@ -114,6 +186,16 @@ pub struct Media<State = Unmounted> {
 }
 
 impl Media<Unmounted> {
+    /// Creates a new `Media` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `device_path` - The path to the media device.
+    /// * `mount_path` - The path where the media will be mounted.
+    ///
+    /// # Returns
+    ///
+    /// A new `Media` instance in the `Unmounted` state.
     pub fn new(device_path: PathBuf, mount_path: PathBuf) -> Media<Unmounted> {
         Media {
             device_path,
@@ -122,6 +204,11 @@ impl Media<Unmounted> {
         }
     }
 
+    /// Mounts the media device.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the `Media` instance in the `Mounted` state, or an `Error`.
     #[instrument]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
@@ -155,6 +242,11 @@ impl Media<Unmounted> {
 }
 
 impl Media<Mounted> {
+    /// Unmounts the media device.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure.
     #[instrument]
     pub fn unmount(self) -> Result<(), Error> {
         let umount_status =
@@ -178,6 +270,11 @@ impl Media<Mounted> {
         }
     }
 
+    /// Reads the OVF environment data to a string.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the OVF environment data as a string, or an `Error`.
     #[instrument]
     pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
         let mut file_path = self.mount_path.clone();
@@ -191,6 +288,50 @@ impl Media<Mounted> {
     }
 }
 
+/// Parses the OVF environment data.
+///
+/// # Arguments
+///
+/// * `ovf_body` - A string slice containing the OVF environment data.
+///
+/// # Returns
+///
+/// A `Result` containing the parsed `Environment` struct, or an `Error`.
+///
+/// # Example
+///
+/// ```
+/// use libazureinit::media::parse_ovf_env;
+///
+/// // Example dummy OVF environment data
+/// let ovf_body = r#"
+/// <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1">
+///     <ProvisioningSection>
+///         <Version>1.0</Version>
+///         <LinuxProvisioningConfigurationSet>
+///             <UserName>myusername</UserName>
+///             <UserPassword></UserPassword>
+///             <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
+///             <HostName>myhostname</HostName>
+///         </LinuxProvisioningConfigurationSet>
+///     </ProvisioningSection>
+///     <PlatformSettingsSection>
+///         <Version>1.0</Version>
+///         <PlatformSettings>
+///             <PreprovisionedVm>false</PreprovisionedVm>
+///             <PreprovisionedVmType>None</PreprovisionedVmType>
+///         </PlatformSettings>
+///     </PlatformSettingsSection>
+/// </Environment>
+/// "#;
+///
+/// let environment = parse_ovf_env(ovf_body).unwrap();
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.username, "myusername");
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.password, "");
+/// assert_eq!(environment.provisioning_section.linux_prov_conf_set.hostname, "myhostname");
+/// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm, false);
+/// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm_type, "None");
+/// ```
 #[instrument(skip_all)]
 pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
@@ -207,7 +348,15 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     }
 }
 
-// Mount the given device, get OVF environment data, return it.
+/// Mounts the given device, gets OVF environment data, and returns it.
+///
+/// # Arguments
+///
+/// * `dev` - A string containing the device path.
+///
+/// # Returns
+///
+/// A `Result` containing the parsed `Environment` struct, or an `Error`.
 #[instrument(skip_all)]
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
