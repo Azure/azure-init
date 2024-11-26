@@ -31,7 +31,6 @@ lazy_static! {
     );
 }
 
-
 /// Provisions SSH keys for the specified user.
 ///
 /// Creates the `.ssh` directory in the user's home directory, sets the appropriate
@@ -86,7 +85,6 @@ pub(crate) fn provision_ssh(
 
     Ok(())
 }
-
 
 /// Retrieves the path to the `authorized_keys` file from the SSH daemon configuration.
 ///
@@ -154,7 +152,6 @@ fn run_sshd_command(
     }
 }
 
-
 /// Extracts the `AuthorizedKeysFile` path from the SSH daemon configuration output.
 ///
 /// Parses the output of the SSH daemon configuration command and extracts the
@@ -186,8 +183,6 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     }
     None
 }
-
-
 
 /// Updates the SSH daemon configuration to ensure `PasswordAuthentication` is set to `yes`.
 ///
