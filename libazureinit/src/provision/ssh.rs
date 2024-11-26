@@ -1,5 +1,5 @@
 // Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.A
+// Licensed under the MIT License.
 
 //! This module provides functionality for provisioning SSH keys for a user.
 //!
