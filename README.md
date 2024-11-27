@@ -39,17 +39,7 @@ This will run the unit tests for every library in the repository, not just for a
 Doing so ensures your testing will match what is run in the CI pipeline. 
 
 ### Running End-to-End (e2e) Tests
-End-to-end tests validate the integration of the entire system. These tests require additional setup, such as setting a subscription ID. To run e2e tests, use the following command from the repository root:
-
-```
-make e2e-test
-```
-
-This command will:
-
-1. Create a test user and associated SSH directory.
-2. Place mock SSH keys for testing.
-3. Run the tests and then clean up any test artifacts generated during the process.
+Please refer to [E2E_TESTING.md](docs/E2E_TESTING.md) for end-to-end testing.
 
 ## Contributing
 
