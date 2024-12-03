@@ -86,13 +86,12 @@ impl Provision {
             .ok_or(Error::NoPasswordProvisioner)?;
 
         if !self.user.ssh_keys.is_empty() {
-            let authorized_keys_path =
-                self.config.ssh.authorized_keys_path.clone();
+            let authorized_keys_path = self.config.ssh.authorized_keys_path;
             let query_sshd_config = self.config.ssh.query_sshd_config;
 
             let user = nix::unistd::User::from_name(&self.user.name)?.ok_or(
                 Error::UserMissing {
-                    user: self.user.name.clone(),
+                    user: self.user.name,
                 },
             )?;
             ssh::provision_ssh(

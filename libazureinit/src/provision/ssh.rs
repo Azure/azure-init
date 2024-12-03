@@ -347,8 +347,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
 
         let ssh_path = user.dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
@@ -387,8 +386,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
 
         let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
         assert_eq!(

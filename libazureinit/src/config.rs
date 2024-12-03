@@ -8,6 +8,10 @@
 //! `Config` struct options to define settings for SSH, hostname provisioners, user
 //! provisioners, IMDS, provisioning media, and telemetry.
 use crate::error::Error;
+use figment::{
+    providers::{Format, Serialized, Toml},
+    Figment,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{fmt, fs};
@@ -251,193 +255,54 @@ impl fmt::Display for Config {
     }
 }
 
-/// Loads the configuration, optionally taking a CLI override path.
-/// If a CLI override path is specified, this method loads the configuration from the specified
-/// file or directory. If the path is a directory, it loads any `.toml` files in the
-/// directory in alphabetical order, allowing more granular configuration through a `.d`
-/// directory structure.
+/// Loads the configuration for `azure-init`.
 ///
-/// # Arguments
+/// This method uses the `Figment` library to load configuration from the following sources,
+/// in order of priority:
 ///
-/// * `path` - Optional path to a configuration file or directory.
+/// 1. **Defaults**: Base configuration from `Config::default()`.
+/// 2. **Main File**: `azure-init.toml`, if present.
+/// 3. **Directory Files**: `.toml` files in `azure-init.d`, sorted lexicographically.
+/// 4. **CLI Overrides**: A file or directory specified via the CLI.
+///
+/// Later sources override earlier ones in case of conflicts.
 impl Config {
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
-        let mut config = Config::default();
+        let mut figment = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::file("azure-init.toml"));
 
-        if let Some(cli_config) = path {
-            if cli_config.is_dir() {
-                tracing::info!(
-                    "Loading configuration from directory: {:?}",
-                    cli_config
-                );
-                config = Self::load_from_directory(cli_config)?;
-            } else {
-                tracing::info!(
-                    "Loading configuration from file: {:?}",
-                    cli_config
-                );
-                config = Self::load_from_file(cli_config)?;
-            }
-        } else {
-            tracing::info!("No path provided, using default configuration.");
-        }
+        if let Some(path) = path {
+            if path.is_dir() {
+                let mut entries: Vec<_> = fs::read_dir(&path)
+                    .map_err(|e| {
+                        tracing::error!("Failed to read directory: {:?}", e);
+                        Error::Io(e)
+                    })?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension().map_or(false, |ext| ext == "toml")
+                    })
+                    .collect();
 
-        Ok(config)
-    }
+                entries.sort();
 
-    /// Loads the configuration from a single file.
-    ///
-    /// # Arguments
-    ///
-    /// * `file_path` - Path to the configuration file.
-    fn load_from_file(file_path: PathBuf) -> Result<Config, Error> {
-        tracing::info!("Reading configuration file: {:?}", file_path);
-
-        let content = fs::read_to_string(&file_path).map_err(|e| {
-            tracing::error!(
-                "Failed to read configuration file: {:?}, error: {:?}",
-                file_path,
-                e
-            );
-            e
-        })?;
-
-        toml::from_str::<Config>(&content).map_err(|e| {
-            tracing::error!(
-                "Failed to parse configuration file: {:?}, error: {:?}",
-                file_path,
-                e
-            );
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to parse TOML config file: {:?}", e),
-            ))
-        })
-    }
-
-    /// Loads the configuration from a directory.
-    ///
-    /// If the directory contains a `azure-init.toml` file, it loads that file first. It then
-    /// loads all `.toml` files from a subdirectory named `azure-init.d`, merging them with the
-    /// base configuration in alphabetical order.
-    ///
-    /// # Arguments
-    ///
-    /// * `dir` - Path to the configuration directory
-    fn load_from_directory(dir: PathBuf) -> Result<Config, Error> {
-        let mut base_toml = toml::Value::try_from(Config::default())
-            .unwrap_or_else(|_| toml::Value::Table(Default::default()));
-
-        let base_config_path = dir.join("azure-init.toml");
-        if base_config_path.exists() {
-            tracing::info!(
-                "Loading base configuration from {:?}",
-                base_config_path
-            );
-
-            let additional_toml = Self::load_toml_file(base_config_path)?;
-            base_toml = Self::merge_toml(base_toml, additional_toml);
-            tracing::debug!(
-                "Base TOML after merging azure-init.toml: {:?}",
-                base_toml
-            );
-        }
-
-        let d_dir = dir.join("azure-init.d");
-        if d_dir.is_dir() {
-            let mut toml_files: Vec<_> = fs::read_dir(d_dir)?
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let path = entry.path();
-                    if path.extension()?.to_str()? == "toml" {
-                        Some(path)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            toml_files.sort();
-
-            for file_path in toml_files {
-                tracing::info!("Merging configuration from {:?}", file_path);
-                let additional_toml = Self::load_toml_file(file_path)?;
-                base_toml = Self::merge_toml(base_toml, additional_toml); //
-            }
-        }
-
-        Config::from_toml(base_toml)
-    }
-
-    /// Converts a TOML `Value` into a `Config` object.
-    fn from_toml(toml: toml::Value) -> Result<Config, Error> {
-        toml::from_str(&toml.to_string()).map_err(|e| {
-            tracing::error!("Failed to convert TOML to Config: {:?}", e);
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Failed to convert TOML to Config.",
-            ))
-        })
-    }
-
-    /// Loads a TOML file and returns it as a TOML `Value`.
-    fn load_toml_file(file_path: PathBuf) -> Result<toml::Value, Error> {
-        let content = fs::read_to_string(file_path).map_err(|e| {
-            tracing::error!("Failed to read file: {:?}", e);
-            Error::Io(e)
-        })?;
-
-        toml::from_str(&content).map_err(|e| {
-            tracing::error!("Failed to parse TOML: {:?}", e);
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to parse TOML: {:?}", e),
-            ))
-        })
-    }
-
-    /// Merges two TOML `Value` objects recursively.
-    ///
-    /// This method combines two TOML tables, with values from `additional` taking precedence
-    /// over values from `base`. Nested tables are merged recursively.
-    ///
-    /// # Arguments
-    ///
-    /// * `base` - The base TOML table to merge into
-    /// * `additional` - The additional TOML table whose values take precedence
-    fn merge_toml(
-        mut base: toml::Value,
-        additional: toml::Value,
-    ) -> toml::Value {
-        if let (Some(base_table), Some(additional_table)) =
-            (base.as_table_mut(), additional.as_table())
-        {
-            for (key, additional_value) in additional_table {
-                tracing::debug!("Merging key: {}", key);
-
-                match base_table.get_mut(key.as_str()) {
-                    Some(base_value)
-                        if base_value.is_table()
-                            && additional_value.is_table() =>
-                    {
-                        tracing::debug!(
-                            "Recursively merging nested table for key: {}",
-                            key
-                        );
-                        *base_value = Self::merge_toml(
-                            base_value.clone(),
-                            additional_value.clone(),
-                        );
-                    }
-                    _ => {
-                        tracing::debug!("Overwriting key: {}", key);
-                        base_table
-                            .insert(key.clone(), additional_value.clone());
-                    }
+                for path in entries {
+                    figment = figment.merge(Toml::file(path));
                 }
+            } else {
+                figment = figment.merge(Toml::file(path));
             }
         }
-        base
+
+        figment.extract::<Config>().map_err(|e| {
+            tracing::error!("Failed to extract configuration: {:?}", e);
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Configuration error: {:?}", e),
+            ))
+        })
     }
 }
 
@@ -617,37 +482,10 @@ mod tests {
         tracing::info!("Creating an empty configuration file...");
         fs::File::create(&empty_file_path)?;
 
-        tracing::info!("Loading default configuration as base...");
-        let base_toml =
-            toml::Value::try_from(Config::default()).map_err(|e| {
-                tracing::error!(
-                    "Failed to convert default Config to TOML: {:?}",
-                    e
-                );
-                e
-            })?;
+        tracing::info!("Loading configuration with empty file...");
+        let config = Config::load(Some(empty_file_path))?;
 
-        tracing::info!("Loading and merging configuration from empty file...");
-        let empty_toml =
-            Config::load_toml_file(empty_file_path).map_err(|e| {
-                tracing::error!("Failed to load empty TOML file: {:?}", e);
-                e
-            })?;
-        let merged_toml = Config::merge_toml(base_toml, empty_toml);
-
-        tracing::info!("Converting merged TOML back to Config...");
-        let config = Config::from_toml(merged_toml).map_err(|e| {
-            tracing::error!(
-                "Failed to convert merged TOML back to Config: {:?}",
-                e
-            );
-            e
-        })?;
-
-        tracing::info!(
-            "Verifying merged configuration values match defaults..."
-        );
-
+        tracing::info!("Verifying configuration matches defaults...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
             ".ssh/authorized_keys"
@@ -694,16 +532,6 @@ mod tests {
         let dir = tempdir()?;
         let override_file_path = dir.path().join("override_config.toml");
 
-        tracing::info!("Loading default configuration as the base...");
-        let base_toml =
-            toml::Value::try_from(Config::default()).map_err(|e| {
-                tracing::error!(
-                    "Failed to convert default Config to TOML: {:?}",
-                    e
-                );
-                e
-            })?;
-
         tracing::info!(
             "Writing an override configuration file with custom values..."
         );
@@ -729,26 +557,12 @@ mod tests {
         "#
         )?;
 
-        tracing::info!(
-            "Loading override configuration from file and merging it..."
-        );
-
         tracing::info!("Loading override configuration from file...");
-        let override_toml = Config::load_toml_file(override_file_path)
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to load override configuration file: {:?}",
-                    e
-                );
+        let config = Config::load(Some(override_file_path)).map_err(|e| {
+            tracing::error!(
+                "Failed to load override configuration file: {:?}",
                 e
-            })?;
-
-        tracing::info!("Merging base configuration with override...");
-        let merged_toml = Config::merge_toml(base_toml, override_toml);
-
-        tracing::info!("Converting merged TOML back to Config...");
-        let config = Config::from_toml(merged_toml).map_err(|e| {
-            tracing::error!("Failed to convert merged TOML to Config: {:?}", e);
+            );
             e
         })?;
 
@@ -948,53 +762,55 @@ mod tests {
     fn test_merge_toml_basic_and_progressive() -> Result<(), Error> {
         tracing::info!("Starting test_merge_toml_basic_and_progressive...");
 
-        let base_toml: toml::Value = toml::from_str(
+        let dir = tempdir()?; // Temporary directory for test
+        let base_file_path = dir.path().join("base_config.toml");
+        let override_file_path_1 = dir.path().join("override_config_1.toml");
+        let override_file_path_2 = dir.path().join("override_config_2.toml");
+
+        tracing::info!("Writing base configuration...");
+        let mut base_file = fs::File::create(&base_file_path)?;
+        writeln!(
+            base_file,
             r#"
         [ssh]
         query_sshd_config = true
         [telemetry]
         kvp_diagnostics = true
-        "#,
+        "#
         )?;
 
-        let additional_toml_01: toml::Value = toml::from_str(
+        tracing::info!("Writing first override configuration...");
+        let mut override_file_1 = fs::File::create(&override_file_path_1)?;
+        writeln!(
+            override_file_1,
             r#"
         [ssh]
         authorized_keys_path = "/custom/.ssh/authorized_keys"
-        "#,
+        "#
         )?;
 
-        let additional_toml_02: toml::Value = toml::from_str(
+        tracing::info!("Writing second override configuration...");
+        let mut override_file_2 = fs::File::create(&override_file_path_2)?;
+        writeln!(
+            override_file_2,
             r#"
         [ssh]
         query_sshd_config = false
         [telemetry]
         kvp_diagnostics = false
-        "#,
+        "#
         )?;
 
-        tracing::info!("Merging TOML progressively...");
-        let merged_toml_01 =
-            Config::merge_toml(base_toml.clone(), additional_toml_01);
-        let final_merged_toml =
-            Config::merge_toml(merged_toml_01, additional_toml_02);
+        tracing::info!("Loading and merging configurations...");
+        let config = Config::load(Some(dir.path().to_path_buf()))?;
 
-        tracing::info!("Validating merged TOML values...");
+        tracing::info!("Verifying merged configuration...");
         assert_eq!(
-            final_merged_toml["ssh"]["query_sshd_config"].as_bool(),
-            Some(false),
-            "ssh.query_sshd_config was not correctly merged"
+            config.ssh.authorized_keys_path.to_str().unwrap(),
+            "/custom/.ssh/authorized_keys",
         );
-        assert_eq!(
-            final_merged_toml["ssh"]["authorized_keys_path"].as_str(),
-            Some("/custom/.ssh/authorized_keys"),
-            "ssh.authorized_keys_path was not correctly merged"
-        );
-        assert_eq!(
-            final_merged_toml["telemetry"]["kvp_diagnostics"].as_bool(),
-            Some(false),
-            "telemetry.kvp_diagnostics was not correctly merged"
-        );
+        assert!(!config.ssh.query_sshd_config);
+        assert!(!config.telemetry.kvp_diagnostics);
 
         tracing::info!(
             "test_merge_toml_basic_and_progressive completed successfully."
