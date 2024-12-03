@@ -1,0 +1,10 @@
+set -e
+
+# Provided by mkosi
+cd $SRCDIR/azure-init
+
+cargo build --release --bin azure-init
+
+mkdir -p $DESTDIR/usr/local/bin
+
+cp ./target/release/azure-init $DESTDIR/usr/local/bin/azure-init

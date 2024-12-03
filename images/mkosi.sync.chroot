@@ -1,0 +1,9 @@
+# Ensure the Hyper-V modules are loaded at boot
+echo "hv_vmbus" >> /etc/modules-load.d/hyperv.conf
+echo "hv_storvsc" >> /etc/modules-load.d/hyperv.conf
+echo "hv_netvsc" >> /etc/modules-load.d/hyperv.conf
+echo "hv_utils" >> /etc/modules-load.d/hyperv.conf
+echo "hv_balloon" >> /etc/modules-load.d/hyperv.conf
+
+# Ensure the modules are included in the initramfs
+echo -e "hv_vmbus\nhv_storvsc\nhv_netvsc\nhv_utils\nhv_balloon" >> /etc/initramfs-tools/modules

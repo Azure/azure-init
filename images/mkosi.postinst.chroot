@@ -1,0 +1,43 @@
+#!/bin/bash
+set -e
+
+SUDO_GROUP="$(grep -oP "^%\K\w+" /etc/sudoers | paste -sd ',')"
+
+cat >/etc/systemd/system/azure-init.service <<EOF
+[Unit]
+Description=azure-init
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="AZURE_INIT_LOG=debug"
+Environment="AZURE_INIT_USER_GROUPS=$SUDO_GROUP"
+ExecStart=/usr/local/bin/azure-init
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/usr/lib/systemd/system-preset/1-azure-init.preset <<EOF
+enable azure-init.service
+EOF
+
+cat >/etc/netplan/eth0.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+   eth0:
+     dhcp4: true
+EOF
+
+systemctl daemon-reload
+systemctl enable azure-init.service
+
+# Ensure the Hyper-V modules are loaded at boot
+echo "hv_vmbus" >>/etc/modules-load.d/hyperv.conf
+echo "hv_storvsc" >>/etc/modules-load.d/hyperv.conf
+echo "hv_netvsc" >>/etc/modules-load.d/hyperv.conf
+echo "hv_utils" >>/etc/modules-load.d/hyperv.conf
+echo "hv_balloon" >>/etc/modules-load.d/hyperv.conf
