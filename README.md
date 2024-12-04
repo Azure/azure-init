@@ -25,9 +25,31 @@ To run the program, you must enter the command `cargo run --bin <binary_name>` a
 
 ## Testing
 
-There are two different sets of tests: unit tests and end-to-end (e2e tests). To run unit tests, use `cargo test`. 
-To run end-to-end testing, use `make e2e-test`, which will create a test user, ssh directory, place mock ssh keys, and 
-then clean up the test artifacts afterwards.
+Azure-init includes two types of tests: unit tests and end-to-end (e2e) tests.
+
+### Running Unit Tests
+
+From the root directory of the repository, run:
+
+```
+cargo test --verbose --all-features --workspace
+```
+
+This will run the unit tests for every library in the repository, not just for azure-init. 
+Doing so ensures your testing will match what is run in the CI pipeline. 
+
+### Running End-to-End (e2e) Tests
+End-to-end tests validate the integration of the entire system. These tests require additional setup, such as setting a subscription ID. To run e2e tests, use the following command from the repository root:
+
+```
+make e2e-test
+```
+
+This command will:
+
+1. Create a test user and associated SSH directory.
+2. Place mock SSH keys for testing.
+3. Run the tests and then clean up any test artifacts generated during the process.
 
 ## Contributing
 
