@@ -75,7 +75,7 @@ pub struct StringVisitor<'a> {
     string: &'a mut String,
 }
 
-impl<'a> Visit for StringVisitor<'a> {
+impl Visit for StringVisitor<'_> {
     /// Records the debug representation of the event's value and stores it in the provided string.
     ///
     /// # Arguments
