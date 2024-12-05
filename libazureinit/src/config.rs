@@ -30,6 +30,7 @@ pub enum HostnameProvisioner {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum UserProvisioner {
     #[default]
     Useradd,
@@ -39,6 +40,7 @@ pub enum UserProvisioner {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PasswordProvisioner {
     #[default]
     Passwd,

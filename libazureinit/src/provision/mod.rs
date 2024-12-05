@@ -65,7 +65,7 @@ impl Provision {
             .iter()
             .find_map(|backend| match backend {
                 UserProvisioner::Useradd => {
-                    user::Provisioner::Useradd.create(&self.user).ok()
+                    UserProvisioner::Useradd.create(&self.user).ok()
                 }
                 #[cfg(test)]
                 UserProvisioner::FakeUseradd => Some(()),
@@ -78,7 +78,7 @@ impl Provision {
             .iter()
             .find_map(|backend| match backend {
                 PasswordProvisioner::Passwd => {
-                    password::Provisioner::Passwd.set(&self.user).ok()
+                    PasswordProvisioner::Passwd.set(&self.user).ok()
                 }
                 #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
