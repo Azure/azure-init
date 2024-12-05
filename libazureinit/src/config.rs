@@ -270,31 +270,30 @@ impl fmt::Display for Config {
 /// Later sources override earlier ones in case of conflicts.
 impl Config {
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
-        let mut figment = Figment::new()
-            .merge(Serialized::defaults(Config::default()))
-            .merge(Toml::file("azure-init.toml"));
+        let mut figment =
+            Figment::new().merge(Serialized::defaults(Config::default()));
 
-        if let Some(path) = path {
-            if path.is_dir() {
-                let mut entries: Vec<_> = fs::read_dir(&path)
-                    .map_err(|e| {
-                        tracing::error!("Failed to read directory: {:?}", e);
-                        Error::Io(e)
-                    })?
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .filter(|path| {
-                        path.extension().map_or(false, |ext| ext == "toml")
-                    })
-                    .collect();
+        if PathBuf::from("azure-init.toml").exists() {
+            tracing::info!("Loading base configuration file: azure-init.toml");
+            figment = figment.merge(Toml::file("azure-init.toml"));
+        } else {
+            tracing::warn!("Base configuration file azure-init.toml not found, using defaults.");
+        }
 
-                entries.sort();
+        figment = Self::merge_toml_directory(
+            &figment,
+            PathBuf::from("azure-init.toml.d"),
+        )?;
 
-                for path in entries {
-                    figment = figment.merge(Toml::file(path));
-                }
+        if let Some(cli_path) = path {
+            if cli_path.is_dir() {
+                figment = Self::merge_toml_directory(&figment, cli_path)?;
             } else {
-                figment = figment.merge(Toml::file(path));
+                tracing::info!(
+                    "Merging configuration file from CLI: {:?}",
+                    cli_path
+                );
+                figment = figment.merge(Toml::file(cli_path));
             }
         }
 
@@ -305,6 +304,42 @@ impl Config {
                 format!("Configuration error: {:?}", e),
             ))
         })
+    }
+
+    /// Helper function to merge `.toml` files from a directory into the Figment configuration.
+    fn merge_toml_directory(
+        figment: &Figment,
+        dir_path: PathBuf,
+    ) -> Result<Figment, Error> {
+        if dir_path.is_dir() {
+            let mut entries: Vec<_> = fs::read_dir(&dir_path)
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to read directory {:?}: {:?}",
+                        dir_path,
+                        e
+                    );
+                    Error::Io(e)
+                })?
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension().map_or(false, |ext| ext == "toml")
+                })
+                .collect();
+
+            entries.sort();
+
+            let mut updated_figment = figment.clone();
+            for path_entry in entries {
+                tracing::info!("Merging configuration file: {:?}", path_entry);
+                updated_figment = updated_figment.merge(Toml::file(path_entry));
+            }
+            Ok(updated_figment)
+        } else {
+            tracing::info!("Directory {:?} not found, skipping.", dir_path);
+            Ok(figment.clone())
+        }
     }
 }
 

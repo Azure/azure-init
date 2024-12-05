@@ -26,20 +26,19 @@ Example: `--config /etc/azure-init/`
 
 ## Configuration Hierarchy for `azure-init`
 
-Configuration can be set via a single file, a directory containing multiple files, or default values defined in the code.
+Configuration can be set via a single file, a directory containing multiple files, or the default values defined in the code.
 
 ### Configuration Loading Order
 
-#### 1. CLI Override (`--config`)
+#### 1. Defaults in Code
 
-- The `--config` flag specifies the path to load the configuration from, which can be either a single file or a directory.
-  - **File:** If the path points to a file, only that file is loaded.
-    - **Directory:** If the path points to a directory, a series of `.toml` files in the specified directory will be loaded and merged based on specific rules.
-  - **Example:** `azure-init --config /path/to/custom-config.toml`
+The configuration process starts with the built-in defaults specified in `Config::default()`.
 
-#### 2. Directory Loading Logic
+#### 2. Base File and Directory Loading Logic
 
-- If the `--config` parameter points to a directory, `azure-init` loads a base `azure-init.toml` file and merges additional `.toml` files from a `.d` subdirectory in lexicographical order.
+- After applying default values, `azure-init` checks for a base `azure-init.toml` file. If it exists, it is loaded as the base configuration.
+- If an `azure-init.toml.d` directory exists, its `.toml` files are loaded and merged in lexicographical order.
+- If neither the `azure-init.toml` nor the directory exists, the configuration remains as defined by the built-in defaults.
 
      ```text
      /etc/azure-init/
@@ -50,9 +49,14 @@ Configuration can be set via a single file, a directory containing multiple file
          └── 99-overrides.toml      # Final overrides
      ```
 
-#### 3. Defaults in Code
+- Each `.toml` file is merged into the configuration in the sorted order. If two files define the same configuration field, the value from the file processed last will take precedence. For example, in the order above, the final value(s) would come from `99-overrides.toml`.
 
-- If no `--config` is specified, the system users built-in defaults.
+#### 3. CLI Override (`--config`)
+
+- The `--config` flag specifies a configuration path that can point to either a single file or a directory.
+  - **File:** If a file is specified, it is merged as the final layer, overriding all prior configurations.
+  - **Directory:** If a directory is specified, `.toml` files within it are loaded and merged in, following the same rules specified in the Directory Loading Logic section.
+  - **Example:** `azure-init --config /path/to/custom-config.toml`
 
 ### Example: Directory with Multiple .toml Files
 
@@ -75,13 +79,13 @@ azure-init --config /path/to/custom-config-directory
 
 **Order of Merging:**
 
-1. Loads `azure-init.toml` as the base configuration.
-2. Merges `.d` files in alphabetical order:
+1. Applies defaults from `Config::default()` as defined in `config.rs`.
+2. Loads `azure-init.toml` as the base configuration, if present.
+3. Merges `.toml` files found from `azure-init.toml.d` in lexicographical order. The last file in the sorted order takes precedence.
    - `01-network.toml`
    - `02-ssh.toml`
    - `99-overrides.toml`
-3. Applies any CLI overrides if present.
-4. Fills in missing values with defaults from `config.rs`.
+4. Applies any CLI overrides, either from a file or a directory.
 
 ## Validation and Deserialization Process
 
@@ -154,7 +158,7 @@ kvp_diagnostics = true
 - `query_sshd_config = true`:
   - `azure-init` attempts to dynamically query the authorized keys path using the `sshd -G` command.
   - If `sshd -G` succeeds: The dynamically queried path is used for the authorized keys.
-  - If `sshd -G fail`s: The failure is logged, but azure-init continues using the fallback path specified in authorized_keys_path (default: `.ssh/authorized_keys`).
+  - If `sshd -G` fails: The failure is logged, but azure-init continues using the fallback path specified in authorized_keys_path (default: `.ssh/authorized_keys`).
 - `query_sshd_config = false`:
   - `azure-init` skips querying `sshd -G` entirely
   - The value in `authorized_keys_path` is used directly, without any dynamic path detection.
