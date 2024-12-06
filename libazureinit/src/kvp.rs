@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
-const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1024;
+const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1022;
 const EVENT_PREFIX: &str = concat!("azure-init-", env!("CARGO_PKG_VERSION"));
 
 /// A wrapper around `std::time::Instant` that provides convenient methods
@@ -571,7 +571,8 @@ mod tests {
             std::fs::read(temp_path).expect("Failed to read temp file");
         println!("Contents of the file (in bytes):\n{:?}", contents);
 
-        let slice_size = 512 + 2048;
+        let slice_size =
+            HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE;
 
         let num_slices = (contents.len() + slice_size - 1) / slice_size;
         let expected_len = num_slices * slice_size;
@@ -592,8 +593,8 @@ mod tests {
             println!("Processing slice {}: start={}, end={}", i, start, end);
             println!("Slice length: {}", slice.len());
 
-            let key_section = &slice[..512];
-            let value_section = &slice[512..];
+            let key_section = &slice[..HV_KVP_EXCHANGE_MAX_KEY_SIZE];
+            let value_section = &slice[HV_KVP_EXCHANGE_MAX_KEY_SIZE..];
 
             match decode_kvp_item(slice) {
                 Ok((key, value)) => {
@@ -645,5 +646,42 @@ mod tests {
         } else {
             panic!("Failed to read the temp file after truncation attempt.");
         }
+    }
+
+    #[test]
+    fn test_encode_kvp_item_value_length() {
+        let key = "test_key";
+        let value = "A".repeat(HV_KVP_AZURE_MAX_VALUE_SIZE * 2 + 50);
+        let encoded_slices = encode_kvp_item(&key, &value);
+
+        assert!(
+            !encoded_slices.is_empty(),
+            "Encoded slices should not be empty"
+        );
+
+        for (i, slice) in encoded_slices.iter().enumerate() {
+            let (decoded_key, decoded_value) =
+                decode_kvp_item(slice).expect("Failed to decode slice");
+
+            println!("Slice {}: Key: {}", i, decoded_key);
+            println!(
+                "Slice {}: Value (length {}): {}",
+                i,
+                decoded_value.len(),
+                decoded_value
+            );
+
+            assert_eq!(decoded_key, key, "Key does not match for slice {}", i);
+
+            assert!(
+                decoded_value.len() <= HV_KVP_AZURE_MAX_VALUE_SIZE,
+                "Value length exceeds limit for slice {}: {} > {}",
+                i,
+                decoded_value.len(),
+                HV_KVP_AZURE_MAX_VALUE_SIZE
+            );
+        }
+
+        println!("All slices adhere to Azure's max value size limit.");
     }
 }
