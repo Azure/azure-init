@@ -15,10 +15,6 @@ pub use provision::{
     Provision,
 };
 
-mod kvp;
-pub use kvp::{decode_kvp_item, EmitKVPLayer};
-pub mod tracing;
-
 #[cfg(test)]
 mod unittest;
 

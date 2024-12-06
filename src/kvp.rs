@@ -33,8 +33,6 @@ use sysinfo::{System, SystemExt};
 
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
 
-//use crate::tracing::{handle_event, handle_span};
-
 use chrono::{DateTime, Utc};
 use std::fmt;
 use uuid::Uuid;
@@ -86,11 +84,13 @@ impl Visit for StringVisitor<'_> {
         _field: &tracing::field::Field,
         value: &dyn std_fmt::Debug,
     ) {
-        write!(self.string, "{:?}", value).unwrap();
+        write!(self.string, "{}={:?}; ", _field.name(), value)
+            .expect("Writing to a string should never fail");
     }
 }
 
 /// Represents the state of a span within the `EmitKVPLayer`.
+#[derive(Copy, Clone, Debug)]
 enum SpanStatus {
     Success,
     Failure,
@@ -181,6 +181,22 @@ impl EmitKVPLayer {
     pub fn send_event(&self, message: Vec<u8>) {
         let _ = self.events_tx.send(message);
     }
+
+    /// Handles the orchestration of key-value pair (KVP) encoding and logging operations
+    /// by generating a unique event key, encoding it with the provided value, and sending
+    /// it to the `EmitKVPLayer` for logging.
+    pub fn handle_kvp_operation(
+        &self,
+        event_level: &str,
+        event_name: &str,
+        span_id: &str,
+        event_value: &str,
+    ) {
+        let event_key = generate_event_key(event_level, event_name, span_id);
+        let encoded_kvp = encode_kvp_item(&event_key, event_value);
+        let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
+        self.send_event(encoded_kvp_flattened);
+    }
 }
 
 impl<S> Layer<S> for EmitKVPLayer
@@ -241,9 +257,8 @@ where
             let event_value =
                 format!("Time: {} | Event: {}", event_time_dt, event_message);
 
-            handle_kvp_operation(
-                self,
-                "INFO",
+            self.handle_kvp_operation(
+                event.metadata().level().as_str(),
                 span_context.name(),
                 &span_id.to_string(),
                 &event_value,
@@ -277,12 +292,11 @@ where
     /// * `ctx` - The current tracing context, used to access the span's metadata and status.
     fn on_close(&self, id: Id, ctx: TracingContext<S>) {
         if let Some(span) = ctx.span(&id) {
-            let span_status = if span.extensions().get::<SpanStatus>().is_some()
-            {
-                SpanStatus::Failure
-            } else {
-                SpanStatus::Success
-            };
+            let span_status = span
+                .extensions()
+                .get::<SpanStatus>()
+                .copied()
+                .unwrap_or(SpanStatus::Success);
 
             let end_time = SystemTime::now();
 
@@ -316,8 +330,7 @@ where
                     start_time_dt, end_time_dt, span_status
                 );
 
-                handle_kvp_operation(
-                    self,
+                self.handle_kvp_operation(
                     span_status.level(),
                     span_context.name(),
                     &span_id.to_string(),
@@ -326,22 +339,6 @@ where
             }
         }
     }
-}
-
-/// Handles the orchestration of key-value pair (KVP) encoding and logging operations
-/// by generating a unique event key, encoding it with the provided value, and sending
-/// it to the `EmitKVPLayer` for logging.
-pub fn handle_kvp_operation(
-    emit_kvp_layer: &EmitKVPLayer,
-    event_level: &str,
-    event_name: &str,
-    span_id: &str,
-    event_value: &str,
-) {
-    let event_key = generate_event_key(event_level, event_name, span_id);
-    let encoded_kvp = encode_kvp_item(&event_key, event_value);
-    let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
-    emit_kvp_layer.send_event(encoded_kvp_flattened);
 }
 
 /// Generates a unique event key by combining the event level, name, and span ID.
@@ -376,28 +373,16 @@ fn encode_kvp_item(key: &str, value: &str) -> Vec<Vec<u8>> {
     let mut key_buf = vec![0u8; HV_KVP_EXCHANGE_MAX_KEY_SIZE];
     key_buf[..key_len].copy_from_slice(&key_bytes[..key_len]);
 
-    if value_bytes.len() <= HV_KVP_AZURE_MAX_VALUE_SIZE {
+    let mut kvp_slices = Vec::new();
+
+    for chunk in value_bytes.chunks(HV_KVP_AZURE_MAX_VALUE_SIZE) {
         let mut value_buf = vec![0u8; HV_KVP_EXCHANGE_MAX_VALUE_SIZE];
-        let value_len = value_bytes.len().min(HV_KVP_EXCHANGE_MAX_VALUE_SIZE);
-        value_buf[..value_len].copy_from_slice(&value_bytes[..value_len]);
+        value_buf[..chunk.len()].copy_from_slice(chunk);
 
-        vec![encode_kvp_slice(key_buf, value_buf)]
-    } else {
-        println!("Value exceeds max size, splitting into multiple slices.");
-
-        let mut kvp_slices = Vec::new();
-        let mut start = 0;
-        while start < value_bytes.len() {
-            let end =
-                (start + HV_KVP_AZURE_MAX_VALUE_SIZE).min(value_bytes.len());
-            let mut value_buf = vec![0u8; HV_KVP_EXCHANGE_MAX_VALUE_SIZE];
-            value_buf[..end - start].copy_from_slice(&value_bytes[start..end]);
-
-            kvp_slices.push(encode_kvp_slice(key_buf.clone(), value_buf));
-            start += HV_KVP_AZURE_MAX_VALUE_SIZE;
-        }
-        kvp_slices
+        kvp_slices.push(encode_kvp_slice(key_buf.clone(), value_buf));
     }
+
+    kvp_slices
 }
 
 /// Combines the key and value of a KVP into a single byte slice, ensuring
@@ -414,6 +399,7 @@ fn encode_kvp_slice(key: Vec<u8>, value: Vec<u8>) -> Vec<u8> {
 
 /// Decodes a KVP byte slice into its corresponding key and value strings.
 /// This is useful for inspecting or logging raw KVP data.
+#[cfg(test)]
 pub fn decode_kvp_item(
     record_data: &[u8],
 ) -> Result<(String, String), &'static str> {
@@ -433,7 +419,11 @@ pub fn decode_kvp_item(
     .to_string();
 
     let value = String::from_utf8(
-        record_data[HV_KVP_EXCHANGE_MAX_KEY_SIZE..record_data_len].to_vec(),
+        record_data[HV_KVP_EXCHANGE_MAX_KEY_SIZE..]
+            .iter()
+            .take(HV_KVP_AZURE_MAX_VALUE_SIZE)
+            .cloned()
+            .collect(),
     )
     .unwrap_or_else(|_| String::new())
     .trim_end_matches('\x00')
@@ -574,7 +564,7 @@ mod tests {
         let slice_size =
             HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE;
 
-        let num_slices = (contents.len() + slice_size - 1) / slice_size;
+        let num_slices = contents.len().div_ceil(slice_size);
         let expected_len = num_slices * slice_size;
 
         assert_eq!(
@@ -652,7 +642,8 @@ mod tests {
     fn test_encode_kvp_item_value_length() {
         let key = "test_key";
         let value = "A".repeat(HV_KVP_AZURE_MAX_VALUE_SIZE * 2 + 50);
-        let encoded_slices = encode_kvp_item(&key, &value);
+
+        let encoded_slices = encode_kvp_item(key, &value);
 
         assert!(
             !encoded_slices.is_empty(),
@@ -660,6 +651,13 @@ mod tests {
         );
 
         for (i, slice) in encoded_slices.iter().enumerate() {
+            assert_eq!(
+                slice.len(),
+                HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE,
+                "Slice {} length is incorrect",
+                i
+            );
+
             let (decoded_key, decoded_value) =
                 decode_kvp_item(slice).expect("Failed to decode slice");
 
@@ -671,11 +669,10 @@ mod tests {
                 decoded_value
             );
 
-            assert_eq!(decoded_key, key, "Key does not match for slice {}", i);
-
+            assert_eq!(decoded_key, key, "Key mismatch in slice {}", i);
             assert!(
                 decoded_value.len() <= HV_KVP_AZURE_MAX_VALUE_SIZE,
-                "Value length exceeds limit for slice {}: {} > {}",
+                "Value length exceeds limit in slice {}: {} > {}",
                 i,
                 decoded_value.len(),
                 HV_KVP_AZURE_MAX_VALUE_SIZE

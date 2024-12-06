@@ -12,7 +12,7 @@ use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
-use crate::EmitKVPLayer;
+use crate::kvp::EmitKVPLayer;
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
     let config = Config::default().with_sampler(Sampler::AlwaysOn);

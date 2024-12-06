@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
+mod kvp;
+mod logging;
+pub use logging::{initialize_tracing, setup_layers};
+
 use anyhow::Context;
 use clap::Parser;
 use libazureinit::imds::InstanceMetadata;
-use libazureinit::tracing::{initialize_tracing, setup_layers};
 use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
@@ -16,7 +20,6 @@ use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::{System, SystemExt};
 use tracing::instrument;
-use tracing::{event, Level};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -55,7 +58,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
     }
 
     environment.ok_or_else(|| {
-        event!(Level::ERROR, "Unable to get list of block devices");
+        tracing::error!("Unable to get list of block devices");
         anyhow::anyhow!("Unable to get list of block devices")
     })
 }
@@ -78,7 +81,7 @@ fn get_username(
                 .username
         })
         .ok_or_else(|| {
-            event!(Level::ERROR, "Username Failure");
+            tracing::error!("Username Failure");
             LibError::UsernameFailure.into()
         })
 }
@@ -96,7 +99,7 @@ async fn main() -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            event!(Level::ERROR, "Provisioning failed with error: {:?}", e);
+            tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
             let config: u8 = exitcode::CONFIG
                 .try_into()
@@ -123,12 +126,11 @@ async fn provision() -> Result<(), anyhow::Error> {
         .unwrap_or("Unknown OS Version".to_string());
     let azure_init_version = env!("CARGO_PKG_VERSION");
 
-    event!(
-        Level::INFO,
-        msg = format!(
-            "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
-            kernel_version, os_version, azure_init_version
-        )
+    tracing::info!(
+        "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
+        kernel_version,
+        os_version,
+        azure_init_version
     );
 
     let opts = Cli::parse();
@@ -197,7 +199,7 @@ async fn provision() -> Result<(), anyhow::Error> {
     )
     .await
     .with_context(|| {
-        event!(Level::ERROR, "Failed to get the desired goalstate.");
+        tracing::error!("Failed to get the desired goalstate.");
         "Failed to get desired goalstate."
     })?;
 
@@ -210,7 +212,7 @@ async fn provision() -> Result<(), anyhow::Error> {
     )
     .await
     .with_context(|| {
-        event!(Level::ERROR, "Failed to report VM health.");
+        tracing::error!("Failed to report VM health.");
         "Failed to report VM health."
     })?;
 
