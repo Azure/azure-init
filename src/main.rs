@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
+use libazureinit::config::Config;
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
@@ -13,7 +14,7 @@ use libazureinit::{
     goalstate, imds, media,
     media::{get_mount_device, Environment},
     reqwest::{header, Client},
-    HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
+    Provision,
 };
 use tracing::instrument;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -41,6 +42,13 @@ struct Cli {
         default_value = ""
     )]
     groups: Vec<String>,
+
+    #[arg(
+        long,
+        help = "Path to the configuration file",
+        env = "AZURE_INIT_CONFIG"
+    )]
+    config: Option<PathBuf>,
 }
 
 #[instrument]
@@ -93,7 +101,18 @@ async fn main() -> ExitCode {
         a library is mis-using the tracing API.",
     );
 
-    match provision().await {
+    let opts = Cli::parse();
+
+    let config = match Config::load(opts.config.clone()) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("Failed to load configuration: {error:?}");
+            eprintln!("Example configuration:\n\n{}", Config::default());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match provision(config, opts).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{:?}", e);
@@ -112,9 +131,7 @@ async fn main() -> ExitCode {
 }
 
 #[instrument]
-async fn provision() -> Result<(), anyhow::Error> {
-    let opts = Cli::parse();
-
+async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
@@ -156,19 +173,7 @@ async fn provision() -> Result<(), anyhow::Error> {
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
-    Provision::new(im.compute.os_profile.computer_name, user)
-        .hostname_provisioners([
-            #[cfg(feature = "hostnamectl")]
-            HostnameProvisioner::Hostnamectl,
-        ])
-        .user_provisioners([
-            #[cfg(feature = "useradd")]
-            UserProvisioner::Useradd,
-        ])
-        .password_provisioners([
-            #[cfg(feature = "passwd")]
-            PasswordProvisioner::Passwd,
-        ])
+    Provision::new(im.compute.os_profile.computer_name, user, config)
         .provision()?;
 
     let vm_goalstate = goalstate::get_goalstate(

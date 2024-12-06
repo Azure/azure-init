@@ -1,19 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use libazureinit::config::Config;
 use libazureinit::imds::PublicKeys;
 use libazureinit::User;
 use libazureinit::{
     goalstate, imds,
     reqwest::{header, Client},
-    HostnameProvisioner, PasswordProvisioner, Provision, UserProvisioner,
+    Provision,
 };
-
 use std::env;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
+    let config = Config::default();
+
     let cli_args: Vec<String> = env::args().collect();
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str("azure-init").unwrap();
@@ -98,12 +100,13 @@ async fn main() {
         },
     ];
 
-    Provision::new("my-hostname".to_string(), User::new(username, keys))
-        .hostname_provisioners([HostnameProvisioner::Hostnamectl])
-        .user_provisioners([UserProvisioner::Useradd])
-        .password_provisioners([PasswordProvisioner::Passwd])
-        .provision()
-        .expect("Failed to provision host");
+    Provision::new(
+        "my-hostname".to_string(),
+        User::new(username, keys),
+        config,
+    )
+    .provision()
+    .expect("Failed to provision host");
 
     println!("VM successfully provisioned");
     println!();

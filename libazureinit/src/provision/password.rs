@@ -9,17 +9,9 @@ use crate::{error::Error, User};
 
 use super::ssh::update_sshd_config;
 
-/// Available tools to set the user's password (if a password is provided).
-#[derive(strum::EnumIter, Debug, Clone)]
-#[non_exhaustive]
-pub enum Provisioner {
-    /// Use the `passwd` command from `shadow-utils`.
-    Passwd,
-    #[cfg(test)]
-    FakePasswd,
-}
+use crate::provision::PasswordProvisioner;
 
-impl Provisioner {
+impl PasswordProvisioner {
     pub(crate) fn set(&self, user: &User) -> Result<(), Error> {
         match self {
             Self::Passwd => passwd(user),
