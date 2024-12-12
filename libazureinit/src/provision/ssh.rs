@@ -6,18 +6,20 @@
 //! It includes functions to create the necessary `.ssh` directory, set the appropriate
 //! permissions, and write the provided public keys to the `authorized_keys` file.
 
+use crate::error::Error;
+use crate::imds::PublicKeys;
+use lazy_static::lazy_static;
+use nix::unistd::{chown, User};
+use regex::Regex;
 use std::{
-    fs::{self, OpenOptions, Permissions},
+    fs::{
+        self, OpenOptions, {File, Permissions},
+    },
     io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Output},
 };
-
-use crate::error::Error;
-use crate::imds::PublicKeys;
-use lazy_static::lazy_static;
-use regex::Regex;
 use tempfile::NamedTempFile;
 use tracing::{error, info, instrument};
 
@@ -52,36 +54,47 @@ lazy_static! {
 /// or write to the `authorized_keys` file.
 #[instrument(skip_all, name = "ssh")]
 pub(crate) fn provision_ssh(
-    user: &nix::unistd::User,
+    user: &User,
     keys: &[PublicKeys],
-    authorized_keys_path_string: Option<String>,
+    authorized_keys_path: PathBuf,
+    query_sshd_config: bool,
 ) -> Result<(), Error> {
+    let authorized_keys_path = if query_sshd_config {
+        tracing::info!(
+            "Attempting to get authorized keys path via sshd -G as configured."
+        );
+
+        match get_authorized_keys_path_from_sshd(|| {
+            Command::new("sshd").arg("-G").output()
+        }) {
+            Some(path) => user.dir.join(path),
+            None => {
+                tracing::warn!("sshd -G failed; using configured authorized_keys_path as fallback.");
+                user.dir.join(authorized_keys_path)
+            }
+        }
+    } else {
+        user.dir.join(authorized_keys_path)
+    };
+
     let ssh_dir = user.dir.join(".ssh");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&ssh_dir)?;
-    nix::unistd::chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
-    // It's possible the directory already existed if it's created with the user; make sure
-    // the permissions are correct.
     std::fs::set_permissions(&ssh_dir, Permissions::from_mode(0o700))?;
 
-    let authorized_keys_path = user.dir.join(
-        authorized_keys_path_string
-            .or_else(|| {
-                get_authorized_keys_path_from_sshd(|| {
-                    Command::new("sshd").arg("-G").output()
-                })
-            })
-            .unwrap_or_else(|| ".ssh/authorized_keys".to_string()),
-    );
-    info!("Using authorized_keys path: {:?}", authorized_keys_path);
+    chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
 
-    let mut authorized_keys = std::fs::File::create(&authorized_keys_path)?;
+    tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
+
+    let mut authorized_keys = File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
+
     keys.iter()
         .try_for_each(|key| writeln!(authorized_keys, "{}", key.key_data))?;
-    nix::unistd::chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
+
+    chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
 
     Ok(())
 }
@@ -409,8 +422,9 @@ mod tests {
             },
         ];
 
-        provision_ssh(&user, &keys, Some(".ssh/xauthorized_keys".to_string()))
-            .unwrap();
+        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+
+        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
 
         let ssh_path = user.dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
@@ -447,8 +461,9 @@ mod tests {
             },
         ];
 
-        provision_ssh(&user, &keys, Some(".ssh/xauthorized_keys".to_string()))
-            .unwrap();
+        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+
+        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
 
         let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
         assert_eq!(
@@ -472,18 +487,13 @@ mod tests {
             },
         ];
 
-        provision_ssh(
-            &user,
-            &keys[..1],
-            Some(".ssh/xauthorized_keys".to_string()),
-        )
-        .unwrap();
-        provision_ssh(
-            &user,
-            &keys[1..],
-            Some(".ssh/xauthorized_keys".to_string()),
-        )
-        .unwrap();
+        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+
+        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
+            .unwrap();
+
+        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
+            .unwrap();
 
         let mut auth_file =
             std::fs::File::open(user.dir.join(".ssh/xauthorized_keys"))
