@@ -272,7 +272,9 @@ impl Config {
     const BASE_CONFIG: &'static str = "/etc/azure-init.toml";
     const DROP_IN_CONFIG: &'static str = "/etc/azure-init.d/";
 
-    /// Public wrapper function that uses default locations
+    /// Load provisioning configuration.
+    ///
+    /// In addition to the provided path, configuration will also be loaded from the default locations.
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
         Self::load_from(
             PathBuf::from(Self::BASE_CONFIG),
