@@ -9,6 +9,8 @@ use tracing::instrument;
 
 use crate::{error::Error, imds::PublicKeys};
 
+use crate::config::UserProvisioner;
+
 /// The user and its related configuration to create on the host.
 ///
 /// A bare minimum user includes a name and a set of SSH public keys to allow
@@ -105,17 +107,7 @@ impl User {
     }
 }
 
-/// Available tools to create the user.
-#[derive(strum::EnumIter, Debug, Clone)]
-#[non_exhaustive]
-pub enum Provisioner {
-    /// Use the `useradd` command from `shadow-utils`.
-    Useradd,
-    #[cfg(test)]
-    FakeUseradd,
-}
-
-impl Provisioner {
+impl UserProvisioner {
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
         match self {
             Self::Useradd => {

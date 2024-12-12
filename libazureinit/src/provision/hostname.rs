@@ -7,17 +7,9 @@ use tracing::instrument;
 
 use crate::error::Error;
 
-/// Available tools to set the host's hostname.
-#[derive(strum::EnumIter, Debug, Clone)]
-#[non_exhaustive]
-pub enum Provisioner {
-    /// Use the `hostnamectl` command from `systemd`.
-    Hostnamectl,
-    #[cfg(test)]
-    FakeHostnamectl,
-}
+use crate::provision::HostnameProvisioner;
 
-impl Provisioner {
+impl HostnameProvisioner {
     pub(crate) fn set(&self, hostname: impl AsRef<str>) -> Result<(), Error> {
         match self {
             Self::Hostnamectl => hostnamectl(hostname.as_ref()),
