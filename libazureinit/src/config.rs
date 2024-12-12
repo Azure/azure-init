@@ -269,25 +269,41 @@ impl fmt::Display for Config {
 ///
 /// Later sources override earlier ones in case of conflicts.
 impl Config {
-    pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
-        let mut figment =
-            Figment::new().merge(Serialized::defaults(Config::default()));
+    const BASE_CONFIG: &'static str = "/etc/azure-init.toml";
+    const DROP_IN_CONFIG: &'static str = "/etc/azure-init.d/";
 
-        if PathBuf::from("azure-init.toml").exists() {
-            tracing::info!("Loading base configuration file: azure-init.toml");
-            figment = figment.merge(Toml::file("azure-init.toml"));
+    /// Public wrapper function that uses default locations
+    pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
+        Self::load_from(
+            PathBuf::from(Self::BASE_CONFIG),
+            PathBuf::from(Self::DROP_IN_CONFIG),
+            path,
+        )
+    }
+
+    fn load_from(
+        base_path: PathBuf,
+        drop_in_path: PathBuf,
+        path: Option<PathBuf>,
+    ) -> Result<Config, Error> {
+        let mut figment =
+            Figment::from(Serialized::defaults(Config::default()));
+
+        if base_path.exists() {
+            tracing::info!(path=?base_path, "Loading base configuration file");
+            figment = figment.merge(Toml::file(base_path));
         } else {
-            tracing::warn!("Base configuration file azure-init.toml not found, using defaults.");
+            tracing::warn!(
+                "Base configuration file {} not found, using defaults.",
+                base_path.display()
+            );
         }
 
-        figment = Self::merge_toml_directory(
-            &figment,
-            PathBuf::from("azure-init.toml.d"),
-        )?;
+        figment = Self::merge_toml_directory(figment, drop_in_path)?;
 
         if let Some(cli_path) = path {
             if cli_path.is_dir() {
-                figment = Self::merge_toml_directory(&figment, cli_path)?;
+                figment = Self::merge_toml_directory(figment, cli_path)?;
             } else {
                 tracing::info!(
                     "Merging configuration file from CLI: {:?}",
@@ -308,7 +324,7 @@ impl Config {
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
     fn merge_toml_directory(
-        figment: &Figment,
+        mut figment: Figment,
         dir_path: PathBuf,
     ) -> Result<Figment, Error> {
         if dir_path.is_dir() {
@@ -330,12 +346,11 @@ impl Config {
 
             entries.sort();
 
-            let mut updated_figment = figment.clone();
             for path_entry in entries {
                 tracing::info!("Merging configuration file: {:?}", path_entry);
-                updated_figment = updated_figment.merge(Toml::file(path_entry));
+                figment = figment.merge(Toml::file(path_entry));
             }
-            Ok(updated_figment)
+            Ok(figment)
         } else {
             tracing::info!("Directory {:?} not found, skipping.", dir_path);
             Ok(figment.clone())
@@ -382,6 +397,7 @@ mod tests {
         tracing::info!("Starting test_load_invalid_config...");
 
         let dir = tempdir()?;
+        let drop_in_path = dir.path().join("drop_in_path");
         let file_path = dir.path().join("invalid_config.toml");
 
         tracing::info!("Writing an invalid configuration file...");
@@ -396,7 +412,9 @@ mod tests {
         )?;
 
         tracing::info!("Attempting to load configuration from file...");
-        let result = Config::load(Some(file_path));
+        let result: Result<Config, crate::error::Error> =
+            Config::load_from(file_path, drop_in_path, None);
+
         assert!(result.is_err(), "Expected an error due to invalid config");
 
         tracing::info!(
@@ -413,6 +431,7 @@ mod tests {
         );
 
         let dir = tempdir()?;
+        let drop_in_path = dir.path().join("drop_in_path");
         let file_path =
             dir.path().join("invalid_hostname_provisioner_config.toml");
 
@@ -429,7 +448,8 @@ mod tests {
         )?;
 
         tracing::info!("Attempting to load hostname provisioner configuration from file...");
-        let result = Config::load(Some(file_path));
+        let result: Result<Config, crate::error::Error> =
+            Config::load_from(file_path, drop_in_path, None);
         assert!(
             result.is_err(),
             "Expected an error due to invalid hostname provisioner config"
@@ -445,6 +465,7 @@ mod tests {
         tracing::info!("Starting test_load_invalid_user_provisioner_config...");
 
         let dir = tempdir()?;
+        let drop_in_path = dir.path().join("drop_in_path");
         let file_path = dir.path().join("invalid_user_provisioner_config.toml");
 
         tracing::info!(
@@ -462,7 +483,8 @@ mod tests {
         tracing::info!(
             "Attempting to load user provisioner configuration from file..."
         );
-        let result = Config::load(Some(file_path));
+        let result: Result<Config, crate::error::Error> =
+            Config::load_from(file_path, drop_in_path, None);
         assert!(
             result.is_err(),
             "Expected an error due to invalid user provisioner config"
@@ -480,6 +502,7 @@ mod tests {
         );
 
         let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let file_path =
             dir.path().join("invalid_password_provisioner_config.toml");
 
@@ -496,7 +519,8 @@ mod tests {
         )?;
 
         tracing::info!("Attempting to load password provisioner configuration from file...");
-        let result = Config::load(Some(file_path));
+        let result: Result<Config, crate::error::Error> =
+            Config::load_from(file_path, drop_in_path, None);
         assert!(
             result.is_err(),
             "Expected an error due to invalid password provisioner config"
@@ -514,13 +538,14 @@ mod tests {
         );
 
         let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let empty_file_path = dir.path().join("empty_config.toml");
 
         tracing::info!("Creating an empty configuration file...");
         fs::File::create(&empty_file_path)?;
 
         tracing::info!("Loading configuration with empty file...");
-        let config = Config::load(Some(empty_file_path))?;
+        let config = Config::load_from(empty_file_path, drop_in_path, None)?;
 
         tracing::info!("Verifying configuration matches defaults...");
         assert_eq!(
@@ -567,6 +592,7 @@ mod tests {
     #[test]
     fn test_custom_config() -> Result<(), Error> {
         let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let override_file_path = dir.path().join("override_config.toml");
 
         tracing::info!(
@@ -595,13 +621,14 @@ mod tests {
         )?;
 
         tracing::info!("Loading override configuration from file...");
-        let config = Config::load(Some(override_file_path)).map_err(|e| {
-            tracing::error!(
-                "Failed to load override configuration file: {:?}",
+        let config = Config::load_from(override_file_path, drop_in_path, None)
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to load override configuration file: {:?}",
+                    e
+                );
                 e
-            );
-            e
-        })?;
+            })?;
 
         tracing::info!("Verifying merged SSH configuration values...");
         assert_eq!(
@@ -655,10 +682,14 @@ mod tests {
 
     #[test]
     fn test_default_config() -> Result<(), Error> {
+        let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
+        let base_path = dir.path().join("base_path");
+
         tracing::info!("Starting test_default_config...");
 
         tracing::info!("Loading default configuration without overrides...");
-        let config = Config::load(None)?;
+        let config = Config::load_from(base_path, drop_in_path, None)?;
 
         tracing::info!("Verifying default SSH configuration values...");
         assert_eq!(
@@ -712,6 +743,8 @@ mod tests {
     #[test]
     fn test_custom_config_via_cli() -> Result<(), Error> {
         let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
+        let base_path = dir.path().join("base_path");
         let override_file_path = dir.path().join("override_config.toml");
 
         fs::write(
@@ -745,7 +778,11 @@ mod tests {
 
         assert_eq!(opts.config, Some(override_file_path.clone()));
 
-        let config = Config::load(opts.config)?;
+        let config = Config::load_from(
+            base_path,
+            drop_in_path,
+            Some(override_file_path),
+        )?;
 
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
@@ -777,6 +814,8 @@ mod tests {
     #[test]
     fn test_directory_config_via_cli() -> Result<(), Error> {
         let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
+        let base_path = dir.path().join("base_path");
 
         let args = vec!["azure-init", "--config", dir.path().to_str().unwrap()];
 
@@ -784,7 +823,7 @@ mod tests {
 
         assert_eq!(opts.config, Some(dir.path().to_path_buf()));
 
-        let config = Config::load(opts.config)?;
+        let config = Config::load_from(base_path, drop_in_path, None)?;
 
         assert!(config.ssh.authorized_keys_path.is_relative());
         assert_eq!(
@@ -799,10 +838,13 @@ mod tests {
     fn test_merge_toml_basic_and_progressive() -> Result<(), Error> {
         tracing::info!("Starting test_merge_toml_basic_and_progressive...");
 
-        let dir = tempdir()?; // Temporary directory for test
+        let dir = tempdir()?;
+        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
+        fs::create_dir_all(&drop_in_path)?;
+
         let base_file_path = dir.path().join("base_config.toml");
-        let override_file_path_1 = dir.path().join("override_config_1.toml");
-        let override_file_path_2 = dir.path().join("override_config_2.toml");
+        let override_file_path_1 = drop_in_path.join("override_config_1.toml");
+        let override_file_path_2 = drop_in_path.join("override_config_2.toml");
 
         tracing::info!("Writing base configuration...");
         let mut base_file = fs::File::create(&base_file_path)?;
@@ -839,7 +881,7 @@ mod tests {
         )?;
 
         tracing::info!("Loading and merging configurations...");
-        let config = Config::load(Some(dir.path().to_path_buf()))?;
+        let config = Config::load_from(base_file_path, drop_in_path, None)?;
 
         tracing::info!("Verifying merged configuration...");
         assert_eq!(
