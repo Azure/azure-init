@@ -81,7 +81,7 @@ azure-init --config /path/to/custom-config-directory
 
 1. Applies defaults from `Config::default()` as defined in `config.rs`.
 2. Loads `azure-init.toml` as the base configuration, if present.
-3. Merges `.toml` files found from `azure-init.toml.d` in lexicographical order. The last file in the sorted order takes precedence.
+3. Merges configuration `.toml` files found in `azure-init.toml.d` in lexicographical order. The last file in the sorted order takes precedence.
    - `01-network.toml`
    - `02-ssh.toml`
    - `99-overrides.toml`

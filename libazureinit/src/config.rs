@@ -269,25 +269,34 @@ impl fmt::Display for Config {
 ///
 /// Later sources override earlier ones in case of conflicts.
 impl Config {
+    const BASE_CONFIG: &str = "/etc/azure-init.toml";
+    const DROP_IN_CONFIG: &str = "/etc/azure-init.d/";
+
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
         let mut figment =
-            Figment::new().merge(Serialized::defaults(Config::default()));
+            Figment::from(Serialized::defaults(Config::default()));
 
-        if PathBuf::from("azure-init.toml").exists() {
-            tracing::info!("Loading base configuration file: azure-init.toml");
-            figment = figment.merge(Toml::file("azure-init.toml"));
+        if PathBuf::from(Self::BASE_CONFIG).exists() {
+            tracing::info!(
+                path = Self::BASE_CONFIG,
+                "Loading base configuration file"
+            );
+            figment = figment.merge(Toml::file(Self::BASE_CONFIG));
         } else {
-            tracing::warn!("Base configuration file azure-init.toml not found, using defaults.");
+            tracing::warn!(
+                "Base configuration file {} not found, using defaults.",
+                Self::BASE_CONFIG
+            );
         }
 
         figment = Self::merge_toml_directory(
-            &figment,
-            PathBuf::from("azure-init.toml.d"),
+            figment,
+            PathBuf::from(Self::DROP_IN_CONFIG),
         )?;
 
         if let Some(cli_path) = path {
             if cli_path.is_dir() {
-                figment = Self::merge_toml_directory(&figment, cli_path)?;
+                figment = Self::merge_toml_directory(figment, cli_path)?;
             } else {
                 tracing::info!(
                     "Merging configuration file from CLI: {:?}",
@@ -308,7 +317,7 @@ impl Config {
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
     fn merge_toml_directory(
-        figment: &Figment,
+        mut figment: Figment,
         dir_path: PathBuf,
     ) -> Result<Figment, Error> {
         if dir_path.is_dir() {
@@ -330,12 +339,11 @@ impl Config {
 
             entries.sort();
 
-            let mut updated_figment = figment.clone();
             for path_entry in entries {
                 tracing::info!("Merging configuration file: {:?}", path_entry);
-                updated_figment = updated_figment.merge(Toml::file(path_entry));
+                figment = figment.merge(Toml::file(path_entry));
             }
-            Ok(updated_figment)
+            Ok(figment)
         } else {
             tracing::info!("Directory {:?} not found, skipping.", dir_path);
             Ok(figment.clone())
