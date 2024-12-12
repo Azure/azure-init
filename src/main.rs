@@ -103,7 +103,7 @@ async fn main() -> ExitCode {
     }
 
     let opts = Cli::parse();
-  
+
     let config = match Config::load(opts.config.clone()) {
         Ok(config) => config,
         Err(error) => {
@@ -149,12 +149,12 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         os_version,
         azure_init_version
     );
-  
+
     let mut default_headers = header::HeaderMap::new();
     let user_agent = header::HeaderValue::from_str(
         format!("azure-init v{VERSION}").as_str(),
     )?;
-  
+
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
