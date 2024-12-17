@@ -111,7 +111,7 @@ async fn request(
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
+            let span = tracing::debug_span!("request", attempt, http_status = tracing::field::Empty);
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
                 .execute(req)
