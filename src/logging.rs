@@ -31,7 +31,10 @@ pub fn setup_layers(
     let emit_kvp_layer = match EmitKVPLayer::new(std::path::PathBuf::from(
         "/var/lib/hyperv/.kvp_pool_1",
     )) {
-        Ok(layer) => Some(layer),
+        Ok(layer) => {
+            let filter = EnvFilter::new("INFO");
+            Some(layer.with_filter(filter))
+        }
         Err(e) => {
             event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
             None
