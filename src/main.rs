@@ -132,7 +132,7 @@ async fn main() -> ExitCode {
     }
 }
 
-#[instrument(name = "root")]
+#[instrument(name = "root", skip_all)]
 async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let system = System::new();
     let kernel_version = system
@@ -141,13 +141,12 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let os_version = system
         .os_version()
         .unwrap_or("Unknown OS Version".to_string());
-    let azure_init_version = env!("CARGO_PKG_VERSION");
 
     tracing::info!(
         "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
         kernel_version,
         os_version,
-        azure_init_version
+        VERSION
     );
 
     let mut default_headers = header::HeaderMap::new();

@@ -13,7 +13,7 @@
 use std::{
     fmt::{self as std_fmt, Write as std_write},
     fs::{File, OpenOptions},
-    io::{self, Error, ErrorKind, Write},
+    io::{self, ErrorKind, Write},
     os::unix::fs::MetadataExt,
     path::Path,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -81,10 +81,10 @@ impl Visit for StringVisitor<'_> {
     /// * `value` - The debug value associated with the field.
     fn record_debug(
         &mut self,
-        _field: &tracing::field::Field,
+        field: &tracing::field::Field,
         value: &dyn std_fmt::Debug,
     ) {
-        write!(self.string, "{}={:?}; ", _field.name(), value)
+        write!(self.string, "{}={:?}; ", field.name(), value)
             .expect("Writing to a string should never fail");
     }
 }
@@ -134,7 +134,7 @@ impl EmitKVPLayer {
     /// # Arguments
     /// * `file_path` - The file path where the KVP data will be stored.
     ///
-    pub fn new(file_path: std::path::PathBuf) -> Result<Self, std::io::Error> {
+    pub fn new(file_path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
         truncate_guest_pool_file(&file_path)?;
 
         let file = OpenOptions::new()
@@ -309,21 +309,11 @@ where
                 let start_time =
                     end_time.checked_sub(elapsed).unwrap_or(UNIX_EPOCH);
 
-                let start_time_dt = DateTime::<Utc>::from(
-                    UNIX_EPOCH
-                        + start_time
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default(),
-                )
-                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+                let start_time_dt = DateTime::<Utc>::from(start_time)
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
-                let end_time_dt = DateTime::<Utc>::from(
-                    UNIX_EPOCH
-                        + end_time
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default(),
-                )
-                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+                let end_time_dt = DateTime::<Utc>::from(end_time)
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
                 let event_value = format!(
                     "Start: {} | End: {} | Status: {}",
@@ -362,39 +352,49 @@ fn generate_event_key(
 /// exceeds the allowed size, it is split into multiple slices for encoding.
 /// This is used for logging events to a KVP file.
 ///
+/// # Note
+/// - The key must be zero-padded to `HV_KVP_EXCHANGE_MAX_KEY_SIZE` to meet Hyper-V's expected formatting.
+///
 /// # Arguments
 /// * `key` - The key as a string slice.
 /// * `value` - The value associated with the key.
 fn encode_kvp_item(key: &str, value: &str) -> Vec<Vec<u8>> {
-    let key_bytes = key.as_bytes();
-    let value_bytes = value.as_bytes();
+    let key_buf = key
+        .as_bytes()
+        .iter()
+        .take(HV_KVP_EXCHANGE_MAX_KEY_SIZE)
+        .chain(
+            vec![0_u8; HV_KVP_EXCHANGE_MAX_KEY_SIZE.saturating_sub(key.len())]
+                .iter(),
+        )
+        .copied()
+        .collect::<Vec<_>>();
 
-    let key_len = key_bytes.len().min(HV_KVP_EXCHANGE_MAX_KEY_SIZE);
-    let mut key_buf = vec![0u8; HV_KVP_EXCHANGE_MAX_KEY_SIZE];
-    key_buf[..key_len].copy_from_slice(&key_bytes[..key_len]);
+    debug_assert!(key_buf.len() == HV_KVP_EXCHANGE_MAX_KEY_SIZE);
 
-    let mut kvp_slices = Vec::new();
+    let kvp_slices = value
+        .as_bytes()
+        .chunks(HV_KVP_AZURE_MAX_VALUE_SIZE)
+        .map(|chunk| {
+            let mut buffer = Vec::with_capacity(
+                HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE,
+            );
+            buffer.extend_from_slice(&key_buf);
+            buffer.extend_from_slice(chunk);
+            while buffer.len()
+                < HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE
+            {
+                buffer.push(0);
+            }
 
-    for chunk in value_bytes.chunks(HV_KVP_AZURE_MAX_VALUE_SIZE) {
-        let mut value_buf = vec![0u8; HV_KVP_EXCHANGE_MAX_VALUE_SIZE];
-        value_buf[..chunk.len()].copy_from_slice(chunk);
+            buffer
+        })
+        .collect::<Vec<Vec<u8>>>();
 
-        kvp_slices.push(encode_kvp_slice(key_buf.clone(), value_buf));
-    }
+    debug_assert!(kvp_slices.iter().all(|kvp| kvp.len()
+        == HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE));
 
     kvp_slices
-}
-
-/// Combines the key and value of a KVP into a single byte slice, ensuring
-/// proper formatting for consumption by hv_kvp_daemon service,
-/// which typically reads from /var/lib/hyperv/.kvp_pool_1.
-fn encode_kvp_slice(key: Vec<u8>, value: Vec<u8>) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(
-        HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE,
-    );
-    buffer.extend_from_slice(&key);
-    buffer.extend_from_slice(&value);
-    buffer
 }
 
 /// Decodes a KVP byte slice into its corresponding key and value strings.
@@ -412,18 +412,23 @@ pub fn decode_kvp_item(
     }
 
     let key = String::from_utf8(
-        record_data[0..HV_KVP_EXCHANGE_MAX_KEY_SIZE].to_vec(),
+        record_data
+            .iter()
+            .take(HV_KVP_EXCHANGE_MAX_KEY_SIZE)
+            .cloned()
+            .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| String::new())
     .trim_end_matches('\x00')
     .to_string();
 
     let value = String::from_utf8(
-        record_data[HV_KVP_EXCHANGE_MAX_KEY_SIZE..]
+        record_data
             .iter()
+            .skip(HV_KVP_EXCHANGE_MAX_KEY_SIZE)
             .take(HV_KVP_AZURE_MAX_VALUE_SIZE)
             .cloned()
-            .collect(),
+            .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| String::new())
     .trim_end_matches('\x00')
@@ -435,12 +440,9 @@ pub fn decode_kvp_item(
 /// Truncates the guest pool KVP file if it contains stale data (i.e., data
 /// older than the system's boot time). Logs whether the file was truncated
 /// or no action was needed.
-fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), Error> {
-    let boot_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::new(std::io::ErrorKind::Other, e))?
-        .as_secs()
-        - get_uptime()?.as_secs();
+fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
+    let boot_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+        - get_uptime().as_secs();
 
     match kvp_file.metadata() {
         Ok(metadata) => {
@@ -461,7 +463,8 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), Error> {
             return Ok(());
         }
         Err(e) => {
-            return Err(e);
+            return Err(anyhow::Error::from(e)
+                .context("Failed to access file metadata"));
         }
     }
 
@@ -471,12 +474,12 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), Error> {
 /// Retrieves the system's uptime using the `sysinfo` crate, returning the duration
 /// since the system booted. This can be useful for time-based calculations or checks,
 /// such as determining whether data is stale or calculating the approximate boot time.
-fn get_uptime() -> Result<Duration, Error> {
+fn get_uptime() -> Duration {
     let mut system = System::new();
     system.refresh_system();
 
     let uptime_seconds = system.uptime();
-    Ok(Duration::from_secs(uptime_seconds))
+    Duration::from_secs(uptime_seconds)
 }
 
 #[cfg(test)]

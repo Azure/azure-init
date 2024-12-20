@@ -292,7 +292,7 @@ impl Config {
             Figment::from(Serialized::defaults(Config::default()));
 
         if base_path.exists() {
-            tracing::debug!(path=?base_path, "Loading base configuration file");
+            tracing::info!(path=?base_path, "Loading base configuration file");
             figment = figment.merge(Toml::file(base_path));
         } else {
             tracing::warn!(
@@ -307,7 +307,7 @@ impl Config {
             if cli_path.is_dir() {
                 figment = Self::merge_toml_directory(figment, cli_path)?;
             } else {
-                tracing::debug!(
+                tracing::info!(
                     "Merging configuration file from CLI: {:?}",
                     cli_path
                 );
@@ -318,7 +318,10 @@ impl Config {
         figment
             .extract::<Config>()
             .map(|config| {
-                tracing::info!("Configuration successfully loaded.");
+                tracing::info!(
+                    target: "kvp",
+                    "Configuration successfully loaded."
+                );
                 config
             })
             .map_err(|e| {
@@ -355,12 +358,12 @@ impl Config {
             entries.sort();
 
             for path_entry in entries {
-                tracing::debug!("Merging configuration file: {:?}", path_entry);
+                tracing::info!("Merging configuration file: {:?}", path_entry);
                 figment = figment.merge(Toml::file(path_entry));
             }
             Ok(figment)
         } else {
-            tracing::debug!("Directory {:?} not found, skipping.", dir_path);
+            tracing::info!("Directory {:?} not found, skipping.", dir_path);
             Ok(figment.clone())
         }
     }

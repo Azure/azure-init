@@ -7,6 +7,7 @@ use opentelemetry_sdk::trace::{
 };
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
@@ -26,15 +27,17 @@ pub fn initialize_tracing() -> sdktrace::Tracer {
 pub fn setup_layers(
     tracer: sdktrace::Tracer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let otel_layer = OpenTelemetryLayer::new(tracer);
+    let otel_layer = OpenTelemetryLayer::new(tracer)
+        .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
+
+    let kvp_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .parse_lossy("azure_init=INFO,libazureinit=WARN,kvp=INFO");
 
     let emit_kvp_layer = match EmitKVPLayer::new(std::path::PathBuf::from(
         "/var/lib/hyperv/.kvp_pool_1",
     )) {
-        Ok(layer) => {
-            let filter = EnvFilter::new("INFO");
-            Some(layer.with_filter(filter))
-        }
+        Ok(layer) => Some(layer.with_filter(kvp_filter)),
         Err(e) => {
             event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
             None
