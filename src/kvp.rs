@@ -353,7 +353,9 @@ fn generate_event_key(
 /// This is used for logging events to a KVP file.
 ///
 /// # Note
-/// - The key must be zero-padded to `HV_KVP_EXCHANGE_MAX_KEY_SIZE` to meet Hyper-V's expected formatting.
+/// - The key is zero-padded to `HV_KVP_EXCHANGE_MAX_KEY_SIZE`, and
+///   the value is zero-padded to `HV_KVP_AZURE_MAX_VALUE_SIZE` to meet
+///   Hyper-V's expected formatting.
 ///
 /// # Arguments
 /// * `key` - The key as a string slice.
