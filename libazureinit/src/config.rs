@@ -342,7 +342,7 @@ impl Config {
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
                 .filter(|path| {
-                    path.extension().map_or(false, |ext| ext == "toml")
+                    path.extension().is_some_and(|ext| ext == "toml")
                 })
                 .collect();
 
