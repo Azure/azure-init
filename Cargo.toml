@@ -8,6 +8,7 @@ homepage = "https://github.com/Azure/azure-init/"
 license = "MIT"
 readme = "README.md"
 description = "A reference implementation for provisioning Linux VMs on Azure."
+build = "build.rs"
 
 [dependencies]
 exitcode = "1.1.2"
