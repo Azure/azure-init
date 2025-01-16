@@ -3,7 +3,7 @@ use std::process::Command;
 fn main() {
     // Get the short commit hash
     let output = Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
         .expect("Failed to execute git command");
 
