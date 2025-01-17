@@ -138,7 +138,7 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let user_agent = if cfg!(debug_assertions) {
         format!("azure-init v{}-{}", VERSION, COMMIT_HASH)
     } else {
-        format!("azure-init {}", VERSION)
+        format!("azure-init v{}", VERSION)
     };
     let user_agent = header::HeaderValue::from_str(user_agent.as_str())?;
     default_headers.insert(header::USER_AGENT, user_agent);
