@@ -136,7 +136,7 @@ async fn main() -> ExitCode {
 async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let mut default_headers = header::HeaderMap::new();
     let user_agent = if cfg!(debug_assertions) {
-        format!("azure-init {}-{}", VERSION, COMMIT_HASH)
+        format!("azure-init v{}-{}", VERSION, COMMIT_HASH)
     } else {
         format!("azure-init {}", VERSION)
     };
