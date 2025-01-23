@@ -25,18 +25,34 @@ impl PasswordProvisioner {
 fn passwd(user: &User) -> Result<(), Error> {
     // Update the sshd configuration to allow password authentication.
     let sshd_config_path = "/etc/ssh/sshd_config.d/50-azure-init.conf";
-    let ret = update_sshd_config(sshd_config_path);
-    if ret.is_err() {
+    if let Err(error) = update_sshd_config(sshd_config_path) {
+        tracing::error!(
+            ?error,
+            sshd_config_path,
+            "Failed to update sshd configuration for password authentication"
+        );
         return Err(Error::UpdateSshdConfig);
     }
     let path_passwd = env!("PATH_PASSWD");
 
     if user.password.is_none() {
-        let status = Command::new(path_passwd)
-            .arg("-d")
-            .arg(&user.name)
-            .status()?;
+        let mut command = Command::new(path_passwd);
+        command.arg("-d").arg(&user.name);
+        tracing::trace!(?command, "About to remove user's password");
+        let output = command.output()?;
+        let status = output.status;
+        tracing::info!("Removed user password");
+
         if !status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            tracing::error!(
+                ?status,
+                command = path_passwd,
+                ?stdout,
+                ?stderr,
+                "Failed to remove the user password"
+            );
             return Err(Error::SubprocessFailed {
                 command: path_passwd.to_string(),
                 status,
