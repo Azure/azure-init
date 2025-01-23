@@ -38,26 +38,7 @@ fn passwd(user: &User) -> Result<(), Error> {
     if user.password.is_none() {
         let mut command = Command::new(path_passwd);
         command.arg("-d").arg(&user.name);
-        tracing::trace!(?command, "About to remove user's password");
-        let output = command.output()?;
-        let status = output.status;
-        tracing::info!("Removed user password");
-
-        if !status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            tracing::error!(
-                ?status,
-                command = path_passwd,
-                ?stdout,
-                ?stderr,
-                "Failed to remove the user password"
-            );
-            return Err(Error::SubprocessFailed {
-                command: path_passwd.to_string(),
-                status,
-            });
-        }
+        crate::run(command)?;
     } else {
         // creating user with a non-empty password is not allowed.
         return Err(Error::NonEmptyPassword);

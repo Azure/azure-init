@@ -219,25 +219,19 @@ impl Media<Unmounted> {
         new_permissions.set_mode(0o700);
         fs::set_permissions(&self.mount_path, new_permissions)?;
 
-        let mount_status = Command::new("mount")
+        let mut command = Command::new("mount");
+        command
             .arg("-o")
             .arg("ro")
             .arg(&self.device_path)
-            .arg(&self.mount_path)
-            .status()?;
+            .arg(&self.mount_path);
+        crate::run(command)?;
 
-        if !mount_status.success() {
-            Err(Error::SubprocessFailed {
-                command: "mount".to_string(),
-                status: mount_status,
-            })
-        } else {
-            Ok(Media {
-                device_path: self.device_path,
-                mount_path: self.mount_path,
-                state: std::marker::PhantomData,
-            })
-        }
+        Ok(Media {
+            device_path: self.device_path,
+            mount_path: self.mount_path,
+            state: std::marker::PhantomData,
+        })
     }
 }
 
@@ -249,25 +243,13 @@ impl Media<Mounted> {
     /// A `Result` indicating success or failure.
     #[instrument]
     pub fn unmount(self) -> Result<(), Error> {
-        let umount_status =
-            Command::new("umount").arg(self.mount_path).status()?;
-        if !umount_status.success() {
-            return Err(Error::SubprocessFailed {
-                command: "umount".to_string(),
-                status: umount_status,
-            });
-        }
+        let mut command = Command::new("umount");
+        command.arg(self.mount_path);
+        crate::run(command)?;
 
-        let eject_status =
-            Command::new("eject").arg(self.device_path).status()?;
-        if !eject_status.success() {
-            Err(Error::SubprocessFailed {
-                command: "eject".to_string(),
-                status: eject_status,
-            })
-        } else {
-            Ok(())
-        }
+        let mut command = Command::new("eject");
+        command.arg(self.device_path);
+        crate::run(command)
     }
 
     /// Reads the OVF environment data to a string.

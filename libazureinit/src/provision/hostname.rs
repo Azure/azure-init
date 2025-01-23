@@ -23,16 +23,7 @@ impl HostnameProvisioner {
 fn hostnamectl(hostname: &str) -> Result<(), Error> {
     let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 
-    let status = Command::new(path_hostnamectl)
-        .arg("set-hostname")
-        .arg(hostname)
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(Error::SubprocessFailed {
-            command: path_hostnamectl.to_string(),
-            status,
-        })
-    }
+    let mut command = Command::new(path_hostnamectl);
+    command.arg("set-hostname").arg(hostname);
+    crate::run(command)
 }
