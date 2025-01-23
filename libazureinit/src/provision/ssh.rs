@@ -222,6 +222,10 @@ pub(crate) fn update_sshd_config(
         let mut file = std::fs::File::create(&sshd_config_path)?;
         file.set_permissions(Permissions::from_mode(0o644))?;
         file.write_all(b"PasswordAuthentication yes\n")?;
+        tracing::info!(
+            ?sshd_config_path,
+            "Created new sshd drop-in configuration file"
+        );
         return Ok(());
     }
 
@@ -247,10 +251,18 @@ pub(crate) fn update_sshd_config(
         temp_file.set_permissions(fs::Permissions::from_mode(0o644))?;
 
         fs::rename(temp_sshd_config_path, &sshd_config_path)?;
+        tracing::info!(
+            ?sshd_config_path,
+            "Updated existing sshd setting to allow password authentication"
+        )
     } else {
         let mut file =
             OpenOptions::new().append(true).open(&sshd_config_path)?;
         file.write_all(b"PasswordAuthentication yes\n")?;
+        tracing::info!(
+            ?sshd_config_path,
+            "Added new sshd setting to allow password authentication"
+        )
     }
 
     Ok(())
