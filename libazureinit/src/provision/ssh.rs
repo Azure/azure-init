@@ -250,23 +250,12 @@ pub(crate) fn update_sshd_config(
         temp_file.write_all(modified_content.as_bytes())?;
         temp_file.set_permissions(fs::Permissions::from_mode(0o644))?;
 
-        // Conditional logic for Mariner
-        if sshd_config_path == PathBuf::from("/etc/ssh/sshd_config") {
-            // Use fs::copy and fs::remove_file for Mariner
-            fs::copy(temp_sshd_config_path, &sshd_config_path)?;
-            fs::remove_file(temp_sshd_config_path)?;
-            tracing::info!(
-                ?sshd_config_path,
-                "Updated existing sshd setting to allow password authentication (Mariner)"
-            );
-        } else {
-            // Use fs::rename for other systems
-            fs::rename(temp_sshd_config_path, &sshd_config_path)?;
-            tracing::info!(
-                ?sshd_config_path,
-                "Updated existing sshd setting to allow password authentication (default)"
-            );
-        }
+        fs::copy(temp_sshd_config_path, &sshd_config_path)?;
+        fs::remove_file(temp_sshd_config_path)?;
+        tracing::info!(
+            ?sshd_config_path,
+            "Updated existing sshd setting to allow password authentication (Mariner)"
+        )
     } else {
         let mut file =
             OpenOptions::new().append(true).open(&sshd_config_path)?;

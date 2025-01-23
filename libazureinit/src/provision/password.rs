@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-use std::fs::read_to_string;
+use std::path::PathBuf;
 
 use tracing::instrument;
 
@@ -23,15 +23,15 @@ impl PasswordProvisioner {
     }
 }
 
-// Function to determine the SSH config path based on the OS
-// Default for Ubuntu is:  "/etc/ssh/sshd_config.d/50-azure-init.conf"
+// Determines the appropriate SSH configuration file path based on the filesystem.
+// If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
+// Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
 fn get_sshd_config_path() -> &'static str {
-    if let Ok(content) = read_to_string("/etc/os-release") {
-        if content.contains("ID=azurelinux") {
-            return "/etc/ssh/sshd_config";
-        }
+    if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
+        "/etc/ssh/sshd_config.d/50-azure-init.conf"
+    } else {
+        "/etc/ssh/sshd_config"
     }
-    "/etc/ssh/sshd_config.d/50-azure-init.conf"
 }
 
 #[instrument(skip_all)]
