@@ -3,6 +3,8 @@
 
 use std::process::Command;
 
+use std::fs::read_to_string;
+
 use tracing::instrument;
 
 use crate::{error::Error, User};
@@ -21,10 +23,21 @@ impl PasswordProvisioner {
     }
 }
 
+// Function to determine the SSH config path based on the OS
+// Default for Ubuntu is:  "/etc/ssh/sshd_config.d/50-azure-init.conf"
+fn get_sshd_config_path() -> &'static str {
+    if let Ok(content) = read_to_string("/etc/os-release") {
+        if content.contains("ID=azurelinux") {
+            return "/etc/ssh/sshd_config";
+        }
+    }
+    "/etc/ssh/sshd_config.d/50-azure-init.conf"
+}
+
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     // Update the sshd configuration to allow password authentication.
-    let sshd_config_path = "/etc/ssh/sshd_config.d/50-azure-init.conf";
+    let sshd_config_path = get_sshd_config_path();
     if let Err(error) = update_sshd_config(sshd_config_path) {
         tracing::error!(
             ?error,
