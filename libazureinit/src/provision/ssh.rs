@@ -253,8 +253,7 @@ pub(crate) fn update_sshd_config(
     } else {
         let mut file =
             OpenOptions::new().append(true).open(&sshd_config_path)?;
-        file.write_all(b"PasswordAuthentication yes\n")?;
-        file.set_permissions(Permissions::from_mode(0o600))?;
+        file.write_all(b"PasswordAuthentication yes # added by azure-init\n")?;
 
         tracing::info!(
             ?sshd_config_path,
