@@ -236,15 +236,16 @@ pub(crate) fn update_sshd_config(
 
     let re = &PASSWORD_REGEX;
     if re.is_match(&file_content) {
-        let modified_content =
-            re.replace_all(&file_content, "PasswordAuthentication yes\n");
+        let modified_content = re.replace_all(
+            &file_content,
+            "PasswordAuthentication yes # modified by azure-init\n",
+        );
 
         let mut sshd_config = OpenOptions::new()
             .write(true)
             .truncate(true)
             .open(&sshd_config_path)?;
         sshd_config.write_all(modified_content.as_bytes())?;
-        sshd_config.set_permissions(Permissions::from_mode(0o600))?;
 
         tracing::info!(
             ?sshd_config_path,
