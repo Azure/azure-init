@@ -13,14 +13,13 @@ use nix::unistd::{chown, User};
 use regex::Regex;
 use std::{
     fs::{
-        self, OpenOptions, {File, Permissions},
+        OpenOptions, {File, Permissions},
     },
     io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Output},
 };
-use tempfile::NamedTempFile;
 use tracing::{error, info, instrument};
 
 lazy_static! {
@@ -220,7 +219,7 @@ pub(crate) fn update_sshd_config(
     let sshd_config_path = PathBuf::from(sshd_config_path);
     if !sshd_config_path.exists() {
         let mut file = std::fs::File::create(&sshd_config_path)?;
-        file.set_permissions(Permissions::from_mode(0o644))?;
+        file.set_permissions(Permissions::from_mode(0o600))?;
         file.write_all(b"PasswordAuthentication yes\n")?;
         tracing::info!(
             ?sshd_config_path,
@@ -237,32 +236,30 @@ pub(crate) fn update_sshd_config(
 
     let re = &PASSWORD_REGEX;
     if re.is_match(&file_content) {
-        let modified_content =
-            re.replace_all(&file_content, "PasswordAuthentication yes\n");
+        let modified_content = re.replace_all(
+            &file_content,
+            "PasswordAuthentication yes # modified by azure-init\n",
+        );
 
-        let temp_sshd_config = NamedTempFile::new()?;
-        let temp_sshd_config_path = temp_sshd_config.path();
-        let mut temp_file = OpenOptions::new()
+        let mut sshd_config = OpenOptions::new()
             .write(true)
-            .create(true)
             .truncate(true)
-            .open(temp_sshd_config_path)?;
-        temp_file.write_all(modified_content.as_bytes())?;
-        temp_file.set_permissions(fs::Permissions::from_mode(0o644))?;
+            .open(&sshd_config_path)?;
+        sshd_config.write_all(modified_content.as_bytes())?;
 
-        fs::rename(temp_sshd_config_path, &sshd_config_path)?;
         tracing::info!(
             ?sshd_config_path,
             "Updated existing sshd setting to allow password authentication"
-        )
+        );
     } else {
         let mut file =
             OpenOptions::new().append(true).open(&sshd_config_path)?;
-        file.write_all(b"PasswordAuthentication yes\n")?;
+        file.write_all(b"PasswordAuthentication yes # added by azure-init\n")?;
+
         tracing::info!(
             ?sshd_config_path,
             "Added new sshd setting to allow password authentication"
-        )
+        );
     }
 
     Ok(())
