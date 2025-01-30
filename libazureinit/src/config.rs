@@ -319,7 +319,7 @@ impl Config {
             .extract::<Config>()
             .map(|config| {
                 tracing::info!(
-                    target: "kvp",
+                    target: "libazureinit::config::success",
                     "Configuration successfully loaded."
                 );
                 config
@@ -351,7 +351,7 @@ impl Config {
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
                 .filter(|path| {
-                    path.extension().map_or(false, |ext| ext == "toml")
+                    path.extension().is_some_and(|ext| ext == "toml")
                 })
                 .collect();
 

@@ -7,7 +7,6 @@ use opentelemetry_sdk::trace::{
 };
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
@@ -30,9 +29,19 @@ pub fn setup_layers(
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
-    let kvp_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .parse_lossy("azure_init=INFO,libazureinit=WARN,kvp=INFO");
+    let kvp_filter = EnvFilter::builder().parse(
+        [
+            "WARN",
+            "azure_init=INFO",
+            "libazureinit::config::success",
+            "libazureinit::http::received",
+            "libazureinit::http::success",
+            "libazureinit::ssh::authorized_keys",
+            "libazureinit::ssh::success",
+            "libazureinit::user::add",
+        ]
+        .join(","),
+    )?;
 
     let emit_kvp_layer = match EmitKVPLayer::new(std::path::PathBuf::from(
         "/var/lib/hyperv/.kvp_pool_1",
