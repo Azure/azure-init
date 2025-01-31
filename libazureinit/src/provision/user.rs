@@ -123,12 +123,12 @@ impl UserProvisioner {
 
 #[instrument(skip_all)]
 fn user_exists(username: &str) -> Result<bool, Error> {
-    let status = Command::new("getent")
+    let output = Command::new("getent")
         .arg("passwd")
         .arg(username)
-        .status()?;
+        .output()?;
 
-    Ok(status.success())
+    Ok(output.status.success())
 }
 
 #[instrument(skip_all)]
@@ -149,63 +149,24 @@ fn useradd(user: &User) -> Result<(), Error> {
             group_list
         );
 
-        let usermod_command =
-            format!("usermod -aG {} {}", group_list, user.name);
-
-        tracing::debug!("Running command: {}", usermod_command);
-
-        let status = Command::new("usermod")
-            .arg("-aG")
-            .arg(&group_list)
-            .arg(&user.name)
-            .status()?;
-
-        tracing::debug!("usermod command exit status: {}", status);
-
-        if !status.success() {
-            return Err(Error::SubprocessFailed {
-                command: usermod_command,
-                status,
-            });
-        }
-
-        return Ok(());
+        let mut command = Command::new("usermod");
+        command.arg("-aG").arg(&group_list).arg(&user.name);
+        return crate::run(command);
     }
 
     let path_useradd = env!("PATH_USERADD");
-    let home_path = format!("/home/{}", user.name);
 
-    let useradd_command = format!(
-        "{} {} --comment 'azure-init created this user based on username provided in IMDS' --groups {} -d {} -m",
-        path_useradd,
-        user.name,
-        user.groups.join(","),
-        home_path
-    );
-
-    tracing::debug!("Running command: {}", useradd_command);
-
-    let status = Command::new(path_useradd)
+    let mut command = Command::new(path_useradd);
+    command
         .arg(&user.name)
         .arg("--comment")
         .arg("azure-init created this user based on username provided in IMDS")
         .arg("--groups")
         .arg(user.groups.join(","))
         .arg("-d")
-        .arg(home_path)
-        .arg("-m")
-        .status()?;
-
-    tracing::debug!("useradd command exit status: {}", status);
-
-    if !status.success() {
-        return Err(Error::SubprocessFailed {
-            command: useradd_command,
-            status,
-        });
-    }
-
-    Ok(())
+        .arg(format!("/home/{}", user.name))
+        .arg("-m");
+    crate::run(command)
 }
 
 fn add_user_for_passwordless_sudo(

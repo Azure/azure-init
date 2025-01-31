@@ -22,7 +22,9 @@ use std::time::Duration;
 use sysinfo::{System, SystemExt};
 use tracing::instrument;
 
+// These should be set during the build process
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 
 /// Minimal provisioning agent for Azure
 ///
@@ -150,10 +152,12 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     );
 
     let mut default_headers = header::HeaderMap::new();
-    let user_agent = header::HeaderValue::from_str(
-        format!("azure-init v{VERSION}").as_str(),
-    )?;
-
+    let user_agent = if cfg!(debug_assertions) {
+        format!("azure-init v{}-{}", VERSION, COMMIT_HASH)
+    } else {
+        format!("azure-init v{}", VERSION)
+    };
+    let user_agent = header::HeaderValue::from_str(user_agent.as_str())?;
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
