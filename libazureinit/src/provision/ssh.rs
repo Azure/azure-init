@@ -85,7 +85,11 @@ pub(crate) fn provision_ssh(
 
     chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
 
-    tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
+    tracing::info!(
+        target: "libazureinit::ssh::authorized_keys",
+        "Using authorized_keys path: {:?}",
+        authorized_keys_path
+    );
 
     let mut authorized_keys = File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
@@ -138,6 +142,7 @@ fn run_sshd_command(
     match sshd_config_command_runner() {
         Ok(output) if output.status.success() => {
             info!(
+                target: "libazureinit::ssh::success",
                 stdout_length = output.stdout.len(),
                 "Executed sshd -G successfully",
             );
@@ -183,6 +188,7 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
         if line.starts_with("authorizedkeysfile") {
             let keypath = line.split_whitespace().nth(1).map(|s| {
                 info!(
+                    target: "libazureinit::ssh::authorized_keys",
                     authorizedkeysfile = %s,
                     "Using sshd's authorizedkeysfile path configuration"
                 );

@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use std::path::PathBuf;
-use std::process::ExitCode;
-use std::time::Duration;
+mod kvp;
+mod logging;
+pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
 use clap::Parser;
@@ -16,10 +17,10 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision,
 };
+use std::process::ExitCode;
+use std::time::Duration;
+use sysinfo::{System, SystemExt};
 use tracing::instrument;
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::EnvFilter;
 
 // These should be set during the build process
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,8 +67,10 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
         }
     }
 
-    environment
-        .ok_or_else(|| anyhow::anyhow!("Unable to get list of block devices"))
+    environment.ok_or_else(|| {
+        tracing::error!("Unable to get list of block devices");
+        anyhow::anyhow!("Unable to get list of block devices")
+    })
 }
 
 #[instrument(skip_all)]
@@ -87,21 +90,19 @@ fn get_username(
                 .linux_prov_conf_set
                 .username
         })
-        .ok_or(LibError::UsernameFailure.into())
+        .ok_or_else(|| {
+            tracing::error!("Username Failure");
+            LibError::UsernameFailure.into()
+        })
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let stderr = tracing_subscriber::fmt::layer()
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-        .with_writer(std::io::stderr);
-    let registry = tracing_subscriber::registry()
-        .with(stderr)
-        .with(EnvFilter::from_env("AZURE_INIT_LOG"));
-    tracing::subscriber::set_global_default(registry).expect(
-        "Only an application should set the global default; \
-        a library is mis-using the tracing API.",
-    );
+    let tracer = initialize_tracing();
+
+    if let Err(e) = setup_layers(tracer) {
+        eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
+    }
 
     let opts = Cli::parse();
 
@@ -117,6 +118,7 @@ async fn main() -> ExitCode {
     match provision(config, opts).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
+            tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
             let config: u8 = exitcode::CONFIG
                 .try_into()
@@ -132,8 +134,23 @@ async fn main() -> ExitCode {
     }
 }
 
-#[instrument]
+#[instrument(name = "root", skip_all)]
 async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
+    let system = System::new();
+    let kernel_version = system
+        .kernel_version()
+        .unwrap_or("Unknown Kernel Version".to_string());
+    let os_version = system
+        .os_version()
+        .unwrap_or("Unknown OS Version".to_string());
+
+    tracing::info!(
+        "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
+        kernel_version,
+        os_version,
+        VERSION
+    );
+
     let mut default_headers = header::HeaderMap::new();
     let user_agent = if cfg!(debug_assertions) {
         format!("azure-init v{}-{}", VERSION, COMMIT_HASH)
@@ -188,7 +205,10 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         None, // default wireserver goalstate URL
     )
     .await
-    .with_context(|| "Failed to get desired goalstate.")?;
+    .with_context(|| {
+        tracing::error!("Failed to get the desired goalstate.");
+        "Failed to get desired goalstate."
+    })?;
 
     goalstate::report_health(
         &client,
@@ -198,7 +218,10 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         None, // default wireserver health URL
     )
     .await
-    .with_context(|| "Failed to report VM health.")?;
+    .with_context(|| {
+        tracing::error!("Failed to report VM health.");
+        "Failed to report VM health."
+    })?;
 
     Ok(())
 }

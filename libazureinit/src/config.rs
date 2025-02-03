@@ -315,13 +315,22 @@ impl Config {
             }
         }
 
-        figment.extract::<Config>().map_err(|e| {
-            tracing::error!("Failed to extract configuration: {:?}", e);
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Configuration error: {:?}", e),
-            ))
-        })
+        figment
+            .extract::<Config>()
+            .map(|config| {
+                tracing::info!(
+                    target: "libazureinit::config::success",
+                    "Configuration successfully loaded."
+                );
+                config
+            })
+            .map_err(|e| {
+                tracing::error!("Failed to extract configuration: {:?}", e);
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Configuration error: {:?}", e),
+                ))
+            })
     }
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
@@ -396,13 +405,13 @@ mod tests {
 
     #[test]
     fn test_load_invalid_config() -> Result<(), Error> {
-        tracing::info!("Starting test_load_invalid_config...");
+        tracing::debug!("Starting test_load_invalid_config...");
 
         let dir = tempdir()?;
         let drop_in_path = dir.path().join("drop_in_path");
         let file_path = dir.path().join("invalid_config.toml");
 
-        tracing::info!("Writing an invalid configuration file...");
+        tracing::debug!("Writing an invalid configuration file...");
         let mut file = fs::File::create(&file_path)?;
         writeln!(
             file,
@@ -413,13 +422,13 @@ mod tests {
         "#
         )?;
 
-        tracing::info!("Attempting to load configuration from file...");
+        tracing::debug!("Attempting to load configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
 
         assert!(result.is_err(), "Expected an error due to invalid config");
 
-        tracing::info!(
+        tracing::debug!(
             "test_load_invalid_config completed with expected error."
         );
 
@@ -428,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_load_invalid_hostname_provisioner_config() -> Result<(), Error> {
-        tracing::info!(
+        tracing::debug!(
             "Starting test_load_invalid_hostname_provisioner_config..."
         );
 
@@ -437,7 +446,7 @@ mod tests {
         let file_path =
             dir.path().join("invalid_hostname_provisioner_config.toml");
 
-        tracing::info!(
+        tracing::debug!(
             "Writing an invalid hostname provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
@@ -449,7 +458,7 @@ mod tests {
             "#
         )?;
 
-        tracing::info!("Attempting to load hostname provisioner configuration from file...");
+        tracing::debug!("Attempting to load hostname provisioner configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
         assert!(
@@ -457,20 +466,22 @@ mod tests {
             "Expected an error due to invalid hostname provisioner config"
         );
 
-        tracing::info!("test_load_invalid_hostname_provisioner_config completed with expected error.");
+        tracing::debug!("test_load_invalid_hostname_provisioner_config completed with expected error.");
 
         Ok(())
     }
 
     #[test]
     fn test_load_invalid_user_provisioner_config() -> Result<(), Error> {
-        tracing::info!("Starting test_load_invalid_user_provisioner_config...");
+        tracing::debug!(
+            "Starting test_load_invalid_user_provisioner_config..."
+        );
 
         let dir = tempdir()?;
         let drop_in_path = dir.path().join("drop_in_path");
         let file_path = dir.path().join("invalid_user_provisioner_config.toml");
 
-        tracing::info!(
+        tracing::debug!(
             "Writing an invalid user provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
@@ -482,7 +493,7 @@ mod tests {
             "#
         )?;
 
-        tracing::info!(
+        tracing::debug!(
             "Attempting to load user provisioner configuration from file..."
         );
         let result: Result<Config, crate::error::Error> =
@@ -492,14 +503,14 @@ mod tests {
             "Expected an error due to invalid user provisioner config"
         );
 
-        tracing::info!("test_load_invalid_user_provisioner_config completed with expected error.");
+        tracing::debug!("test_load_invalid_user_provisioner_config completed with expected error.");
 
         Ok(())
     }
 
     #[test]
     fn test_load_invalid_password_provisioner_config() -> Result<(), Error> {
-        tracing::info!(
+        tracing::debug!(
             "Starting test_load_invalid_password_provisioner_config..."
         );
 
@@ -508,7 +519,7 @@ mod tests {
         let file_path =
             dir.path().join("invalid_password_provisioner_config.toml");
 
-        tracing::info!(
+        tracing::debug!(
             "Writing an invalid password provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
@@ -520,7 +531,7 @@ mod tests {
             "#
         )?;
 
-        tracing::info!("Attempting to load password provisioner configuration from file...");
+        tracing::debug!("Attempting to load password provisioner configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
         assert!(
@@ -528,14 +539,14 @@ mod tests {
             "Expected an error due to invalid password provisioner config"
         );
 
-        tracing::info!("test_load_invalid_password_provisioner_config completed with expected error.");
+        tracing::debug!("test_load_invalid_password_provisioner_config completed with expected error.");
 
         Ok(())
     }
 
     #[test]
     fn test_empty_config_file() -> Result<(), Error> {
-        tracing::info!(
+        tracing::debug!(
             "Starting test_empty_config_file_uses_defaults_when_merged..."
         );
 
@@ -543,13 +554,13 @@ mod tests {
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let empty_file_path = dir.path().join("empty_config.toml");
 
-        tracing::info!("Creating an empty configuration file...");
+        tracing::debug!("Creating an empty configuration file...");
         fs::File::create(&empty_file_path)?;
 
-        tracing::info!("Loading configuration with empty file...");
+        tracing::debug!("Loading configuration with empty file...");
         let config = Config::load_from(empty_file_path, drop_in_path, None)?;
 
-        tracing::info!("Verifying configuration matches defaults...");
+        tracing::debug!("Verifying configuration matches defaults...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
             ".ssh/authorized_keys"
@@ -586,7 +597,7 @@ mod tests {
 
         assert!(config.telemetry.kvp_diagnostics);
 
-        tracing::info!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
+        tracing::debug!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
 
         Ok(())
     }
@@ -597,7 +608,7 @@ mod tests {
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let override_file_path = dir.path().join("override_config.toml");
 
-        tracing::info!(
+        tracing::debug!(
             "Writing an override configuration file with custom values..."
         );
         let mut override_file = fs::File::create(&override_file_path)?;
@@ -622,7 +633,7 @@ mod tests {
         "#
         )?;
 
-        tracing::info!("Loading override configuration from file...");
+        tracing::debug!("Loading override configuration from file...");
         let config = Config::load_from(override_file_path, drop_in_path, None)
             .map_err(|e| {
                 tracing::error!(
@@ -632,14 +643,14 @@ mod tests {
                 e
             })?;
 
-        tracing::info!("Verifying merged SSH configuration values...");
+        tracing::debug!("Verifying merged SSH configuration values...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
             ".ssh/authorized_keys"
         );
         assert!(!config.ssh.query_sshd_config);
 
-        tracing::info!(
+        tracing::debug!(
             "Verifying default hostname provisioner configuration..."
         );
         assert_eq!(
@@ -647,13 +658,13 @@ mod tests {
             vec![HostnameProvisioner::Hostnamectl]
         );
 
-        tracing::info!("Verifying merged user provisioner configuration...");
+        tracing::debug!("Verifying merged user provisioner configuration...");
         assert_eq!(
             config.user_provisioners.backends,
             vec![UserProvisioner::Useradd]
         );
 
-        tracing::info!(
+        tracing::debug!(
             "Verifying merged password provisioner configuration..."
         );
         assert_eq!(
@@ -661,21 +672,21 @@ mod tests {
             vec![PasswordProvisioner::Passwd]
         );
 
-        tracing::info!("Verifying merged IMDS configuration...");
+        tracing::debug!("Verifying merged IMDS configuration...");
         assert_eq!(config.imds.connection_timeout_secs, 5.0);
         assert_eq!(config.imds.read_timeout_secs, 120.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
 
-        tracing::info!("Verifying merged provisioning media configuration...");
+        tracing::debug!("Verifying merged provisioning media configuration...");
         assert!(!config.provisioning_media.enable);
 
-        tracing::info!("Verifying merged Azure proxy agent configuration...");
+        tracing::debug!("Verifying merged Azure proxy agent configuration...");
         assert!(!config.azure_proxy_agent.enable);
 
-        tracing::info!("Verifying merged telemetry configuration...");
+        tracing::debug!("Verifying merged telemetry configuration...");
         assert!(!config.telemetry.kvp_diagnostics);
 
-        tracing::info!(
+        tracing::debug!(
             "test_load_and_merge_with_default_config completed successfully."
         );
 
@@ -688,56 +699,58 @@ mod tests {
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
         let base_path = dir.path().join("base_path");
 
-        tracing::info!("Starting test_default_config...");
+        tracing::debug!("Starting test_default_config...");
 
-        tracing::info!("Loading default configuration without overrides...");
+        tracing::debug!("Loading default configuration without overrides...");
         let config = Config::load_from(base_path, drop_in_path, None)?;
 
-        tracing::info!("Verifying default SSH configuration values...");
+        tracing::debug!("Verifying default SSH configuration values...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
             ".ssh/authorized_keys"
         );
         assert!(config.ssh.query_sshd_config);
 
-        tracing::info!("Verifying default hostname provisioner...");
+        tracing::debug!("Verifying default hostname provisioner...");
         assert_eq!(
             config.hostname_provisioners.backends,
             vec![HostnameProvisioner::Hostnamectl]
         );
 
-        tracing::info!("Verifying default user provisioner...");
+        tracing::debug!("Verifying default user provisioner...");
         assert_eq!(
             config.user_provisioners.backends,
             vec![UserProvisioner::Useradd]
         );
 
-        tracing::info!("Verifying default password provisioner...");
+        tracing::debug!("Verifying default password provisioner...");
         assert_eq!(
             config.password_provisioners.backends,
             vec![PasswordProvisioner::Passwd]
         );
 
-        tracing::info!("Verifying default IMDS configuration...");
+        tracing::debug!("Verifying default IMDS configuration...");
         assert_eq!(config.imds.connection_timeout_secs, 2.0);
         assert_eq!(config.imds.read_timeout_secs, 60.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
 
-        tracing::info!("Verifying default provisioning media configuration...");
+        tracing::debug!(
+            "Verifying default provisioning media configuration..."
+        );
         assert!(config.provisioning_media.enable);
 
-        tracing::info!("Verifying default Azure proxy agent configuration...");
+        tracing::debug!("Verifying default Azure proxy agent configuration...");
         assert!(config.azure_proxy_agent.enable);
 
-        tracing::info!("Verifying default wireserver configuration...");
+        tracing::debug!("Verifying default wireserver configuration...");
         assert_eq!(config.wireserver.connection_timeout_secs, 2.0);
         assert_eq!(config.wireserver.read_timeout_secs, 60.0);
         assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
 
-        tracing::info!("Verifying default telemetry configuration...");
+        tracing::debug!("Verifying default telemetry configuration...");
         assert!(config.telemetry.kvp_diagnostics);
 
-        tracing::info!("test_default_config completed successfully.");
+        tracing::debug!("test_default_config completed successfully.");
 
         Ok(())
     }
@@ -838,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_merge_toml_basic_and_progressive() -> Result<(), Error> {
-        tracing::info!("Starting test_merge_toml_basic_and_progressive...");
+        tracing::debug!("Starting test_merge_toml_basic_and_progressive...");
 
         let dir = tempdir()?;
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
@@ -848,7 +861,7 @@ mod tests {
         let override_file_path_1 = drop_in_path.join("override_config_1.toml");
         let override_file_path_2 = drop_in_path.join("override_config_2.toml");
 
-        tracing::info!("Writing base configuration...");
+        tracing::debug!("Writing base configuration...");
         let mut base_file = fs::File::create(&base_file_path)?;
         writeln!(
             base_file,
@@ -860,7 +873,7 @@ mod tests {
         "#
         )?;
 
-        tracing::info!("Writing first override configuration...");
+        tracing::debug!("Writing first override configuration...");
         let mut override_file_1 = fs::File::create(&override_file_path_1)?;
         writeln!(
             override_file_1,
@@ -870,7 +883,7 @@ mod tests {
         "#
         )?;
 
-        tracing::info!("Writing second override configuration...");
+        tracing::debug!("Writing second override configuration...");
         let mut override_file_2 = fs::File::create(&override_file_path_2)?;
         writeln!(
             override_file_2,
@@ -882,10 +895,10 @@ mod tests {
         "#
         )?;
 
-        tracing::info!("Loading and merging configurations...");
+        tracing::debug!("Loading and merging configurations...");
         let config = Config::load_from(base_file_path, drop_in_path, None)?;
 
-        tracing::info!("Verifying merged configuration...");
+        tracing::debug!("Verifying merged configuration...");
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
             "/custom/.ssh/authorized_keys",
@@ -893,7 +906,7 @@ mod tests {
         assert!(!config.ssh.query_sshd_config);
         assert!(!config.telemetry.kvp_diagnostics);
 
-        tracing::info!(
+        tracing::debug!(
             "test_merge_toml_basic_and_progressive completed successfully."
         );
         Ok(())

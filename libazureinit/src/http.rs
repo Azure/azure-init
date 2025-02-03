@@ -121,12 +121,12 @@ async fn request(
                         let _enter = span.enter();
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
-                        tracing::info!(url=response.url().as_str(), "HTTP response received");
+                        tracing::info!(target: "libazureinit::http::received", url=response.url().as_str(), "HTTP response received");
 
                         match response.error_for_status() {
                             Ok(response) => {
                                 if statuscode == StatusCode::OK {
-                                    tracing::info!("HTTP response succeeded with status {}", statuscode);
+                                    tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
                                     return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }
                             },

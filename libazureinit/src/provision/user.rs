@@ -135,6 +135,7 @@ fn user_exists(username: &str) -> Result<bool, Error> {
 fn useradd(user: &User) -> Result<(), Error> {
     if user_exists(&user.name)? {
         tracing::info!(
+            target: "libazureinit::user::add",
             "User '{}' already exists. Skipping user creation.",
             user.name
         );
@@ -142,6 +143,7 @@ fn useradd(user: &User) -> Result<(), Error> {
         let group_list = user.groups.join(",");
 
         tracing::info!(
+            target: "libazureinit:user::add",
             "User '{}' is being added to the following groups: {}",
             user.name,
             group_list
