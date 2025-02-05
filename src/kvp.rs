@@ -29,7 +29,7 @@ use tracing_subscriber::{
     layer::Context as TracingContext, registry::LookupSpan, Layer,
 };
 
-use sysinfo::{System, SystemExt};
+use sysinfo::System;
 
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
 
@@ -478,9 +478,10 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
 /// such as determining whether data is stale or calculating the approximate boot time.
 fn get_uptime() -> Duration {
     let mut system = System::new();
-    system.refresh_system();
+    system.refresh_memory();
+    system.refresh_cpu_usage();
 
-    let uptime_seconds = system.uptime();
+    let uptime_seconds = System::uptime();
     Duration::from_secs(uptime_seconds)
 }
 
@@ -505,14 +506,13 @@ mod tests {
     #[instrument]
     async fn mock_provision() -> Result<(), anyhow::Error> {
         let mut system = System::new();
-        system.refresh_system();
+        system.refresh_memory();
+        system.refresh_cpu_usage();
 
-        let kernel_version = system
-            .kernel_version()
+        let kernel_version = System::kernel_version()
             .unwrap_or("Unknown Kernel Version".to_string());
-        let os_version = system
-            .os_version()
-            .unwrap_or("Unknown OS Version".to_string());
+        let os_version =
+            System::os_version().unwrap_or("Unknown OS Version".to_string());
         let azure_init_version = env!("CARGO_PKG_VERSION");
 
         event!(
