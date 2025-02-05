@@ -19,7 +19,7 @@ use libazureinit::{
 };
 use std::process::ExitCode;
 use std::time::Duration;
-use sysinfo::{System, SystemExt};
+use sysinfo::System;
 use tracing::instrument;
 
 // These should be set during the build process
@@ -136,13 +136,10 @@ async fn main() -> ExitCode {
 
 #[instrument(name = "root", skip_all)]
 async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
-    let system = System::new();
-    let kernel_version = system
-        .kernel_version()
+    let kernel_version = System::kernel_version()
         .unwrap_or("Unknown Kernel Version".to_string());
-    let os_version = system
-        .os_version()
-        .unwrap_or("Unknown OS Version".to_string());
+    let os_version =
+        System::os_version().unwrap_or("Unknown OS Version".to_string());
 
     tracing::info!(
         "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
