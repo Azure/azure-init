@@ -3,7 +3,7 @@
 
 use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{
-    self as sdktrace, Config, Sampler, TracerProvider as SdkTracerProvider,
+    self as sdktrace, Sampler, TracerProvider as SdkTracerProvider,
 };
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -15,9 +15,9 @@ use tracing_subscriber::{
 use crate::kvp::EmitKVPLayer;
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
-    let config = Config::default().with_sampler(Sampler::AlwaysOn);
-
-    let provider = SdkTracerProvider::builder().with_config(config).build();
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(Sampler::AlwaysOn)
+        .build();
 
     global::set_tracer_provider(provider.clone());
     provider.tracer("azure-kvp")
