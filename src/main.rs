@@ -17,6 +17,7 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision,
 };
+use libazureinit::{is_provisioning_complete, mark_provisioning_complete};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
@@ -115,8 +116,21 @@ async fn main() -> ExitCode {
         }
     };
 
+    if is_provisioning_complete() {
+        tracing::info!("Provisioning already complete. Exiting...");
+        return ExitCode::SUCCESS;
+    }
+
     match provision(config, opts).await {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            if let Err(e) = mark_provisioning_complete() {
+                tracing::error!(
+                    "Failed to mark provisioning as complete: {:?}",
+                    e
+                );
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);

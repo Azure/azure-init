@@ -10,6 +10,8 @@ pub mod media;
 
 mod provision;
 pub use provision::{user::User, Provision};
+mod status;
+pub use status::{is_provisioning_complete, mark_provisioning_complete};
 
 #[cfg(test)]
 mod unittest;
