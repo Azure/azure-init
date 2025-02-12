@@ -86,7 +86,7 @@ fn swap_uuid_to_little_endian(bytes: [u8; 16]) -> [u8; 16] {
 /// # Returns
 /// - `Some(String)` containing the VM ID if retrieval is successful.
 /// - `None` if something fails or the output is empty.
-fn get_vm_id() -> Option<String> {
+pub fn get_vm_id() -> Option<String> {
     // Test override check
     if let Ok(mock_id) = std::env::var("MOCK_VM_ID") {
         return Some(mock_id);
@@ -96,13 +96,16 @@ fn get_vm_id() -> Option<String> {
     {
         Ok(s) => s.trim().to_lowercase(),
         Err(err) => {
-            eprintln!("Failed to read /sys/class/dmi/id/product_uuid: {}", err);
+            tracing::error!(
+                "Failed to read /sys/class/dmi/id/product_uuid: {}",
+                err
+            );
             return None;
         }
     };
 
     if system_uuid.is_empty() {
-        eprintln!("system-uuid is empty");
+        tracing::info!(target: "libazureinit::status::retrieved_vm_id", "system-uuid is empty");
         return None;
     }
 
@@ -113,21 +116,21 @@ fn get_vm_id() -> Option<String> {
                 let swapped_bytes = swap_uuid_to_little_endian(*original_bytes);
                 let swapped_uuid = Uuid::from_bytes(swapped_bytes);
                 let final_id = swapped_uuid.to_string();
-                eprintln!("VM ID (Gen1, swapped): {}", final_id);
+                tracing::info!(target: "libazureinit::status::retrieved_vm_id", "VM ID (Gen1, swapped): {}", final_id);
                 Some(final_id)
             }
             Err(e) => {
-                eprintln!(
+                tracing::error!(
                     "Failed to parse system UUID '{}': {}",
-                    system_uuid, e
+                    system_uuid,
+                    e
                 );
                 // fallback to the raw string
                 Some(system_uuid)
             }
         }
     } else {
-        // 4. For Gen2, no swap needed
-        eprintln!("VM ID (Gen2, no swap): {}", system_uuid);
+        tracing::info!(target: "libazureinit::status::retrieved_vm_id", "VM ID (Gen2, no swap): {}", system_uuid);
         Some(system_uuid)
     }
 }

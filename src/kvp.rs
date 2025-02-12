@@ -37,6 +37,8 @@ use chrono::{DateTime, Utc};
 use std::fmt;
 use uuid::Uuid;
 
+use libazureinit::get_vm_id;
+
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
 const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1022;
@@ -125,6 +127,7 @@ impl fmt::Display for SpanStatus {
 /// task, and provides functions to send encoded data for logging.
 pub struct EmitKVPLayer {
     events_tx: UnboundedSender<Vec<u8>>,
+    vm_id: String,
 }
 
 impl EmitKVPLayer {
@@ -149,7 +152,9 @@ impl EmitKVPLayer {
 
         tokio::spawn(Self::kvp_writer(file, events_rx));
 
-        Ok(Self { events_tx })
+        let vm_id = get_vm_id().unwrap_or_else(|| "unknown-vm-id".to_string());
+
+        Ok(Self { events_tx, vm_id })
     }
 
     /// An asynchronous task that serializes incoming KVP data to the specified file.
@@ -192,7 +197,8 @@ impl EmitKVPLayer {
         span_id: &str,
         event_value: &str,
     ) {
-        let event_key = generate_event_key(event_level, event_name, span_id);
+        let event_key =
+            generate_event_key(&self.vm_id, event_level, event_name, span_id);
         let encoded_kvp = encode_kvp_item(&event_key, event_value);
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
@@ -338,13 +344,14 @@ where
 /// * `event_name` - The name of the event.
 /// * `span_id` - A unique identifier for the span.
 fn generate_event_key(
+    vm_id: &str,
     event_level: &str,
     event_name: &str,
     span_id: &str,
 ) -> String {
     format!(
-        "{}|{}|{}|{}",
-        EVENT_PREFIX, event_level, event_name, span_id
+        "{}|{}|{}|{}|{}",
+        EVENT_PREFIX, vm_id, event_level, event_name, span_id
     )
 }
 
