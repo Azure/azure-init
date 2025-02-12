@@ -8,7 +8,7 @@
 //! the VM ID in a persistent location (`/var/lib/azure-init/`).
 //!
 //! # Logic Overview
-//! - Retrieves the VM ID using `dmidecode`.
+//! - Retrieves the VM ID using reading `/sys/class/dmi/id/product_uuid` and byte-swapping if gen1 VM.
 //! - Determines if provisioning is required by checking if a status file exists.
 //! - Creates the provisioning status file upon successful provisioning.
 //! - Prevents unnecessary re-provisioning on reboot, unless the VM ID changes.
@@ -18,10 +18,11 @@
 //! - On **reboot**, if the same VM ID exists, provisioning is skipped.
 //! - If the **VM ID changes** (e.g., due to VM cloning), provisioning runs again.
 
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use std::env;
 use std::fs::{self, File};
 use std::path::Path;
-use std::process::Command;
+use uuid::Uuid;
 
 use crate::error::Error;
 
@@ -44,28 +45,91 @@ fn check_provision_dir() -> Result<(), Error> {
     Ok(())
 }
 
-/// Retrieves the VM ID using `dmidecode`.
+/// Determines if VM is a gen1 or gen2 based on EFI detection,
+/// Returns `true` if it is a Gen1 VM (i.e., not UEFI/Gen2).
+fn is_vm_gen1() -> bool {
+    if Path::new("/sys/firmware/efi").exists() {
+        return false;
+    }
+    if Path::new("/dev/efi").exists() {
+        return false;
+    }
+    true
+}
+
+/// A helper function that reorders the UUID's first three fields into little-endian.
+// The standard UUID fields are: d1 (4 bytes), d2 (2 bytes), d3 (2 bytes), and d4 (8 bytes).
+fn swap_uuid_to_little_endian(bytes: [u8; 16]) -> [u8; 16] {
+    let d1 = BigEndian::read_u32(&bytes[0..4]);
+    let d2 = BigEndian::read_u16(&bytes[4..6]);
+    let d3 = BigEndian::read_u16(&bytes[6..8]);
+
+    let d1_le = d1.swap_bytes();
+    let d2_le = d2.swap_bytes();
+    let d3_le = d3.swap_bytes();
+
+    let mut swapped = [0u8; 16];
+    LittleEndian::write_u32(&mut swapped[0..4], d1_le);
+    LittleEndian::write_u16(&mut swapped[4..6], d2_le);
+    LittleEndian::write_u16(&mut swapped[6..8], d3_le);
+
+    swapped[8..16].copy_from_slice(&bytes[8..16]);
+
+    swapped
+}
+
+/// Retrieves the VM ID by reading `/sys/class/dmi/id/product_uuid` and byte-swapping if Gen1.
 ///
 /// The VM ID is a unique system identifier that persists across reboots but changes
 /// when a VM is cloned or redeployed.
 ///
 /// # Returns
 /// - `Some(String)` containing the VM ID if retrieval is successful.
-/// - `None` if `dmidecode` fails or the output is empty.
+/// - `None` if something fails or the output is empty.
 fn get_vm_id() -> Option<String> {
     // Test override check
     if let Ok(mock_id) = std::env::var("MOCK_VM_ID") {
         return Some(mock_id);
     }
 
-    Command::new("dmidecode")
-        .args(["-s", "system-uuid"])
-        .output()
-        .ok()
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        })
-        .filter(|vm_id| !vm_id.is_empty())
+    let system_uuid = match fs::read_to_string("/sys/class/dmi/id/product_uuid")
+    {
+        Ok(s) => s.trim().to_lowercase(),
+        Err(err) => {
+            eprintln!("Failed to read /sys/class/dmi/id/product_uuid: {}", err);
+            return None;
+        }
+    };
+
+    if system_uuid.is_empty() {
+        eprintln!("system-uuid is empty");
+        return None;
+    }
+
+    if is_vm_gen1() {
+        match Uuid::parse_str(&system_uuid) {
+            Ok(uuid_parsed) => {
+                let original_bytes = uuid_parsed.as_bytes();
+                let swapped_bytes = swap_uuid_to_little_endian(*original_bytes);
+                let swapped_uuid = Uuid::from_bytes(swapped_bytes);
+                let final_id = swapped_uuid.to_string();
+                eprintln!("VM ID (Gen1, swapped): {}", final_id);
+                Some(final_id)
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to parse system UUID '{}': {}",
+                    system_uuid, e
+                );
+                // fallback to the raw string
+                Some(system_uuid)
+            }
+        }
+    } else {
+        // 4. For Gen2, no swap needed
+        eprintln!("VM ID (Gen2, no swap): {}", system_uuid);
+        Some(system_uuid)
+    }
 }
 
 /// This function checks whether a provisioning status file exists for the current VM ID.
