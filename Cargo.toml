@@ -20,7 +20,7 @@ sysinfo = "0.33"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 opentelemetry = "0.27"
 opentelemetry_sdk = "0.27"
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.29"
 uuid = { version = "1.2", features = ["v4"] }
 chrono = "0.4"
 
