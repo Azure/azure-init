@@ -116,14 +116,19 @@ async fn main() -> ExitCode {
         }
     };
 
-    if is_provisioning_complete() {
-        tracing::info!("Provisioning already complete. Exiting...");
+    if is_provisioning_complete(Some(&config), None) {
+        tracing::info!(
+            "Provisioning already completed earlier. Skipping provisioning."
+        );
         return ExitCode::SUCCESS;
     }
 
+    let clone_config = config.clone();
     match provision(config, opts).await {
         Ok(_) => {
-            if let Err(e) = mark_provisioning_complete() {
+            if let Err(e) =
+                mark_provisioning_complete(Some(&clone_config), None)
+            {
                 tracing::error!(
                     "Failed to mark provisioning as complete: {:?}",
                     e
