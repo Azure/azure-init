@@ -10,8 +10,7 @@
 //! # Logic Overview
 //! - Retrieves the VM ID using reading `/sys/class/dmi/id/product_uuid` and byte-swapping if Gen1 VM.
 //! - Determines if provisioning is required by checking if a status file exists.
-//! - The provisioning directory is configurable via the Config struct (defaulting to `/var/lib/azure-init/`),
-//!   but can be overridden via environment variables for testing.
+//! - The provisioning directory is configurable via the Config struct (defaulting to `/var/lib/azure-init/`).
 //! - Creates the provisioning status file upon successful provisioning.
 //! - Prevents unnecessary re-provisioning on reboot, unless the VM ID changes.
 //!
@@ -20,8 +19,6 @@
 //! - On **reboot**, if the same VM ID exists, provisioning is skipped.
 //! - If the **VM ID changes** (e.g., due to VM cloning), provisioning runs again.
 
-use byteorder::{BigEndian, ByteOrder};
-use std::env;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -29,17 +26,11 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::error::Error;
 
-/// This function first checks if the environment variable `AZURE_INIT_TEST_PROVISIONING_DIR`
-/// is set (used primarily in tests). If set, it returns that directory. Otherwise, if a Config
-/// is provided, it returns the directory specified by `config.provisioning_dir.path`. If no Config
-/// is provided, it falls back to the default path `/var/lib/azure-init/`.
+/// This function determines the effective provisioning directory.
+///
+/// If a [`Config`] is provided, this function returns `config.provisioning_dir.path`.
+/// Otherwise, it falls back to the default `/var/lib/azure-init/`.
 fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
-    if let Ok(env_dir) = env::var("AZURE_INIT_TEST_PROVISIONING_DIR") {
-        return PathBuf::from(env_dir);
-    }
-
-    // If config is provided, use config.provisioning_dir.path
-    // Otherwise, fallback to /var/lib/azure-init/.
     config
         .map(|cfg| cfg.provisioning_dir.path.clone())
         .unwrap_or_else(|| PathBuf::from("/var/lib/azure-init/"))
@@ -78,35 +69,37 @@ fn is_vm_gen1(mock_efi_path: Option<&str>) -> bool {
     }
 }
 
-/// Converts a UUID from big-endian to little-endian format, as required for Gen1 VMs.
-/// # Swap Behavior:
-/// - The **first three fields** (`d1`, `d2`, `d3`) are **byte-swapped** individually.
-/// - The **last 8 bytes (`d4`) remain unchanged**.
-fn swap_uuid_to_little_endian(bytes: [u8; 16]) -> [u8; 16] {
-    let d1 = BigEndian::read_u32(&bytes[0..4]);
-    let d2 = BigEndian::read_u16(&bytes[4..6]);
-    let d3 = BigEndian::read_u16(&bytes[6..8]);
+/// Converts the first three fields of a 16-byte array from big-endian to
+/// the native endianness, then returns it as a `Uuid`.
+///
+/// This partially swaps the UUID so that d1 (4 bytes), d2 (2 bytes), and d3 (2 bytes)
+/// are converted from big-endian to the local endianness, leaving the final 8 bytes as-is.
+fn swap_uuid_to_little_endian(mut bytes: [u8; 16]) -> Uuid {
+    let (d1, remainder) = bytes.split_at(std::mem::size_of::<u32>());
+    let d1 = d1
+        .try_into()
+        .map(u32::from_be_bytes)
+        .unwrap_or(0)
+        .to_ne_bytes();
 
-    let d1_le = d1.swap_bytes();
-    let d2_le = d2.swap_bytes();
-    let d3_le = d3.swap_bytes();
+    let (d2, remainder) = remainder.split_at(std::mem::size_of::<u16>());
+    let d2 = d2
+        .try_into()
+        .map(u16::from_be_bytes)
+        .unwrap_or(0)
+        .to_ne_bytes();
 
-    let mut swapped = [0u8; 16];
+    let (d3, _) = remainder.split_at(std::mem::size_of::<u16>());
+    let d3 = d3
+        .try_into()
+        .map(u16::from_be_bytes)
+        .unwrap_or(0)
+        .to_ne_bytes();
 
-    swapped[0] = (d1_le >> 24) as u8;
-    swapped[1] = (d1_le >> 16) as u8;
-    swapped[2] = (d1_le >> 8) as u8;
-    swapped[3] = (d1_le) as u8;
-
-    swapped[4] = (d2_le >> 8) as u8;
-    swapped[5] = (d2_le) as u8;
-
-    swapped[6] = (d3_le >> 8) as u8;
-    swapped[7] = (d3_le) as u8;
-
-    swapped[8..16].copy_from_slice(&bytes[8..16]);
-
-    swapped
+    let native_endian = d1.into_iter().chain(d2).chain(d3).collect::<Vec<_>>();
+    debug_assert_eq!(native_endian.len(), 8);
+    bytes[..native_endian.len()].copy_from_slice(&native_endian);
+    uuid::Uuid::from_bytes(bytes)
 }
 
 /// Retrieves the VM ID by reading `/sys/class/dmi/id/product_uuid` and byte-swapping if Gen1.
@@ -140,9 +133,8 @@ pub fn get_vm_id(
     if is_vm_gen1(mock_efi_path) {
         match Uuid::parse_str(&system_uuid) {
             Ok(uuid_parsed) => {
-                let original_bytes = uuid_parsed.as_bytes();
-                let swapped_bytes = swap_uuid_to_little_endian(*original_bytes);
-                let swapped_uuid = Uuid::from_bytes(swapped_bytes);
+                let swapped_uuid =
+                    swap_uuid_to_little_endian(*uuid_parsed.as_bytes());
                 let final_id = swapped_uuid.to_string();
                 tracing::info!(target: "libazureinit::status::retrieved_vm_id", "VM ID (Gen1, swapped): {}", final_id);
                 Some(final_id)
@@ -227,13 +219,21 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Creates a temporary directory and returns a default `Config`
+    /// whose `provisioning_dir` points to that temp directory.
+    /// Also returns the `TempDir` so it remains in scope for the test.
+    fn create_test_config() -> (Config, TempDir) {
+        let test_dir = TempDir::new().unwrap();
+
+        let mut test_config = Config::default();
+        test_config.provisioning_dir.path = test_dir.path().to_path_buf();
+
+        (test_config, test_dir)
+    }
+
     #[test]
     fn test_mark_provisioning_complete() {
-        let test_dir = TempDir::new().unwrap();
-        std::env::set_var(
-            "AZURE_INIT_TEST_PROVISIONING_DIR",
-            test_dir.path().to_str().unwrap(),
-        );
+        let (test_config, test_dir) = create_test_config();
 
         let mock_vm_id_path = test_dir.path().join("mock_product_uuid");
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440000")
@@ -247,16 +247,14 @@ mod tests {
             "File should not exist before provisioning"
         );
 
-        mark_provisioning_complete(None, Some(vm_id.clone())).unwrap();
+        mark_provisioning_complete(Some(&test_config), Some(vm_id.clone()))
+            .unwrap();
         assert!(file_path.exists(), "Provisioning file should be created");
     }
+
     #[test]
     fn test_is_provisioning_complete() {
-        let test_dir = TempDir::new().unwrap();
-        std::env::set_var(
-            "AZURE_INIT_TEST_PROVISIONING_DIR",
-            test_dir.path().to_str().unwrap(),
-        );
+        let (test_config, test_dir) = create_test_config();
 
         let mock_vm_id_path = test_dir.path().join("mock_product_uuid");
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440001")
@@ -264,37 +262,38 @@ mod tests {
 
         let vm_id =
             get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None).unwrap();
+
         let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
         fs::File::create(&file_path).unwrap();
 
         assert!(
-            is_provisioning_complete(None, Some(vm_id.clone())),
+            is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
             "Provisioning should be complete if file exists"
         );
     }
 
     #[test]
     fn test_provisioning_skipped_on_simulated_reboot() {
-        let test_dir = TempDir::new().unwrap();
-        std::env::set_var(
-            "AZURE_INIT_TEST_PROVISIONING_DIR",
-            test_dir.path().to_str().unwrap(),
-        );
+        let (test_config, test_dir) = create_test_config();
+
         let mock_vm_id_path = test_dir.path().join("mock_product_uuid");
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440002")
             .unwrap();
+
         let vm_id =
             get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None).unwrap();
+
         assert!(
-            !is_provisioning_complete(None, Some(vm_id.clone())),
+            !is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
             "Should need provisioning initially"
         );
 
-        mark_provisioning_complete(None, Some(vm_id.clone())).unwrap();
+        mark_provisioning_complete(Some(&test_config), Some(vm_id.clone()))
+            .unwrap();
 
         // Simulate a "reboot" by calling again
         assert!(
-            is_provisioning_complete(None, Some(vm_id.clone())),
+            is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
             "Provisioning should be skipped on second run (file exists)"
         );
     }
@@ -302,10 +301,6 @@ mod tests {
     #[test]
     fn test_get_vm_id_mocked_gen1_vs_gen2() {
         let test_dir = TempDir::new().unwrap();
-        std::env::set_var(
-            "AZURE_INIT_TEST_PROVISIONING_DIR",
-            test_dir.path().to_str().unwrap(),
-        );
 
         let mock_vm_id_path = test_dir.path().join("mock_product_uuid");
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440000")

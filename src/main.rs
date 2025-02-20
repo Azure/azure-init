@@ -123,19 +123,8 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let clone_config = config.clone();
     match provision(config, opts).await {
-        Ok(_) => {
-            if let Err(e) =
-                mark_provisioning_complete(Some(&clone_config), None)
-            {
-                tracing::error!(
-                    "Failed to mark provisioning as complete: {:?}",
-                    e
-                );
-            }
-            ExitCode::SUCCESS
-        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
@@ -166,6 +155,8 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         os_version,
         VERSION
     );
+
+    let clone_config = config.clone();
 
     let mut default_headers = header::HeaderMap::new();
     let user_agent = if cfg!(debug_assertions) {
@@ -238,6 +229,13 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         tracing::error!("Failed to report VM health.");
         "Failed to report VM health."
     })?;
+
+    mark_provisioning_complete(Some(&clone_config), None).with_context(
+        || {
+            tracing::error!("Failed to mark provisioning complete.");
+            "Failed to mark provisioning complete."
+        },
+    )?;
 
     Ok(())
 }
