@@ -23,7 +23,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_PROVISIONING_DIR};
 use crate::error::Error;
 
 /// This function determines the effective provisioning directory.
@@ -33,7 +33,7 @@ use crate::error::Error;
 fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
     config
         .map(|cfg| cfg.provisioning_dir.path.clone())
-        .unwrap_or_else(|| PathBuf::from("/var/lib/azure-init/"))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PROVISIONING_DIR))
 }
 
 /// This function checks if the provisioning directory is present, and if not,

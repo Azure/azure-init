@@ -224,9 +224,17 @@ impl Default for Telemetry {
     }
 }
 
+/// The default directory for storing provisioning status files.
+///
+/// This constant is declared outside its related struct so that both the `ProvisioningDir` struct
+/// and other modules (like `status.rs`) can reference the same path without risking any mismatch.
+pub const DEFAULT_PROVISIONING_DIR: &str = "/var/lib/azure-init/";
+
 /// Provisioning directory configuration struct.
 ///
 /// Configures settings for where azure-init should store provisioning-related files.
+/// If no custom path is provided, `ProvisioningDir::default()` uses
+/// [`DEFAULT_PROVISIONING_DIR`], ensuring a single source of truth.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct ProvisioningDir {
@@ -238,7 +246,7 @@ pub struct ProvisioningDir {
 impl Default for ProvisioningDir {
     fn default() -> Self {
         Self {
-            path: PathBuf::from("/var/lib/azure-init/"),
+            path: PathBuf::from(DEFAULT_PROVISIONING_DIR),
         }
     }
 }
