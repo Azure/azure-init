@@ -2,9 +2,7 @@
 // Licensed under the MIT License.
 
 use opentelemetry::{global, trace::TracerProvider};
-use opentelemetry_sdk::trace::{
-    self as sdktrace, Sampler, TracerProvider as SdkTracerProvider,
-};
+use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
