@@ -17,6 +17,7 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision,
 };
+use libazureinit::{is_provisioning_complete, mark_provisioning_complete};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
@@ -115,6 +116,13 @@ async fn main() -> ExitCode {
         }
     };
 
+    if is_provisioning_complete(Some(&config), None) {
+        tracing::info!(
+            "Provisioning already completed earlier. Skipping provisioning."
+        );
+        return ExitCode::SUCCESS;
+    }
+
     match provision(config, opts).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
@@ -147,6 +155,8 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         os_version,
         VERSION
     );
+
+    let clone_config = config.clone();
 
     let mut default_headers = header::HeaderMap::new();
     let user_agent = if cfg!(debug_assertions) {
@@ -219,6 +229,13 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         tracing::error!("Failed to report VM health.");
         "Failed to report VM health."
     })?;
+
+    mark_provisioning_complete(Some(&clone_config), None).with_context(
+        || {
+            tracing::error!("Failed to mark provisioning complete.");
+            "Failed to mark provisioning complete."
+        },
+    )?;
 
     Ok(())
 }
