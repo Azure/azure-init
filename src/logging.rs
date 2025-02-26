@@ -9,6 +9,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
+use std::fs::OpenOptions;
 
 use crate::kvp::EmitKVPLayer;
 
@@ -58,10 +59,34 @@ pub fn setup_layers(
         .with_writer(std::io::stderr)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
+        let file_layer = match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/azure-init.log")
+        {
+            Ok(file) => {
+                Some(
+                    tracing_subscriber::fmt::layer()
+                        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+                        .with_writer(file)
+                        .with_filter(EnvFilter::from_env("AZURE_INIT_LOG")),
+                )
+            }
+            Err(e) => {
+                event!(
+                    Level::WARN,
+                    "Could not open /var/log/azure-init.log: {}. Continuing without file logging.",
+                    e
+                );
+                None
+            }
+        };
+
     let subscriber = Registry::default()
         .with(stderr_layer)
         .with(otel_layer)
-        .with(emit_kvp_layer);
+        .with(emit_kvp_layer)
+        .with(file_layer);
 
     tracing::subscriber::set_global_default(subscriber)?;
 
