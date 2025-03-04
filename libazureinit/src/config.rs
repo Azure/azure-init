@@ -251,6 +251,29 @@ impl Default for ProvisioningDir {
     }
 }
 
+/// The default directory for azure-init.log
+pub const DEFAULT_TELEMETRY_LOG_PATH: &str = "/var/log/azure-init.log";
+/// Telemetry log (azure-init.log) struct.
+///
+/// Configures settings for where azure-init should channel telemetry logs.
+/// If no custom path is provided, `TelemetryLogPath::default()` uses
+/// [`DEFAULT_TELEMETRY_LOG_PATH`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct TelemetryLogPath {
+    /// Specifies the path used to capture all telemetry logs.
+    /// Defaults to `/var/log/azure-init.log`.
+    pub path: PathBuf,
+}
+
+impl Default for TelemetryLogPath {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from(DEFAULT_TELEMETRY_LOG_PATH),
+        }
+    }
+}
+
 /// General configuration struct for azure-init.
 ///
 /// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
@@ -268,6 +291,7 @@ pub struct Config {
     pub wireserver: Wireserver,
     pub telemetry: Telemetry,
     pub provisioning_dir: ProvisioningDir,
+    pub telemetry_log_path: TelemetryLogPath,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -630,6 +654,11 @@ mod tests {
             "/var/lib/azure-init/",
         );
 
+        assert_eq!(
+            config.telemetry_log_path.path.to_str().unwrap(),
+            "/var/log/azure-init.log",
+        );
+
         tracing::debug!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
 
         Ok(())
@@ -665,6 +694,8 @@ mod tests {
         kvp_diagnostics = false
         [provisioning_dir]
         path = "/custom/provisioning/dir"
+        [telemetry_log_path]
+        path = "/custom/path/azure-init.log"
         "#
         )?;
 
@@ -727,6 +758,12 @@ mod tests {
         assert_eq!(
             config.provisioning_dir.path.to_str().unwrap(),
             "/custom/provisioning/dir"
+        );
+
+        tracing::debug!("Verifying merged telemetry log path configuration...");
+        assert_eq!(
+            config.telemetry_log_path.path.to_str().unwrap(),
+            "/custom/path/azure-init.log"
         );
 
         tracing::debug!(
@@ -801,6 +838,22 @@ mod tests {
             "/var/lib/azure-init/"
         );
 
+        tracing::debug!(
+            "Verifying default provisioning directory configuration..."
+        );
+        assert_eq!(
+            config.provisioning_dir.path.to_str().unwrap(),
+            "/var/lib/azure-init/"
+        );
+
+        tracing::debug!(
+            "Verifying default telemetry log path configuration..."
+        );
+        assert_eq!(
+            config.telemetry_log_path.path.to_str().unwrap(),
+            "/var/log/azure-init.log",
+        );
+
         tracing::debug!("test_default_config completed successfully.");
 
         Ok(())
@@ -833,6 +886,8 @@ mod tests {
         kvp_diagnostics = false
         [provisioning_dir]
         path = "/cli-override-provisioning-dir"
+        [telemetry_log_path]
+        path = "/custom/path/azure-init.log"
         "#,
         )?;
 
@@ -878,6 +933,10 @@ mod tests {
         assert_eq!(
             config.provisioning_dir.path.to_str().unwrap(),
             "/cli-override-provisioning-dir"
+        );
+        assert_eq!(
+            config.telemetry_log_path.path.to_str().unwrap(),
+            "/custom/path/azure-init.log"
         );
 
         Ok(())

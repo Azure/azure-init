@@ -101,7 +101,7 @@ fn get_username(
 async fn main() -> ExitCode {
     let tracer = initialize_tracing();
 
-    if let Err(e) = setup_layers(tracer) {
+    if let Err(e) = setup_layers(tracer.clone(), None) {
         eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
     }
 
@@ -115,6 +115,10 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(e) = setup_layers(tracer, Some(&config)) {
+        tracing::error!("Failed to set final logging subscriber: {e:?}");
+    }
 
     if is_provisioning_complete(Some(&config), None) {
         tracing::info!(

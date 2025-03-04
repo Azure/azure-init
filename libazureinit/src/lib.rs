@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 pub mod config;
-pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
+pub use config::{
+    HostnameProvisioner, PasswordProvisioner, UserProvisioner,
+    DEFAULT_TELEMETRY_LOG_PATH,
+};
 pub mod error;
 pub mod goalstate;
 pub(crate) mod http;
