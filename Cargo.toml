@@ -26,10 +26,16 @@ chrono = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
+# Avoid clippy errors from MSRV requirement 1.81 of litemap 0.7.5.
+# It is needed because azure-init CI still requires Rust 1.76+.
+litemap = "=0.7.4"
 predicates = "3.1.2"
 predicates-core = "1.0.8"
 predicates-tree = "1.0.11"
 tempfile = "3.3.0"
+# Avoid clippy errors from MSRV requirement 1.81 of zerofrom 0.1.6.
+# It is needed because azure-init CI still requires Rust 1.76+.
+zerofrom = "<=0.1.5"
 
 [dependencies.libazureinit]
 path = "libazureinit"
