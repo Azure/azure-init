@@ -164,61 +164,102 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     let imds_http_timeout_sec: u64 = 5 * 60;
     let imds_http_retry_interval_sec: u64 = 2;
 
-    // Username can be obtained either via fetching instance metadata from IMDS
-    // or mounting a local device for OVF environment file. It should not fail
-    // immediately in a single failure, instead it should fall back to the other
-    // mechanism. So it is not a good idea to use `?` for query() or
-    // get_environment().
-    let instance_metadata = imds::query(
-        &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default IMDS URL
-    )
-    .await
-    .ok();
+    // Wrap the entire provisioning process in an async block to capture errors.
+    // If an error happens, capture the goalstate and call report_failure()
+    let provisioning_result: Result<(), anyhow::Error> = async {
+        // Username can be obtained either via fetching instance metadata from IMDS
+        // or mounting a local device for OVF environment file. It should not fail
+        // immediately in a single failure, instead it should fall back to the other
+        // mechanism. So it is not a good idea to use `?` for query() or
+        // get_environment().
+        let instance_metadata = imds::query(
+            &client,
+            Duration::from_secs(imds_http_retry_interval_sec),
+            Duration::from_secs(imds_http_timeout_sec),
+            None, // default IMDS URL
+        )
+        .await
+        .ok();
 
-    let environment = get_environment().ok();
+        let environment = get_environment().ok();
 
-    let username =
-        get_username(instance_metadata.as_ref(), environment.as_ref())?;
+        let username =
+            get_username(instance_metadata.as_ref(), environment.as_ref())?;
 
-    // It is necessary to get the actual instance metadata after getting username,
-    // as it is not desirable to immediately return error before get_username.
-    let im = instance_metadata
-        .clone()
-        .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
+        // It is necessary to get the actual instance metadata after getting username,
+        // as it is not desirable to immediately return error before get_username.
+        let im = instance_metadata
+            .clone()
+            .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
 
-    let user =
-        User::new(username, im.compute.public_keys).with_groups(opts.groups);
+        let user = User::new(username, im.compute.public_keys)
+            .with_groups(opts.groups);
 
-    Provision::new(im.compute.os_profile.computer_name, user, config)
-        .provision()?;
+        Provision::new(im.compute.os_profile.computer_name, user, config)
+            .provision()?;
 
-    let vm_goalstate = goalstate::get_goalstate(
-        &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver goalstate URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to get the desired goalstate.");
-        "Failed to get desired goalstate."
-    })?;
+        let vm_goalstate = goalstate::get_goalstate(
+            &client,
+            Duration::from_secs(imds_http_retry_interval_sec),
+            Duration::from_secs(imds_http_timeout_sec),
+            None, // default wireserver goalstate URL
+        )
+        .await
+        .with_context(|| {
+            tracing::error!("Failed to get the desired goalstate.");
+            "Failed to get desired goalstate."
+        })?;
 
-    goalstate::report_health(
-        &client,
-        vm_goalstate,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver health URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to report VM health.");
-        "Failed to report VM health."
-    })?;
+        goalstate::report_health(
+            &client,
+            vm_goalstate,
+            Duration::from_secs(imds_http_retry_interval_sec),
+            Duration::from_secs(imds_http_timeout_sec),
+            None, // default wireserver health URL
+        )
+        .await
+        .with_context(|| {
+            tracing::error!("Failed to report VM health.");
+            "Failed to report VM health."
+        })?;
 
-    Ok(())
+        Ok(())
+    }
+    .await;
+
+    if let Err(ref e) = provisioning_result {
+        tracing::error!("Provisioning failed with error: {:?}", e);
+
+        // Report the provisioning failure via wireserver.
+        // If this fails, fallback to KVP reporting by logging the error.
+        if let Ok(vm_goalstate) = goalstate::get_goalstate(
+            &client,
+            Duration::from_secs(imds_http_retry_interval_sec),
+            Duration::from_secs(imds_http_timeout_sec),
+            None, // default wireserver goalstate URL
+        )
+        .await
+        {
+            let failure_description = format!("Provisioning error: {:?}", e);
+            if let Err(report_err) = goalstate::report_failure(
+                &client,
+                vm_goalstate,
+                &failure_description,
+                Duration::from_secs(imds_http_retry_interval_sec),
+                Duration::from_secs(imds_http_timeout_sec),
+                None, // default wireserver health URL
+            )
+            .await
+            {
+                tracing::error!(
+                    "Failed to report provisioning failure: {:?}",
+                    report_err
+                );
+            }
+        } else {
+            tracing::error!("Could not fetch goalstate for failure reporting");
+        }
+    }
+
+    provisioning_result
 }

@@ -252,10 +252,85 @@ fn build_report_health_file(goalstate: Goalstate) -> String {
     )
 }
 
+#[instrument(err, skip_all)]
+pub async fn report_failure(
+    client: &Client,
+    goalstate: Goalstate,
+    description: &str,
+    retry_interval: Duration,
+    total_timeout: Duration,
+    url: Option<&str>,
+) -> Result<(), Error> {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-ms-agent-name", HeaderValue::from_static("azure-init"));
+    headers.insert("x-ms-version", HeaderValue::from_static("2012-11-30"));
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/xml;charset=utf-8"),
+    );
+
+    let request_timeout =
+        Duration::from_secs(http::WIRESERVER_HTTP_TIMEOUT_SEC);
+    let url = url.unwrap_or(DEFAULT_HEALTH_URL);
+
+    let post_request = build_report_failure_file(goalstate, description);
+
+    _ = http::post(
+        client,
+        headers,
+        post_request,
+        request_timeout,
+        retry_interval,
+        total_timeout,
+        url,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn build_report_failure_file(
+    goalstate: Goalstate,
+    description: &str,
+) -> String {
+    let post_request = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+    <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+        <GoalStateIncarnation>$GOAL_STATE_INCARNATION</GoalStateIncarnation>\n\
+        <Container>\n\
+            <ContainerId>$CONTAINER_ID</ContainerId>\n\
+            <RoleInstanceList>\n\
+                <Role>\n\
+                    <InstanceId>$INSTANCE_ID</InstanceId>\n\
+                    <Health>\n\
+                        <State>NotReady</State>\n\
+                        <Substatus>ProvisioningFailed</Substatus>\n\
+                        <Description>$DESCRIPTION</Description>\n\
+                    </Health>\n\
+                </Role>\n\
+            </RoleInstanceList>\n\
+        </Container>\n\
+    </Health>";
+
+    let post_request =
+        post_request.replace("$GOAL_STATE_INCARNATION", &goalstate.incarnation);
+    let post_request = post_request
+        .replace("$CONTAINER_ID", &goalstate.container.container_id);
+    let post_request = post_request.replace(
+        "$INSTANCE_ID",
+        &goalstate
+            .container
+            .role_instance_list
+            .role_instance
+            .instance_id,
+    );
+    post_request.replace("$DESCRIPTION", description)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_report_health_file, get_goalstate, report_health, Goalstate,
+        build_report_failure_file, build_report_health_file, get_goalstate,
+        report_health, Goalstate,
     };
 
     use reqwest::{header, Client, StatusCode};
@@ -423,6 +498,22 @@ mod tests {
         for rc in http::HARDFAIL_CODES {
             assert!(!run_goalstate_retry(rc).await);
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_report_failure_file() {
+        let goalstate: Goalstate = serde_xml_rs::from_str(GOALSTATE_STR)
+            .expect("Failed to parse the goalstate XML.");
+        let failure_message = "Provisioning failed due to test error.";
+
+        let result = build_report_failure_file(goalstate, failure_message);
+
+        assert!(result.contains("<State>NotReady</State>"));
+        assert!(result.contains("<Substatus>ProvisioningFailed</Substatus>"));
+        assert!(result.contains(&format!(
+            "<Description>{}</Description>",
+            failure_message
+        )));
     }
 
     // Assert malformed responses are retried.
