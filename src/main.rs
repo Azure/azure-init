@@ -116,7 +116,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    if is_provisioning_complete(Some(&config), None) {
+    if is_provisioning_complete(Some(&config)) {
         tracing::info!(
             "Provisioning already completed earlier. Skipping provisioning."
         );
@@ -230,12 +230,10 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         "Failed to report VM health."
     })?;
 
-    mark_provisioning_complete(Some(&clone_config), None).with_context(
-        || {
-            tracing::error!("Failed to mark provisioning complete.");
-            "Failed to mark provisioning complete."
-        },
-    )?;
+    mark_provisioning_complete(Some(&clone_config)).with_context(|| {
+        tracing::error!("Failed to mark provisioning complete.");
+        "Failed to mark provisioning complete."
+    })?;
 
     Ok(())
 }

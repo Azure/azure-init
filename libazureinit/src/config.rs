@@ -224,29 +224,29 @@ impl Default for Telemetry {
     }
 }
 
-/// The default directory for storing provisioning status files.
+/// The default directory for storing azure-init data files, such as the provisioning status file.
 ///
-/// This constant is declared outside its related struct so that both the `ProvisioningDir` struct
+/// This constant is declared outside its related struct so that both the `AzureInitDataDir` struct
 /// and other modules (like `status.rs`) can reference the same path without risking any mismatch.
-pub const DEFAULT_PROVISIONING_DIR: &str = "/var/lib/azure-init/";
+pub const DEFAULT_AZURE_INIT_DATA_DIR: &str = "/var/lib/azure-init/";
 
-/// Provisioning directory configuration struct.
+/// Azure-init data directory directory configuration struct.
 ///
-/// Configures settings for where azure-init should store provisioning-related files.
-/// If no custom path is provided, `ProvisioningDir::default()` uses
-/// [`DEFAULT_PROVISIONING_DIR`], ensuring a single source of truth.
+/// Configures settings for where azure-init should store data (especially provisioning-related) files.
+/// If no custom path is provided, `AzureInitDataDir::default()` uses
+/// [`DEFAULT_AZURE_INIT_DATA_DIR`], ensuring a single source of truth.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
-pub struct ProvisioningDir {
-    /// Specifies the path used for storing provisioning status files.
+pub struct AzureInitDataDir {
+    /// Specifies the path used for storing azure-init data files.
     /// Defaults to `/var/lib/azure-init/`.
     pub path: PathBuf,
 }
 
-impl Default for ProvisioningDir {
+impl Default for AzureInitDataDir {
     fn default() -> Self {
         Self {
-            path: PathBuf::from(DEFAULT_PROVISIONING_DIR),
+            path: PathBuf::from(DEFAULT_AZURE_INIT_DATA_DIR),
         }
     }
 }
@@ -267,7 +267,7 @@ pub struct Config {
     pub azure_proxy_agent: AzureProxyAgent,
     pub wireserver: Wireserver,
     pub telemetry: Telemetry,
-    pub provisioning_dir: ProvisioningDir,
+    pub azure_init_data_dir: AzureInitDataDir,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -626,7 +626,7 @@ mod tests {
         assert!(config.telemetry.kvp_diagnostics);
 
         assert_eq!(
-            config.provisioning_dir.path.to_str().unwrap(),
+            config.azure_init_data_dir.path.to_str().unwrap(),
             "/var/lib/azure-init/",
         );
 
@@ -663,8 +663,8 @@ mod tests {
         enable = false
         [telemetry]
         kvp_diagnostics = false
-        [provisioning_dir]
-        path = "/custom/provisioning/dir"
+        [azure_init_data_dir]
+        path = "/custom/azure-init-data-dir"
         "#
         )?;
 
@@ -722,11 +722,11 @@ mod tests {
         assert!(!config.telemetry.kvp_diagnostics);
 
         tracing::debug!(
-            "Verifying merged provisioning directory configuration..."
+            "Verifying merged azure-init data directory configuration..."
         );
         assert_eq!(
-            config.provisioning_dir.path.to_str().unwrap(),
-            "/custom/provisioning/dir"
+            config.azure_init_data_dir.path.to_str().unwrap(),
+            "/custom/azure-init-data-dir"
         );
 
         tracing::debug!(
@@ -794,10 +794,10 @@ mod tests {
         assert!(config.telemetry.kvp_diagnostics);
 
         tracing::debug!(
-            "Verifying default provisioning directory configuration..."
+            "Verifying default azure-init data directory configuration..."
         );
         assert_eq!(
-            config.provisioning_dir.path.to_str().unwrap(),
+            config.azure_init_data_dir.path.to_str().unwrap(),
             "/var/lib/azure-init/"
         );
 
@@ -831,8 +831,8 @@ mod tests {
         enable = false
         [telemetry]
         kvp_diagnostics = false
-        [provisioning_dir]
-        path = "/cli-override-provisioning-dir"
+        [azure_init_data_dir]
+        path = "/cli-override-azure-init-data-dir"
         "#,
         )?;
 
@@ -876,8 +876,8 @@ mod tests {
         assert!(!config.azure_proxy_agent.enable);
         assert!(!config.telemetry.kvp_diagnostics);
         assert_eq!(
-            config.provisioning_dir.path.to_str().unwrap(),
-            "/cli-override-provisioning-dir"
+            config.azure_init_data_dir.path.to_str().unwrap(),
+            "/cli-override-azure-init-data-dir"
         );
 
         Ok(())

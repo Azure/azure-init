@@ -152,7 +152,7 @@ impl EmitKVPLayer {
 
         tokio::spawn(Self::kvp_writer(file, events_rx));
 
-        let vm_id: String = get_vm_id(None, None).unwrap_or_else(|| {
+        let vm_id: String = get_vm_id().unwrap_or_else(|| {
             "00000000-0000-0000-0000-000000000000".to_string()
         });
 

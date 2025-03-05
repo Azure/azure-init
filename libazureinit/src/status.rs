@@ -10,7 +10,7 @@
 //! # Logic Overview
 //! - Retrieves the VM ID using reading `/sys/class/dmi/id/product_uuid` and byte-swapping if Gen1 VM.
 //! - Determines if provisioning is required by checking if a status file exists.
-//! - The provisioning directory is configurable via the Config struct (defaulting to `/var/lib/azure-init/`).
+//! - The azure-init data directory is configurable via the Config struct (defaulting to `/var/lib/azure-init/`).
 //! - Creates the provisioning status file upon successful provisioning.
 //! - Prevents unnecessary re-provisioning on reboot, unless the VM ID changes.
 //!
@@ -23,20 +23,20 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::config::{Config, DEFAULT_PROVISIONING_DIR};
+use crate::config::{Config, DEFAULT_AZURE_INIT_DATA_DIR};
 use crate::error::Error;
 
 /// This function determines the effective provisioning directory.
 ///
-/// If a [`Config`] is provided, this function returns `config.provisioning_dir.path`.
+/// If a [`Config`] is provided, this function returns `config.azure_init_data_dir.path`.
 /// Otherwise, it falls back to the default `/var/lib/azure-init/`.
 fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
     config
-        .map(|cfg| cfg.provisioning_dir.path.clone())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_PROVISIONING_DIR))
+        .map(|cfg| cfg.azure_init_data_dir.path.clone())
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_AZURE_INIT_DATA_DIR))
 }
 
-/// This function checks if the provisioning directory is present, and if not,
+/// This function checks if the azure-init data directory is present, and if not,
 /// it creates it.
 fn check_provision_dir(config: Option<&Config>) -> Result<(), Error> {
     let dir = get_provisioning_dir(config);
@@ -110,7 +110,11 @@ fn swap_uuid_to_little_endian(mut bytes: [u8; 16]) -> Uuid {
 /// # Returns
 /// - `Some(String)` containing the VM ID if retrieval is successful.
 /// - `None` if something fails or the output is empty.
-pub fn get_vm_id(
+pub fn get_vm_id() -> Option<String> {
+    private_get_vm_id(None, None)
+}
+
+fn private_get_vm_id(
     custom_path: Option<&str>,
     mock_efi_path: Option<&str>,
 ) -> Option<String> {
@@ -155,17 +159,28 @@ pub fn get_vm_id(
     }
 }
 
-/// This function checks whether a provisioning status file exists for the current VM ID.
-/// If the file exists, provisioning has already been completed and should be skipped.
-/// If the file does not exist or the VM ID has changed, provisioning should proceed.
+/// Checks whether a provisioning status file exists for the current VM ID.
 ///
-/// - Returns `true` if provisioning is complete (i.e., provisioning file exists).
-/// - Returns `false` if provisioning has not been completed (i.e., no provisioning file exists).
-pub fn is_provisioning_complete(
+/// If the provisioning status file exists, it indicates that provisioning has already been
+/// completed, and the process should be skipped. If the file does not exist or the VM ID has
+/// changed, provisioning should proceed.
+///
+/// # Parameters
+/// - `config`: An optional configuration reference used to determine the provisioning directory.
+///   If `None`, the default provisioning directory defined by `DEFAULT_AZURE_INIT_DATA_DIR` is used.
+///
+/// # Returns
+/// - `true` if provisioning is complete (i.e., the provisioning file exists).
+/// - `false` if provisioning has not been completed (i.e., no provisioning file exists).
+pub fn is_provisioning_complete(config: Option<&Config>) -> bool {
+    private_is_provisioning_complete(config, None)
+}
+
+fn private_is_provisioning_complete(
     config: Option<&Config>,
     vm_id: Option<String>,
 ) -> bool {
-    let vm_id = vm_id.or_else(|| get_vm_id(None, None));
+    let vm_id = vm_id.or_else(get_vm_id);
 
     if let Some(vm_id) = vm_id {
         let file_path =
@@ -179,16 +194,31 @@ pub fn is_provisioning_complete(
     false
 }
 
-/// This function creates an empty file named after the current VM ID in the
-/// provisioning directory. The presence of this file signals that provisioning
-/// has been successfully completed.
+/// Marks provisioning as complete by creating a provisioning status file.
+///
+/// This function ensures that the provisioning directory exists, retrieves the VM ID,
+/// and creates a `{vm_id}.provisioned` file in the provisioning directory.
+///
+/// # Parameters
+/// - `config`: An optional configuration reference used to determine the provisioning directory.
+///   If `None`, the default provisioning directory defined by `DEFAULT_AZURE_INIT_DATA_DIR` is used.
+///
+/// # Returns
+/// - `Ok(())` if the provisioning status file was successfully created.
+/// - `Err(Error)` if an error occurred while creating the provisioning file.
 pub fn mark_provisioning_complete(
+    config: Option<&Config>,
+) -> Result<(), Error> {
+    private_mark_provisioning_complete(config, None)
+}
+
+fn private_mark_provisioning_complete(
     config: Option<&Config>,
     vm_id: Option<String>,
 ) -> Result<(), Error> {
     check_provision_dir(config)?;
 
-    let vm_id = vm_id.or_else(|| get_vm_id(None, None));
+    let vm_id = vm_id.or_else(get_vm_id);
 
     if let Some(vm_id) = vm_id {
         let file_path =
@@ -220,13 +250,13 @@ mod tests {
     use tempfile::TempDir;
 
     /// Creates a temporary directory and returns a default `Config`
-    /// whose `provisioning_dir` points to that temp directory.
+    /// whose `azure_init_data_dir` points to that temp directory.
     /// Also returns the `TempDir` so it remains in scope for the test.
     fn create_test_config() -> (Config, TempDir) {
         let test_dir = TempDir::new().unwrap();
 
         let mut test_config = Config::default();
-        test_config.provisioning_dir.path = test_dir.path().to_path_buf();
+        test_config.azure_init_data_dir.path = test_dir.path().to_path_buf();
 
         (test_config, test_dir)
     }
@@ -239,7 +269,8 @@ mod tests {
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440000")
             .unwrap();
         let vm_id =
-            get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None).unwrap();
+            private_get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None)
+                .unwrap();
 
         let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
         assert!(
@@ -247,8 +278,11 @@ mod tests {
             "File should not exist before provisioning"
         );
 
-        mark_provisioning_complete(Some(&test_config), Some(vm_id.clone()))
-            .unwrap();
+        private_mark_provisioning_complete(
+            Some(&test_config),
+            Some(vm_id.clone()),
+        )
+        .unwrap();
         assert!(file_path.exists(), "Provisioning file should be created");
     }
 
@@ -261,13 +295,17 @@ mod tests {
             .unwrap();
 
         let vm_id =
-            get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None).unwrap();
+            private_get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None)
+                .unwrap();
 
         let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
         fs::File::create(&file_path).unwrap();
 
         assert!(
-            is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
+            private_is_provisioning_complete(
+                Some(&test_config),
+                Some(vm_id.clone())
+            ),
             "Provisioning should be complete if file exists"
         );
     }
@@ -281,19 +319,29 @@ mod tests {
             .unwrap();
 
         let vm_id =
-            get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None).unwrap();
+            private_get_vm_id(Some(mock_vm_id_path.to_str().unwrap()), None)
+                .unwrap();
 
         assert!(
-            !is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
+            !private_is_provisioning_complete(
+                Some(&test_config),
+                Some(vm_id.clone())
+            ),
             "Should need provisioning initially"
         );
 
-        mark_provisioning_complete(Some(&test_config), Some(vm_id.clone()))
-            .unwrap();
+        private_mark_provisioning_complete(
+            Some(&test_config),
+            Some(vm_id.clone()),
+        )
+        .unwrap();
 
         // Simulate a "reboot" by calling again
         assert!(
-            is_provisioning_complete(Some(&test_config), Some(vm_id.clone())),
+            private_is_provisioning_complete(
+                Some(&test_config),
+                Some(vm_id.clone())
+            ),
             "Provisioning should be skipped on second run (file exists)"
         );
     }
@@ -309,7 +357,7 @@ mod tests {
         let mock_efi_path = test_dir.path().join("mock_efi_file");
 
         // Simulate Gen1: don't create the mock EFI file => it doesn't exist => is_vm_gen1() returns true
-        let vm_id_gen1 = get_vm_id(
+        let vm_id_gen1 = private_get_vm_id(
             Some(mock_vm_id_path.to_str().unwrap()),
             Some(mock_efi_path.to_str().unwrap()),
         )
@@ -323,7 +371,7 @@ mod tests {
         // Simulate Gen2: create the mock EFI file => is_vm_gen1() sees it => returns false
         fs::File::create(&mock_efi_path).unwrap();
 
-        let vm_id_gen2 = get_vm_id(
+        let vm_id_gen2 = private_get_vm_id(
             Some(mock_vm_id_path.to_str().unwrap()),
             Some(mock_efi_path.to_str().unwrap()),
         )
