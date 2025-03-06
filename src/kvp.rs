@@ -197,6 +197,53 @@ impl EmitKVPLayer {
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
     }
+
+    /// Processes and sends a health report event based on the provided `health_report` field.
+    ///
+    /// This function extracts the `reason` field (if present)
+    /// and constructs a properly formatted health report key-value pair (KVP) using
+    /// [`build_health_kvp`]. The resulting KVP is then encoded and sent via `send_event()`.
+    ///
+    /// This function is called exclusively from [`on_event`] when a `health_report`
+    /// flag is detected, ensuring that health-related events are processed separately
+    /// from standard event logging.
+    ///
+    /// # Parameters
+    /// - `event`: The original tracing event containing metadata.
+    /// - `health_report`: The health report status as a string (e.g., `"Success"` or `"Failure"`).
+    /// - `timestamp`: The event timestamp as a formatted string.
+    fn handle_health_report(
+        &self,
+        event: &tracing::Event<'_>,
+        health_report: String,
+        event_time: Duration,
+    ) {
+        let mut reason = None;
+        event.record(
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
+                if field.name() == "reason" {
+                    reason = Some(
+                        format!("{:?}", value).trim_matches('"').to_string(),
+                    );
+                }
+            },
+        );
+        let timestamp = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
+
+        let kind = HealthReportKind::from_str(&health_report);
+        let (key, value) = build_health_kvp(
+            kind,
+            reason.as_deref(),
+            Some("stuff"),
+            "00000000-0000-0000-0000-000000000000",
+            &timestamp,
+        );
+
+        self.send_event(encode_kvp_item(&key, &value).concat());
+    }
 }
 
 impl<S> Layer<S> for EmitKVPLayer
@@ -212,6 +259,9 @@ where
     ///
     /// If an `ERROR` level event is encountered, it marks the span's status as a failure,
     /// which will be reflected in the span's data upon closure.
+    ///
+    /// Additionally, this function checks if the event contains a `health_report` field.
+    /// If present, the event is delegated to [`handle_health_report`] to be uniquely formatted.
     ///
     /// # Arguments
     /// * `event` - The tracing event instance containing the message and metadata.
@@ -254,49 +304,22 @@ where
             let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
-            // Extract the "health_report" and "reason" fields from the event.
-            let (health_opt, reason_opt) = {
-                let mut h = None;
-                let mut r = None;
-                event.record(&mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
-                    match field.name() {
-                        "health_report" => h = Some(format!("{:?}", value).trim_matches('"').to_string()),
-                        "reason" => r = Some(format!("{:?}", value).trim_matches('"').to_string()),
-                        _ => {}
+            let mut health_report = None;
+            event.record(
+                &mut |field: &tracing::field::Field,
+                      value: &dyn std::fmt::Debug| {
+                    if field.name() == "health_report" {
+                        health_report = Some(
+                            format!("{:?}", value)
+                                .trim_matches('"')
+                                .to_string(),
+                        );
                     }
-                });
-                (h, r)
-            };
+                },
+            );
 
-            if let Some(health_str) = health_opt {
-                let kind = HealthReportKind::from_str(&health_str);
-                let vm_id = "0000-0000-00000-00000";
-                let timestamp_str = event_time_dt.to_string();
-
-                // For failure, use the extracted reason (or default); for success, no reason is needed.
-                let (key, value) = match kind {
-                    HealthReportKind::Failure => {
-                        let final_reason = reason_opt
-                            .as_deref()
-                            .unwrap_or("unspecified failure");
-                        build_health_kvp(
-                            HealthReportKind::Failure,
-                            Some(final_reason),
-                            Some("stuff"),
-                            vm_id,
-                            &timestamp_str,
-                        )
-                    }
-                    HealthReportKind::Success => build_health_kvp(
-                        HealthReportKind::Success,
-                        None,
-                        None,
-                        vm_id,
-                        &timestamp_str,
-                    ),
-                };
-
-                self.send_event(encode_kvp_item(&key, &value).concat());
+            if let Some(health_str) = health_report {
+                self.handle_health_report(event, health_str, event_time);
                 return;
             }
 
@@ -592,14 +615,10 @@ fn build_health_kvp(
             ("PROVISIONING_REPORT".to_string(), value)
         }
         HealthReportKind::Success => {
-            let mut value = format!(
+            let value = format!(
                 "result=success|agent={}|pps_type=None|vm_id={}|timestamp={}",
                 agent, vm_id, timestamp
             );
-            if let Some(optional) = extra {
-                value.push('|');
-                value.push_str(optional);
-            }
             ("PROVISIONING_REPORT".to_string(), value)
         }
     }
