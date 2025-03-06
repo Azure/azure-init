@@ -33,7 +33,11 @@ Azure-init consists of two main components:
 
 The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
 
+For a detailed architectural overview, see [Architecture Documentation](doc/architecture.md).
+
 ## Getting Started
+
+For step-by-step instructions on installing, configuring, and using azure-init, please refer to our [Getting Started Guide](doc/getting_started.md).
 
 ### Prerequisites
 
@@ -52,6 +56,19 @@ so this command builds both. These binaries are quite small, but you can build o
 `cargo build --bin <binary_name>` and indicating either `azure-init` or `functional_tests`.
 
 To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
+
+## Documentation
+
+Azure-init includes comprehensive documentation to help you understand, configure, and test the system:
+
+| Document | Description |
+|----------|-------------|
+| [Getting Started Guide](doc/getting_started.md) | Step-by-step instructions for new users |
+| [Architecture Overview](doc/architecture.md) | High-level system design and component interactions |
+| [Configuration Guide](doc/configuration.md) | Detailed configuration options and file structure |
+| [Tracing System](doc/libazurekvp.md) | Understanding the telemetry and tracing capabilities |
+| [End-to-End Testing](docs/E2E_TESTING.md) | How to perform comprehensive system testing |
+| [Library Documentation](libazureinit/README.md) | Documentation for the libazureinit library |
 
 ## Configuration
 
@@ -76,11 +93,6 @@ Doing so ensures your testing will match what is run in the CI pipeline.
 
 ### Running End-to-End (e2e) Tests
 Please refer to [E2E_TESTING.md](docs/E2E_TESTING.md) for end-to-end testing.
-
-## Advanced Topics
-
-### Understanding the Tracing System
-Azure-init includes a sophisticated tracing system for monitoring and debugging. For details, see [libazurekvp.md](doc/libazurekvp.md).
 
 ## Contributing
 
