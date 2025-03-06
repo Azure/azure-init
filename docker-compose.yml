@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  build-functional-tests:
+    image: ubuntu:22.04
+    container_name: azure-init-build-env
+    volumes:
+      - .:/azure-init
+    working_dir: /azure-init
+    command: >
+      bash -c "
+        apt-get update && 
+        apt-get install -y curl build-essential pkg-config libssl-dev libclang-dev libudev-dev git &&
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
+        . $$HOME/.cargo/env &&
+        echo 'Building functional_tests binary compatible with Ubuntu 22.04...' &&
+        cargo build --bin functional_tests &&
+        echo 'Build completed successfully'
+      "

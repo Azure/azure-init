@@ -14,8 +14,22 @@ tests: build-all
 	@echo ""
 	@cargo test --all --verbose
 
-e2e-test: build-all
+e2e-test: docker-build-e2e
 	@./tests/functional_tests.sh
+
+docker-build-e2e:
+	@echo ""
+	@echo "**********************************"
+	@echo "* Building functional_tests in Docker (Ubuntu 22.04)"
+	@echo "**********************************"
+	@echo ""
+	@docker-compose up -d build-functional-tests
+	@docker-compose logs -f build-functional-tests
+	@echo "Checking if binary was built successfully..."
+	@if [ ! -f "./target/debug/functional_tests" ]; then \
+		echo "Error: functional_tests binary not built properly"; \
+		exit 1; \
+	fi
 
 fmt:
 	@echo ""
