@@ -116,7 +116,14 @@ async fn main() -> ExitCode {
     };
 
     match provision(config, opts).await {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            // Emit a special tracing event that signals a successful provisioning report.
+            tracing::info!(
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
@@ -252,8 +259,8 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
             .await
             {
                 tracing::error!(
-                    "Failed to report provisioning failure: {:?}",
-                    report_err
+                    health_report = "failure",
+                    reason = format!("{}", report_err),
                 );
             }
         } else {
