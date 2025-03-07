@@ -125,6 +125,7 @@ impl fmt::Display for SpanStatus {
 /// task, and provides functions to send encoded data for logging.
 pub struct EmitKVPLayer {
     events_tx: UnboundedSender<Vec<u8>>,
+    vm_id: String,
 }
 
 impl EmitKVPLayer {
@@ -134,7 +135,10 @@ impl EmitKVPLayer {
     /// # Arguments
     /// * `file_path` - The file path where the KVP data will be stored.
     ///
-    pub fn new(file_path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        file_path: std::path::PathBuf,
+        vm_id: &str,
+    ) -> Result<Self, anyhow::Error> {
         truncate_guest_pool_file(&file_path)?;
 
         let file = OpenOptions::new()
@@ -149,7 +153,10 @@ impl EmitKVPLayer {
 
         tokio::spawn(Self::kvp_writer(file, events_rx));
 
-        Ok(Self { events_tx })
+        Ok(Self {
+            events_tx,
+            vm_id: vm_id.to_string(),
+        })
     }
 
     /// An asynchronous task that serializes incoming KVP data to the specified file.
@@ -192,7 +199,8 @@ impl EmitKVPLayer {
         span_id: &str,
         event_value: &str,
     ) {
-        let event_key = generate_event_key(event_level, event_name, span_id);
+        let event_key =
+            generate_event_key(&self.vm_id, event_level, event_name, span_id);
         let encoded_kvp = encode_kvp_item(&event_key, event_value);
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
@@ -407,13 +415,14 @@ where
 /// * `event_name` - The name of the event.
 /// * `span_id` - A unique identifier for the span.
 fn generate_event_key(
+    vm_id: &str,
     event_level: &str,
     event_name: &str,
     span_id: &str,
 ) -> String {
     format!(
-        "{}|{}|{}|{}",
-        EVENT_PREFIX, event_level, event_name, span_id
+        "{}|{}|{}|{}|{}",
+        EVENT_PREFIX, vm_id, event_level, event_name, span_id
     )
 }
 
@@ -627,6 +636,7 @@ fn build_health_kvp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libazureinit::config::{Config, Telemetry};
     use tempfile::NamedTempFile;
     use tokio::time::{sleep, Duration};
     use tracing::instrument;
@@ -694,7 +704,9 @@ mod tests {
             NamedTempFile::new().expect("Failed to create tempfile");
         let temp_path = temp_file.path().to_path_buf();
 
-        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone())
+        let test_vm_id = "00000000-0000-0000-0000-000000000001";
+
+        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone(), test_vm_id)
             .expect("Failed to create EmitKVPLayer");
 
         let subscriber = Registry::default().with(emit_kvp_layer);
@@ -855,5 +867,54 @@ mod tests {
         }
 
         println!("All slices adhere to Azure's max value size limit.");
+    }
+
+    #[tokio::test]
+    async fn test_emit_kvp_layer_disabled() {
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+
+        let test_vm_id = "00000000-0000-0000-0000-000000000002";
+
+        let telemetry_config = Telemetry {
+            kvp_diagnostics: false,
+        };
+
+        let config = Config {
+            telemetry: telemetry_config,
+            ..Default::default()
+        };
+
+        let kvp_enabled = config.telemetry.kvp_diagnostics;
+
+        let emit_kvp_layer = if kvp_enabled {
+            Some(
+                EmitKVPLayer::new(temp_path.clone(), test_vm_id)
+                    .expect("Failed to create EmitKVPLayer"),
+            )
+        } else {
+            None
+        };
+
+        let subscriber = Registry::default().with(emit_kvp_layer);
+        let default_guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = mock_provision().await;
+
+        sleep(Duration::from_secs(1)).await;
+
+        drop(default_guard);
+
+        let contents =
+            std::fs::read(temp_path).expect("Failed to read temp file");
+
+        assert!(
+            contents.is_empty(),
+            "KVP file should be empty because kvp_diagnostics is disabled, but found data: {:?}",
+            contents
+        );
+
+        println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
     }
 }
