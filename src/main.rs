@@ -116,14 +116,7 @@ async fn main() -> ExitCode {
     };
 
     match provision(config, opts).await {
-        Ok(_) => {
-            // Emit a special tracing event that signals a successful provisioning report.
-            tracing::info!(
-                health_report = "success",
-                "Provisioning completed successfully"
-            );
-            ExitCode::SUCCESS
-        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
@@ -234,39 +227,48 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     }
     .await;
 
-    if let Err(ref e) = provisioning_result {
-        tracing::error!("Provisioning failed with error: {:?}", e);
-
-        // Report the provisioning failure via wireserver.
-        // If this fails, fallback to KVP reporting by logging the error.
-        if let Ok(vm_goalstate) = goalstate::get_goalstate(
-            &client,
-            Duration::from_secs(imds_http_retry_interval_sec),
-            Duration::from_secs(imds_http_timeout_sec),
-            None, // default wireserver goalstate URL
-        )
-        .await
-        {
-            let failure_description = format!("Provisioning error: {:?}", e);
-            if let Err(report_err) = goalstate::report_failure(
+    match &provisioning_result {
+        Ok(_) => {
+            tracing::info!(
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+        }
+        Err(e) => {
+            tracing::error!("Provisioning failed with error: {:?}", e);
+            // Report the provisioning failure via wireserver.
+            // If this fails, fallback to KVP reporting by logging the error.
+            if let Ok(vm_goalstate) = goalstate::get_goalstate(
                 &client,
-                vm_goalstate,
-                &failure_description,
                 Duration::from_secs(imds_http_retry_interval_sec),
                 Duration::from_secs(imds_http_timeout_sec),
-                None, // default wireserver health URL
+                None, // default wireserver goalstate URL
             )
             .await
             {
+                let failure_description =
+                    format!("Provisioning error: {:?}", e);
+                if let Err(report_err) = goalstate::report_failure(
+                    &client,
+                    vm_goalstate,
+                    &failure_description,
+                    Duration::from_secs(imds_http_retry_interval_sec),
+                    Duration::from_secs(imds_http_timeout_sec),
+                    None, // default wireserver health URL
+                )
+                .await
+                {
+                    tracing::error!(
+                        health_report = "failure",
+                        reason = format!("{}", report_err),
+                    );
+                }
+            } else {
                 tracing::error!(
-                    health_report = "failure",
-                    reason = format!("{}", report_err),
+                    "Could not fetch goalstate for failure reporting"
                 );
             }
-        } else {
-            tracing::error!("Could not fetch goalstate for failure reporting");
         }
     }
-
     provisioning_result
 }
