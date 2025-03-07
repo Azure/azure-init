@@ -17,6 +17,9 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision,
 };
+use libazureinit::{
+    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
@@ -99,8 +102,10 @@ fn get_username(
 #[tokio::main]
 async fn main() -> ExitCode {
     let tracer = initialize_tracing();
+    let vm_id: String = get_vm_id()
+        .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
 
-    if let Err(e) = setup_layers(tracer) {
+    if let Err(e) = setup_layers(tracer.clone(), &vm_id, None) {
         eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
     }
 
@@ -115,15 +120,19 @@ async fn main() -> ExitCode {
         }
     };
 
-    match provision(config, opts).await {
-        Ok(_) => {
-            // Emit a special tracing event that signals a successful provisioning report.
-            tracing::info!(
-                health_report = "success",
-                "Provisioning completed successfully"
-            );
-            ExitCode::SUCCESS
-        }
+    if let Err(e) = setup_layers(tracer, &vm_id, Some(&config)) {
+        tracing::error!("Failed to set final logging subscriber: {e:?}");
+    }
+
+    if is_provisioning_complete(Some(&config), &vm_id) {
+        tracing::info!(
+            "Provisioning already completed earlier. Skipping provisioning."
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    match provision(config, &vm_id, opts).await {
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{:?}", e);
@@ -142,7 +151,11 @@ async fn main() -> ExitCode {
 }
 
 #[instrument(name = "root", skip_all)]
-async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
+async fn provision(
+    config: Config,
+    vm_id: &str,
+    opts: Cli,
+) -> Result<(), anyhow::Error> {
     let kernel_version = System::kernel_version()
         .unwrap_or("Unknown Kernel Version".to_string());
     let os_version =
@@ -154,6 +167,8 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         os_version,
         VERSION
     );
+
+    let clone_config = config.clone();
 
     let mut default_headers = header::HeaderMap::new();
     let user_agent = if cfg!(debug_assertions) {
@@ -230,43 +245,60 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
             "Failed to report VM health."
         })?;
 
+        mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
+            || {
+                tracing::error!("Failed to mark provisioning complete.");
+                "Failed to mark provisioning complete."
+            },
+        )?;
+
         Ok(())
     }
     .await;
 
-    if let Err(ref e) = provisioning_result {
-        tracing::error!("Provisioning failed with error: {:?}", e);
-
-        // Report the provisioning failure via wireserver.
-        // If this fails, fallback to KVP reporting by logging the error.
-        if let Ok(vm_goalstate) = goalstate::get_goalstate(
-            &client,
-            Duration::from_secs(imds_http_retry_interval_sec),
-            Duration::from_secs(imds_http_timeout_sec),
-            None, // default wireserver goalstate URL
-        )
-        .await
-        {
-            let failure_description = format!("Provisioning error: {:?}", e);
-            if let Err(report_err) = goalstate::report_failure(
+    match &provisioning_result {
+        Ok(_) => {
+            tracing::info!(
+                target: "azure_init",
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+        }
+        Err(e) => {
+            tracing::error!("Provisioning failed with error: {:?}", e);
+            // Report the provisioning failure via wireserver.
+            // If this fails, fallback to KVP reporting by logging the error.
+            if let Ok(vm_goalstate) = goalstate::get_goalstate(
                 &client,
-                vm_goalstate,
-                &failure_description,
                 Duration::from_secs(imds_http_retry_interval_sec),
                 Duration::from_secs(imds_http_timeout_sec),
                 None, // default wireserver health URL
             )
             .await
             {
+                let failure_description =
+                    format!("Provisioning error: {:?}", e);
+                if let Err(report_err) = goalstate::report_failure(
+                    &client,
+                    vm_goalstate,
+                    &failure_description,
+                    Duration::from_secs(imds_http_retry_interval_sec),
+                    Duration::from_secs(imds_http_timeout_sec),
+                    None, // default wireserver health URL
+                )
+                .await
+                {
+                    tracing::error!(
+                        health_report = "failure",
+                        reason = format!("{}", report_err),
+                    );
+                }
+            } else {
                 tracing::error!(
-                    health_report = "failure",
-                    reason = format!("{}", report_err),
+                    "Could not fetch goalstate for failure reporting"
                 );
             }
-        } else {
-            tracing::error!("Could not fetch goalstate for failure reporting");
         }
     }
-
     provisioning_result
 }
