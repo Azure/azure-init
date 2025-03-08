@@ -37,8 +37,6 @@ use chrono::{DateTime, Utc};
 use std::fmt;
 use uuid::Uuid;
 
-use libazureinit::get_vm_id;
-
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
 const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1022;
@@ -137,7 +135,10 @@ impl EmitKVPLayer {
     /// # Arguments
     /// * `file_path` - The file path where the KVP data will be stored.
     ///
-    pub fn new(file_path: std::path::PathBuf) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        file_path: std::path::PathBuf,
+        vm_id: &str,
+    ) -> Result<Self, anyhow::Error> {
         truncate_guest_pool_file(&file_path)?;
 
         let file = OpenOptions::new()
@@ -152,11 +153,10 @@ impl EmitKVPLayer {
 
         tokio::spawn(Self::kvp_writer(file, events_rx));
 
-        let vm_id: String = get_vm_id().unwrap_or_else(|| {
-            "00000000-0000-0000-0000-000000000000".to_string()
-        });
-
-        Ok(Self { events_tx, vm_id })
+        Ok(Self {
+            events_tx,
+            vm_id: vm_id.to_string(),
+        })
     }
 
     /// An asynchronous task that serializes incoming KVP data to the specified file.
@@ -558,7 +558,9 @@ mod tests {
             NamedTempFile::new().expect("Failed to create tempfile");
         let temp_path = temp_file.path().to_path_buf();
 
-        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone())
+        let test_vm_id = "00000000-0000-0000-0000-000000000001";
+
+        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone(), test_vm_id)
             .expect("Failed to create EmitKVPLayer");
 
         let subscriber = Registry::default().with(emit_kvp_layer);

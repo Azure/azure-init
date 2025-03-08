@@ -17,7 +17,9 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision,
 };
-use libazureinit::{is_provisioning_complete, mark_provisioning_complete};
+use libazureinit::{
+    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
@@ -100,8 +102,10 @@ fn get_username(
 #[tokio::main]
 async fn main() -> ExitCode {
     let tracer = initialize_tracing();
+    let vm_id: String = get_vm_id()
+        .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
 
-    if let Err(e) = setup_layers(tracer) {
+    if let Err(e) = setup_layers(tracer, &vm_id) {
         eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
     }
 
@@ -116,14 +120,14 @@ async fn main() -> ExitCode {
         }
     };
 
-    if is_provisioning_complete(Some(&config)) {
+    if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(
             "Provisioning already completed earlier. Skipping provisioning."
         );
         return ExitCode::SUCCESS;
     }
 
-    match provision(config, opts).await {
+    match provision(config, &vm_id, opts).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
@@ -143,7 +147,11 @@ async fn main() -> ExitCode {
 }
 
 #[instrument(name = "root", skip_all)]
-async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
+async fn provision(
+    config: Config,
+    vm_id: &str,
+    opts: Cli,
+) -> Result<(), anyhow::Error> {
     let kernel_version = System::kernel_version()
         .unwrap_or("Unknown Kernel Version".to_string());
     let os_version =
@@ -230,10 +238,12 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
         "Failed to report VM health."
     })?;
 
-    mark_provisioning_complete(Some(&clone_config)).with_context(|| {
-        tracing::error!("Failed to mark provisioning complete.");
-        "Failed to mark provisioning complete."
-    })?;
+    mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
+        || {
+            tracing::error!("Failed to mark provisioning complete.");
+            "Failed to mark provisioning complete."
+        },
+    )?;
 
     Ok(())
 }
