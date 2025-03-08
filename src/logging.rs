@@ -23,6 +23,7 @@ pub fn initialize_tracing() -> sdktrace::Tracer {
 
 pub fn setup_layers(
     tracer: sdktrace::Tracer,
+    vm_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
@@ -37,13 +38,16 @@ pub fn setup_layers(
             "libazureinit::ssh::authorized_keys",
             "libazureinit::ssh::success",
             "libazureinit::user::add",
+            "libazureinit::status::success",
+            "libazureinit::status::retrieved_vm_id",
         ]
         .join(","),
     )?;
 
-    let emit_kvp_layer = match EmitKVPLayer::new(std::path::PathBuf::from(
-        "/var/lib/hyperv/.kvp_pool_1",
-    )) {
+    let emit_kvp_layer = match EmitKVPLayer::new(
+        std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
+        vm_id,
+    ) {
         Ok(layer) => Some(layer.with_filter(kvp_filter)),
         Err(e) => {
             event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
