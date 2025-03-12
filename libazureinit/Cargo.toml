@@ -27,7 +27,7 @@ figment = { version = "0.10", features = ["toml"] }
 # Pinned to 0.1.5 since 0.1.6 bumps its MSRV to 1.81.
 # The major difference in 0.1.6 is the switch to core::error
 # This should be unpinned on or around 2025-09-05 if we continue with our ~1 year MSRV policy
-zerofrom = "=0.1.5"
+zerofrom = "=0.1.6"
 # Pinned to 0.7.4 since 0.7.5 bumps its MSRV to 1.81.
 # The major difference in 0.7.5 is the switch to core::error; there's also a few API additions.
 # This should be unpinned on or around 2025-09-05 if we continue with our ~1 year MSRV policy
