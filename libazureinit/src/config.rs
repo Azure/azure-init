@@ -252,23 +252,23 @@ impl Default for AzureInitDataDir {
 }
 
 /// The default directory for azure-init.log
-pub const DEFAULT_TELEMETRY_LOG_PATH: &str = "/var/log/azure-init.log";
+pub const DEFAULT_AZURE_INIT_LOG_PATH: &str = "/var/log/azure-init.log";
 /// Telemetry log (azure-init.log) struct.
 /// Configures settings for where azure-init should channel telemetry logs.
-/// If no custom path is provided, `TelemetryLogPath::default()` uses
-/// [`DEFAULT_TELEMETRY_LOG_PATH`].
+/// If no custom path is provided, `AzureInitLogPath ::default()` uses
+/// [`DEFAULT_AZURE_INIT_LOG_PATH`].
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
-pub struct TelemetryLogPath {
+pub struct AzureInitLogPath {
     /// Specifies the path used to capture all telemetry logs.
     /// Defaults to `/var/log/azure-init.log`.
     pub path: PathBuf,
 }
 
-impl Default for TelemetryLogPath {
+impl Default for AzureInitLogPath {
     fn default() -> Self {
         Self {
-            path: PathBuf::from(DEFAULT_TELEMETRY_LOG_PATH),
+            path: PathBuf::from(DEFAULT_AZURE_INIT_LOG_PATH),
         }
     }
 }
@@ -290,7 +290,7 @@ pub struct Config {
     pub wireserver: Wireserver,
     pub telemetry: Telemetry,
     pub azure_init_data_dir: AzureInitDataDir,
-    pub telemetry_log_path: TelemetryLogPath,
+    pub azure_init_log_path: AzureInitLogPath,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -654,7 +654,7 @@ mod tests {
         );
 
         assert_eq!(
-            config.telemetry_log_path.path.to_str().unwrap(),
+            config.azure_init_log_path.path.to_str().unwrap(),
             "/var/log/azure-init.log"
         );
 
@@ -693,7 +693,7 @@ mod tests {
         kvp_diagnostics = false
         [azure_init_data_dir]
         path = "/custom/azure-init-data-dir"
-        [telemetry_log_path]
+        [azure_init_log_path]
         path = "/custom/path/azure-init.log"
         "#
         )?;
@@ -761,7 +761,7 @@ mod tests {
 
         tracing::debug!("Verifying merged telemetry log path configuration...");
         assert_eq!(
-            config.telemetry_log_path.path.to_str().unwrap(),
+            config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
         );
 
@@ -839,7 +839,7 @@ mod tests {
 
         tracing::debug!("Verifying merged telemetry log path configuration...");
         assert_eq!(
-            config.telemetry_log_path.path.to_str().unwrap(),
+            config.azure_init_log_path.path.to_str().unwrap(),
             "/var/log/azure-init.log"
         );
 
@@ -875,7 +875,7 @@ mod tests {
         kvp_diagnostics = false
         [azure_init_data_dir]
         path = "/cli-override-azure-init-data-dir"
-        [telemetry_log_path]
+        [azure_init_log_path]
         path = "/custom/path/azure-init.log"
         "#,
         )?;
@@ -924,7 +924,7 @@ mod tests {
             "/cli-override-azure-init-data-dir"
         );
         assert_eq!(
-            config.telemetry_log_path.path.to_str().unwrap(),
+            config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
         );
 
