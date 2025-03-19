@@ -77,7 +77,7 @@ pub fn setup_layers(
     } else {
         event!(
             Level::INFO,
-            "KVP diagnostics are disabled via config. Skipping KVP logging."
+            "Hyper-V KVP diagnostics are disabled via config.  It is recommended to be enabled for support purposes."
         );
         None
     };
