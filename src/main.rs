@@ -230,6 +230,12 @@ async fn provision(config: Config, opts: Cli) -> Result<(), anyhow::Error> {
     match &provisioning_result {
         Ok(_) => {
             tracing::info!(
+                target: "azure_init",
+                "Reached success block! current_span = {:?}",
+                tracing::Span::current().id()
+            );
+            tracing::info!(
+                target: "azure_init",
                 health_report = "success",
                 "Provisioning completed successfully"
             );
