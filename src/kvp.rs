@@ -497,6 +497,7 @@ fn get_uptime() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libazureinit::config::{Config, Telemetry};
     use tempfile::NamedTempFile;
     use tokio::time::{sleep, Duration};
     use tracing::instrument;
@@ -696,5 +697,54 @@ mod tests {
         }
 
         println!("All slices adhere to Azure's max value size limit.");
+    }
+
+    #[tokio::test]
+    async fn test_emit_kvp_layer_disabled() {
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+
+        let test_vm_id = "00000000-0000-0000-0000-000000000002";
+
+        let telemetry_config = Telemetry {
+            kvp_diagnostics: false,
+        };
+
+        let config = Config {
+            telemetry: telemetry_config,
+            ..Default::default()
+        };
+
+        let kvp_enabled = config.telemetry.kvp_diagnostics;
+
+        let emit_kvp_layer = if kvp_enabled {
+            Some(
+                EmitKVPLayer::new(temp_path.clone(), test_vm_id)
+                    .expect("Failed to create EmitKVPLayer"),
+            )
+        } else {
+            None
+        };
+
+        let subscriber = Registry::default().with(emit_kvp_layer);
+        let default_guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = mock_provision().await;
+
+        sleep(Duration::from_secs(1)).await;
+
+        drop(default_guard);
+
+        let contents =
+            std::fs::read(temp_path).expect("Failed to read temp file");
+
+        assert!(
+            contents.is_empty(),
+            "KVP file should be empty because kvp_diagnostics is disabled, but found data: {:?}",
+            contents
+        );
+
+        println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
     }
 }
