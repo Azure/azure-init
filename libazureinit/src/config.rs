@@ -253,6 +253,7 @@ impl Default for AzureInitDataDir {
 
 /// The default directory for azure-init.log
 pub const DEFAULT_AZURE_INIT_LOG_PATH: &str = "/var/log/azure-init.log";
+
 /// Telemetry log (azure-init.log) struct.
 /// Configures settings for where azure-init should channel telemetry logs.
 /// If no custom path is provided, `AzureInitLogPath ::default()` uses

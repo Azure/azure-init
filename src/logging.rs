@@ -105,46 +105,12 @@ pub fn setup_layers(
         Err(e) => {
             event!(
                 Level::ERROR,
-                "Could not open {}: {}. Falling back to default log path {}.",
+                "Could not open configured log file {}: {}. Continuing without file logging.",
                 log_path.display(),
-                e,
-                DEFAULT_AZURE_INIT_LOG_PATH
+                e
             );
 
-            match OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(DEFAULT_AZURE_INIT_LOG_PATH)
-            {
-                Ok(file) => {
-                    if let Err(e) =
-                        file.set_permissions(Permissions::from_mode(0o600))
-                    {
-                        event!(
-                            Level::WARN,
-                            "Failed to set permissions on {}: {}.",
-                            DEFAULT_AZURE_INIT_LOG_PATH,
-                            e
-                        );
-                    }
-
-                    Some(
-                        fmt::layer()
-                            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-                            .with_writer(file)
-                            .with_filter(EnvFilter::from_env("AZURE_INIT_LOG")),
-                    )
-                }
-                Err(e) => {
-                    event!(
-                            Level::ERROR,
-                            "Could not open default log path {}: {}. Continuing without file logging.",
-                            DEFAULT_AZURE_INIT_LOG_PATH,
-                            e
-                        );
-                    None
-                }
-            }
+            None
         }
     };
 
