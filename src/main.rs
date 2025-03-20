@@ -105,7 +105,7 @@ async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
 
-    if let Err(e) = setup_layers(tracer, &vm_id) {
+    if let Err(e) = setup_layers(tracer.clone(), &vm_id, None) {
         eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
     }
 
@@ -119,6 +119,10 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(e) = setup_layers(tracer, &vm_id, Some(&config)) {
+        tracing::error!("Failed to set final logging subscriber: {e:?}");
+    }
 
     if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(

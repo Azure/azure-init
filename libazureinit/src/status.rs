@@ -19,7 +19,8 @@
 //! - On **reboot**, if the same VM ID exists, provisioning is skipped.
 //! - If the **VM ID changes** (e.g., due to VM cloning), provisioning runs again.
 
-use std::fs::{self, File};
+use std::fs::{self, OpenOptions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -43,7 +44,23 @@ fn check_provision_dir(config: Option<&Config>) -> Result<(), Error> {
     if !dir.exists() {
         fs::create_dir_all(&dir)?;
         tracing::info!("Created provisioning directory: {}", dir.display());
+
+        if let Err(e) =
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        {
+            tracing::warn!(
+                "Failed to set permissions on {}: {}",
+                dir.display(),
+                e
+            );
+        } else {
+            tracing::info!(
+                "Set secure permissions (700) on provisioning directory: {}",
+                dir.display()
+            );
+        }
     }
+
     Ok(())
 }
 
@@ -210,20 +227,29 @@ pub fn mark_provisioning_complete(
     let file_path =
         get_provisioning_dir(config).join(format!("{}.provisioned", vm_id));
 
-    if let Err(error) = File::create(&file_path) {
-        tracing::error!(
-            ?error,
-            file_path=?file_path,
-            "Failed to create provisioning status file"
-        );
-        return Err(error.into());
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600) // Ensures correct permissions from the start
+        .open(&file_path)
+    {
+        Ok(_) => {
+            tracing::info!(
+                target: "libazureinit::status::success",
+                "Provisioning complete. File created: {}",
+                file_path.display()
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                file_path=?file_path,
+                "Failed to create provisioning status file"
+            );
+            return Err(error.into());
+        }
     }
-
-    tracing::info!(
-        target: "libazureinit::status::success",
-        "Provisioning complete. File created: {}",
-        file_path.display()
-    );
 
     Ok(())
 }
