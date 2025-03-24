@@ -59,15 +59,27 @@ pub fn setup_layers(
         .join(","),
     )?;
 
-    let emit_kvp_layer = match EmitKVPLayer::new(
-        std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
-        vm_id,
-    ) {
-        Ok(layer) => Some(layer.with_filter(kvp_filter)),
-        Err(e) => {
-            event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
-            None
+    let kvp_enabled = config
+        .map(|cfg| cfg.telemetry.kvp_diagnostics)
+        .unwrap_or(true);
+
+    let emit_kvp_layer = if kvp_enabled {
+        match EmitKVPLayer::new(
+            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
+            vm_id,
+        ) {
+            Ok(layer) => Some(layer.with_filter(kvp_filter)),
+            Err(e) => {
+                event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
+                None
+            }
         }
+    } else {
+        event!(
+            Level::INFO,
+            "Hyper-V KVP diagnostics are disabled via config.  It is recommended to be enabled for support purposes."
+        );
+        None
     };
 
     let stderr_layer = fmt::layer()
