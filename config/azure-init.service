@@ -1,5 +1,7 @@
 [Unit]
 Description=Azure-Init
+After=hypervkvpd.service hv-kvp-daemon.service
+Wants=hypervkvpd.service hv-kvp-daemon.service
 After=network-online.target
 Wants=network-online.target
 ConditionFileIsExecutable=/var/lib/azure-init/azure-init
