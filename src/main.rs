@@ -111,11 +111,33 @@ async fn main() -> ExitCode {
 
     let opts = Cli::parse();
 
+    const CONFIG_HEALTH_MESSAGE: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+    <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+        <GoalStateIncarnation>dummy_incarnation</GoalStateIncarnation>\n\
+        <Container>\n\
+            <ContainerId>dummy_container_id</ContainerId>\n\
+            <RoleInstanceList>\n\
+                <Role>\n\
+                    <InstanceId>dummy_instance_id</InstanceId>\n\
+                    <Health>\n\
+                        <State>NotReady</State>\n\
+                        <Substatus>ProvisioningFailed</Substatus>\n\
+                        <Description>Invalid configuration schema</Description>\n\
+                    </Health>\n\
+                </Role>\n\
+            </RoleInstanceList>\n\
+        </Container>\n\
+    </Health>";
+
     let config = match Config::load(opts.config.clone()) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Failed to load configuration: {error:?}");
             eprintln!("Example configuration:\n\n{}", Config::default());
+            tracing::error!(
+                health_report = "failure",
+                reason = format!("{}", CONFIG_HEALTH_MESSAGE)
+            );
             return ExitCode::FAILURE;
         }
     };
