@@ -274,6 +274,26 @@ impl Default for AzureInitLogPath {
     }
 }
 
+/// Runcmd argument struct.
+///
+/// Each command is specified as an array of string arguments,
+/// passed directly to the underlying executable. For example:
+/// ```yaml
+/// runcmd:
+///   commands:
+///     - ["echo", "hello", "world"]
+///     - ["apt-get", "update"]
+///     - ["bash", "-c", "echo 'Done!' && exit 0"]
+/// ```
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(default)]
+pub struct RunCmd {
+    /// A list of commands, where each command itself is a list of arguments.
+    /// Defaults to an empty list if not specified.
+    pub commands: Vec<Vec<String>>,
+}
+
+
 /// General configuration struct for azure-init.
 ///
 /// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
@@ -292,6 +312,7 @@ pub struct Config {
     pub telemetry: Telemetry,
     pub azure_init_data_dir: AzureInitDataDir,
     pub azure_init_log_path: AzureInitLogPath,
+    pub runcmd: RunCmd,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -659,6 +680,8 @@ mod tests {
             "/var/log/azure-init.log"
         );
 
+        assert!(config.runcmd.commands.is_empty());
+
         tracing::debug!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
 
         Ok(())
@@ -696,6 +719,11 @@ mod tests {
         path = "/custom/azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
         "#
         )?;
 
@@ -764,6 +792,15 @@ mod tests {
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
+        );
+
+        tracing::debug!("Verifying runcmd configuration...");
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
         );
 
         tracing::debug!(
@@ -844,6 +881,9 @@ mod tests {
             "/var/log/azure-init.log"
         );
 
+        tracing::debug!("Verifying runcmd configuration...");
+        assert!(config.runcmd.commands.is_empty());
+
         tracing::debug!("test_default_config completed successfully.");
 
         Ok(())
@@ -878,6 +918,11 @@ mod tests {
         path = "/cli-override-azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
         "#,
         )?;
 
@@ -927,6 +972,14 @@ mod tests {
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
+        );
+
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
         );
 
         Ok(())
