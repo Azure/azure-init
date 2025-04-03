@@ -5,7 +5,7 @@ mod kvp;
 mod logging;
 pub use logging::{initialize_tracing, setup_layers};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use libazureinit::config::Config;
 use libazureinit::imds::InstanceMetadata;
@@ -274,11 +274,39 @@ async fn provision(
         .clone()
         .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
 
-    let user =
-        User::new(username, im.compute.public_keys).with_groups(opts.groups);
+    let user = User::new(username, im.compute.public_keys)
+        .with_groups(opts.groups);
 
     Provision::new(im.compute.os_profile.computer_name, user, config)
         .provision()?;
+        
+    for cmd_args in &clone_config.runcmd.commands {
+        if cmd_args.is_empty() {
+            continue;
+        }
+        let (executable, rest) = cmd_args.split_first().unwrap();
+
+        let status = std::process::Command::new(executable)
+            .args(rest)
+            .status()
+            .with_context(|| {
+                format!("Failed to launch runcmd command: {:?}", cmd_args)
+            })?;
+
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
+            tracing::error!(
+                "runcmd command {:?} failed with exit code {}",
+                cmd_args,
+                code
+            );
+            return Err(anyhow!(
+                "runcmd command {:?} failed with exit code {}",
+                cmd_args,
+                code
+            ));
+        }
+    }
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {
