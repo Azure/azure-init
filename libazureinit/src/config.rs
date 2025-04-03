@@ -13,7 +13,8 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 use toml;
 use tracing;
@@ -293,7 +294,6 @@ pub struct RunCmd {
     pub commands: Vec<Vec<String>>,
 }
 
-
 /// General configuration struct for azure-init.
 ///
 /// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
@@ -366,6 +366,7 @@ impl Config {
 
         if base_path.exists() {
             tracing::info!(path=?base_path, "Loading base configuration file");
+            check_azure_init_header(&base_path)?;
             figment = figment.merge(Toml::file(base_path));
         } else {
             tracing::warn!(
@@ -384,6 +385,7 @@ impl Config {
                     "Merging configuration file from CLI: {:?}",
                     cli_path
                 );
+                check_azure_init_header(&cli_path)?;
                 figment = figment.merge(Toml::file(cli_path));
             }
         }
@@ -432,6 +434,7 @@ impl Config {
 
             for path_entry in entries {
                 tracing::info!("Merging configuration file: {:?}", path_entry);
+                check_azure_init_header(&path_entry)?;
                 figment = figment.merge(Toml::file(path_entry));
             }
             Ok(figment)
@@ -440,6 +443,40 @@ impl Config {
             Ok(figment.clone())
         }
     }
+}
+
+/// Checks the first line of `file_path` for the `#azure-init-config` header.
+/// Returns an error if the file doesn't start with `#azure-init-config`.
+fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
+    if !file_path.is_file() {
+        // If it's not a file, ignore or skip the check
+        return Ok(());
+    }
+
+    let file = fs::File::open(file_path).map_err(|e| {
+        tracing::error!("Failed to open file {:?}: {:?}", file_path, e);
+        Error::Io(e)
+    })?;
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut first_line = String::new();
+    let _ = reader.read_line(&mut first_line).map_err(|e| {
+        tracing::error!("Error reading first line of {:?}: {:?}", file_path, e);
+        Error::Io(e)
+    })?;
+
+    if !first_line.trim_start().starts_with("#azure-init-config") {
+        tracing::error!(
+            "File {:?} missing `#azure-init-config` header in first line",
+            file_path
+        );
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("File {:?} missing `#azure-init-config` header", file_path),
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -486,6 +523,7 @@ mod tests {
 
         tracing::debug!("Writing an invalid configuration file...");
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -523,6 +561,7 @@ mod tests {
             "Writing an invalid hostname provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -558,6 +597,7 @@ mod tests {
             "Writing an invalid user provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -596,6 +636,7 @@ mod tests {
             "Writing an invalid password provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -628,7 +669,8 @@ mod tests {
         let empty_file_path = dir.path().join("empty_config.toml");
 
         tracing::debug!("Creating an empty configuration file...");
-        fs::File::create(&empty_file_path)?;
+        let mut empty_file = fs::File::create(&empty_file_path)?;
+        writeln!(empty_file, "#azure-init-config")?;
 
         tracing::debug!("Loading configuration with empty file...");
         let config = Config::load_from(empty_file_path, drop_in_path, None)?;
@@ -697,6 +739,7 @@ mod tests {
             "Writing an override configuration file with custom values..."
         );
         let mut override_file = fs::File::create(&override_file_path)?;
+        writeln!(override_file, "#azure-init-config")?;
         writeln!(
             override_file,
             r#"[ssh]
@@ -898,7 +941,8 @@ mod tests {
 
         fs::write(
             &override_file_path,
-            r#"[ssh]
+            r#"#azure-init-config
+        [ssh]
         authorized_keys_path = ".ssh/authorized_keys"
         query_sshd_config = false
         [user_provisioners]
@@ -1022,6 +1066,7 @@ mod tests {
 
         tracing::debug!("Writing base configuration...");
         let mut base_file = fs::File::create(&base_file_path)?;
+        writeln!(base_file, "#azure-init-config")?;
         writeln!(
             base_file,
             r#"
@@ -1034,6 +1079,7 @@ mod tests {
 
         tracing::debug!("Writing first override configuration...");
         let mut override_file_1 = fs::File::create(&override_file_path_1)?;
+        writeln!(override_file_1, "#azure-init-config")?;
         writeln!(
             override_file_1,
             r#"
@@ -1044,6 +1090,7 @@ mod tests {
 
         tracing::debug!("Writing second override configuration...");
         let mut override_file_2 = fs::File::create(&override_file_path_2)?;
+        writeln!(override_file_2, "#azure-init-config")?;
         writeln!(
             override_file_2,
             r#"
