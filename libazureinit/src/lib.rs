@@ -3,7 +3,7 @@
 pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
-pub mod goalstate;
+pub mod health;
 pub(crate) mod http;
 pub mod imds;
 pub mod media;

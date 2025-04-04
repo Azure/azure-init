@@ -205,6 +205,66 @@ impl EmitKVPLayer {
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
     }
+
+    /// Processes and sends a health report event based on the provided `health_report` field.
+    ///
+    /// This function extracts the `reason` field (if present)
+    /// and constructs a properly formatted health report key-value pair (KVP) using
+    /// [`build_health_kvp`]. The resulting KVP is then encoded and sent via `send_event()`.
+    ///
+    /// This function is called exclusively from [`on_event`] when a `health_report`
+    /// flag is detected, ensuring that health-related events are processed separately
+    /// from standard event logging.
+    ///
+    /// # Parameters
+    /// - `event`: The original tracing event containing metadata.
+    /// - `health_report`: The health report status as a string (e.g., `"Success"` or `"Failure"`).
+    /// - `timestamp`: The event timestamp as a formatted string.
+    fn handle_health_report(
+        &self,
+        event: &tracing::Event<'_>,
+        health_report: String,
+        event_time: Duration,
+    ) {
+        let mut reason = None;
+        event.record(
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
+                if field.name() == "reason" {
+                    reason = Some(
+                        format!("{:?}", value).trim_matches('"').to_string(),
+                    );
+                }
+            },
+        );
+        let timestamp = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
+
+        let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+        let kvp_result: Result<(String, String), String> =
+            match health_report.as_str() {
+                "success" => Ok(build_success_health_report(
+                    &agent,
+                    Some("optional_value"),
+                    &self.vm_id,
+                    &timestamp,
+                )),
+                "failure" => Ok(build_failure_health_report(
+                    &agent,
+                    reason.as_deref().unwrap_or("No failure reason provided"),
+                    Some("stuff"),
+                    &self.vm_id,
+                    &timestamp,
+                )),
+                other => Err(format!("Invalid health report kind: {}", other)),
+            };
+
+        let (key, value) =
+            kvp_result.expect("Failed to build health key-value pair");
+
+        self.send_event(encode_kvp_item(&key, &value).concat());
+    }
 }
 
 impl<S> Layer<S> for EmitKVPLayer
@@ -220,6 +280,9 @@ where
     ///
     /// If an `ERROR` level event is encountered, it marks the span's status as a failure,
     /// which will be reflected in the span's data upon closure.
+    ///
+    /// Additionally, this function checks if the event contains a `health_report` field.
+    /// If present, the event is delegated to [`handle_health_report`] to be uniquely formatted.
     ///
     /// # Arguments
     /// * `event` - The tracing event instance containing the message and metadata.
@@ -261,6 +324,25 @@ where
 
             let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+            let mut health_report = None;
+            event.record(
+                &mut |field: &tracing::field::Field,
+                      value: &dyn std::fmt::Debug| {
+                    if field.name() == "health_report" {
+                        health_report = Some(
+                            format!("{:?}", value)
+                                .trim_matches('"')
+                                .to_string(),
+                        );
+                    }
+                },
+            );
+
+            if let Some(health_str) = health_report {
+                self.handle_health_report(event, health_str, event_time);
+                return;
+            }
 
             let event_value =
                 format!("Time: {} | Event: {}", event_time_dt, event_message);
@@ -494,6 +576,71 @@ fn get_uptime() -> Duration {
     Duration::from_secs(uptime_seconds)
 }
 
+/// Builds the success health KVP entry in the required format.
+///
+/// The expected format is:
+///   result=success|agent=Azure-Init/<version>|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>[|optional_key=optional_value…]
+///
+/// # Parameters
+/// - `agent`: The agent version string.
+/// - `optional_key`: Optional additional key=value pairs.
+/// - `vm_id`: The VM ID.
+/// - `timestamp`: The precomputed timestamp in ISO 8601 format.
+///
+/// # Returns
+/// A tuple of (key, value) where key is fixed as "PROVISIONING_REPORT".
+fn build_success_health_report(
+    agent: &str,
+    optional_key: Option<&str>,
+    vm_id: &str,
+    timestamp: &str,
+) -> (String, String) {
+    let mut value = format!(
+        "result=success|agent={}|pps_type=None|vm_id={}|timestamp={}",
+        agent, vm_id, timestamp
+    );
+
+    if let Some(optional_val) = optional_key {
+        value.push_str(&format!("|optional_key={}", optional_val));
+    }
+
+    ("PROVISIONING_REPORT".to_string(), value)
+}
+
+/// Builds the failure health KVP entry in the required format.
+///
+/// The expected format is:
+///   result=error|reason=<failure reason>|agent=Azure-Init/<version>|extra=stuff|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>|documentation_url=https://aka.ms/linuxprovisioningerror
+///
+/// # Parameters
+/// - `agent`: The agent version string.
+/// - `reason`: The failure reason.
+/// - `extra`: Optional additional key=value pairs.
+/// - `vm_id`: The VM ID.
+/// - `timestamp`: The precomputed timestamp in ISO 8601 format.
+///
+/// # Returns
+/// A tuple of (key, value) where key is fixed as "PROVISIONING_REPORT".
+fn build_failure_health_report(
+    agent: &str,
+    reason: &str,
+    extra: Option<&str>,
+    vm_id: &str,
+    timestamp: &str,
+) -> (String, String) {
+    let mut value = format!("result=error|reason={}|agent={}|", reason, agent);
+    if let Some(extra_val) = extra {
+        value.push_str(&format!("extra={}|", extra_val));
+    }
+
+    value.push_str(&format!(
+        "pps_type=None|vm_id={}|timestamp={}|documentation_url=https://aka.ms/linuxprovisioningerror",
+            vm_id, timestamp
+    ));
+
+    ("PROVISIONING_REPORT".to_string(), value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,8 +684,11 @@ mod tests {
 
         mock_child_function(0).await;
         sleep(Duration::from_millis(300)).await;
-
-        event!(Level::INFO, msg = "Provisioning completed");
+        event!(
+            Level::INFO,
+            health_report = "success",
+            "Provisioning completed successfully"
+        );
 
         Ok(())
     }
@@ -546,10 +696,13 @@ mod tests {
     #[instrument]
     async fn mock_failure_function() -> Result<(), anyhow::Error> {
         let error_message = "Simulated failure during processing";
-        event!(Level::ERROR, msg = %error_message);
+        event!(
+            Level::ERROR,
+            health_report = "failure",
+            reason = error_message
+        );
 
         sleep(Duration::from_millis(100)).await;
-
         Err(anyhow::anyhow!(error_message))
     }
 
@@ -592,6 +745,9 @@ mod tests {
             contents.len()
         );
 
+        let mut found_success = false;
+        let mut found_failure = false;
+
         for i in 0..num_slices {
             let start = i * slice_size;
             let end = start + slice_size;
@@ -607,6 +763,19 @@ mod tests {
                 Ok((key, value)) => {
                     println!("Decoded KVP - Key: {}", key);
                     println!("Decoded KVP - Value: {}\n", value);
+
+                    // Check for success or failure reports
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=success")
+                    {
+                        found_success = true;
+                    }
+
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=error")
+                    {
+                        found_failure = true;
+                    }
                 }
                 Err(e) => {
                     panic!("Failed to decode KVP: {}", e);
@@ -625,6 +794,15 @@ mod tests {
                 i
             );
         }
+
+        assert!(
+            found_success,
+            "Expected to find a 'result=success' entry but did not."
+        );
+        assert!(
+            found_failure,
+            "Expected to find a 'result=error' entry but did not."
+        );
     }
 
     #[tokio::test]

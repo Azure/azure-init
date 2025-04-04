@@ -49,8 +49,6 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
 
 /// Timeout for communicating with IMDS.
 pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;
-/// Timeout for communicating with wireserver for goalstate, health.
-pub(crate) const WIRESERVER_HTTP_TIMEOUT_SEC: u64 = 30;
 
 /// Send an HTTP GET request to the given URL with an empty body.
 #[instrument(err, skip_all)]
@@ -125,7 +123,7 @@ async fn request(
 
                         match response.error_for_status() {
                             Ok(response) => {
-                                if statuscode == StatusCode::OK {
+                                if statuscode == StatusCode::OK || statuscode == StatusCode::CREATED {
                                     tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
                                     return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }
