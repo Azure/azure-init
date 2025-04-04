@@ -305,6 +305,42 @@ pub struct RunCmd {
     pub commands: Vec<Vec<String>>,
 }
 
+// Represents an instruction to write a file during provisioning.
+///
+/// # Fields
+/// - `path`: The destination path of the file.
+/// - `owner`: The username (e.g. "root") that will own the file. Defaults to `root`.`
+/// - `group`: The group name (e.g. "root") that will own the file. Defaults to `root`.
+/// - `permissions`: Numeric file permissions in octal (e.g. 0o600). Defaults to `o600`.
+/// - `content`: Raw file content in bytes (could be binary).
+/// - `overwrite`: If `true`, overwrite existing files; otherwise skip if file already exists. Defaults to `true`.
+/// - `create_parents`: If `true`, create missing parent directories with perms 0o755 (root:root). Defaults to `true`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct WriteFiles {
+    pub path: PathBuf,
+    pub owner: String,
+    pub group: String,
+    pub permissions: u32,
+    pub content: Vec<u8>,
+    pub overwrite: bool,
+    pub create_parents: bool,
+}
+
+impl Default for WriteFiles {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            owner: "root".to_string(),
+            group: "root".to_string(),
+            permissions: 0o600,
+            content: Vec::new(),
+            overwrite: true,
+            create_parents: true,
+        }
+    }
+}
+
 /// General configuration struct for azure-init.
 ///
 /// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
@@ -323,6 +359,8 @@ pub struct Config {
     pub telemetry: Telemetry,
     pub azure_init_data_dir: AzureInitDataDir,
     pub azure_init_log_path: AzureInitLogPath,
+    pub runcmd: RunCmd,
+    pub write_files: Vec<WriteFiles>,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -736,6 +774,10 @@ mod tests {
             "/var/log/azure-init.log"
         );
 
+        assert!(config.runcmd.commands.is_empty());
+
+        assert!(config.write_files.is_empty());
+
         tracing::debug!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
 
         Ok(())
@@ -774,6 +816,19 @@ mod tests {
         path = "/custom/azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
+        [[write_files]]
+        path = "/etc/custom-write-files"
+        owner = "test-user"
+        group = "test-user"
+        permissions = 384
+        content = [ 104, 101, 108, 108, 111 ]
+        overwrite = true
+        create_parents = true
         "#
         )?;
 
@@ -843,6 +898,26 @@ mod tests {
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
         );
+
+        tracing::debug!("Verifying merged runcmd configuration...");
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
+        );
+
+        tracing::debug!("Verifying merged write_files configuration...");
+        assert_eq!(config.write_files.len(), 1);
+        let wf = &config.write_files[0];
+        assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
+        assert_eq!(wf.owner, "test-user");
+        assert_eq!(wf.group, "test-user");
+        assert_eq!(wf.permissions, 384);
+        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert!(wf.overwrite);
+        assert!(wf.create_parents);
 
         tracing::debug!(
             "test_load_and_merge_with_default_config completed successfully."
@@ -920,11 +995,19 @@ mod tests {
             "/var/lib/azure-init/"
         );
 
-        tracing::debug!("Verifying merged telemetry log path configuration...");
+        tracing::debug!(
+            "Verifying default telemetry log path configuration..."
+        );
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/var/log/azure-init.log"
         );
+
+        tracing::debug!("Verifying default runcmd configuration...");
+        assert!(config.runcmd.commands.is_empty());
+
+        tracing::debug!("Verifying default write_files configuration...");
+        assert!(config.write_files.is_empty());
 
         tracing::debug!("test_default_config completed successfully.");
 
@@ -961,6 +1044,19 @@ mod tests {
         path = "/cli-override-azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
+        [[write_files]]
+        path = "/etc/custom-write-files"
+        owner = "test-user"
+        group = "test-user"
+        permissions = 384
+        content = [ 104, 101, 108, 108, 111 ]
+        overwrite = true
+        create_parents = true
         "#,
         )?;
 
@@ -1011,6 +1107,24 @@ mod tests {
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
         );
+
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
+        );
+
+        assert_eq!(config.write_files.len(), 1);
+        let wf = &config.write_files[0];
+        assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
+        assert_eq!(wf.owner, "test-user");
+        assert_eq!(wf.group, "test-user");
+        assert_eq!(wf.permissions, 384);
+        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert!(wf.overwrite);
+        assert!(wf.create_parents);
 
         Ok(())
     }
