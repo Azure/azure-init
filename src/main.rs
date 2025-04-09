@@ -27,6 +27,11 @@ use sysinfo::System;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
+use libazureinit::config::{
+    DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
+    DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
+};
+
 // These should be set during the build process
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
@@ -233,8 +238,12 @@ async fn main() -> ExitCode {
                 "NotReady",
                 Some("ProvisioningFailed"),
                 Some("Invalid configuration schema"),
-                Duration::from_secs(1),
-                Duration::from_secs(5),
+                Duration::from_secs_f64(
+                    DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
+                ),
+                Duration::from_secs_f64(
+                    DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
+                ),
                 None, // default wireserver URL
             )
             .await
@@ -283,20 +292,19 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let clone_config = config.clone();
     match provision(config, &vm_id, opts).await {
         Ok(_) => {
-            tracing::info!(
-                target: "azure_init",
-                health_report = "success",
-                "Provisioning completed successfully"
-            );
-
             if let Err(_report_err) = report_provisioning_health(
                 "Ready",
                 None,
                 None,
-                Duration::from_secs(2),
-                Duration::from_secs(300),
+                Duration::from_secs_f64(
+                    clone_config.wireserver.connection_timeout_secs,
+                ),
+                Duration::from_secs_f64(
+                    clone_config.wireserver.total_retry_timeout_secs,
+                ),
                 None,
             )
             .await
@@ -305,6 +313,13 @@ async fn main() -> ExitCode {
                     "Failed to report provisioning success to Wireserver"
                 );
             }
+
+            tracing::info!(
+                target: "azure_init",
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -316,8 +331,12 @@ async fn main() -> ExitCode {
                 "NotReady",
                 Some("ProvisioningFailed"),
                 Some(&failure_description),
-                Duration::from_secs(2),
-                Duration::from_secs(300),
+                Duration::from_secs_f64(
+                    clone_config.wireserver.connection_timeout_secs,
+                ),
+                Duration::from_secs_f64(
+                    clone_config.wireserver.total_retry_timeout_secs,
+                ),
                 None,
             )
             .await
@@ -375,9 +394,6 @@ async fn provision(
         .default_headers(default_headers)
         .build()?;
 
-    let imds_http_timeout_sec: u64 = 5 * 60;
-    let imds_http_retry_interval_sec: u64 = 2;
-
     // Username can be obtained either via fetching instance metadata from IMDS
     // or mounting a local device for OVF environment file. It should not fail
     // immediately in a single failure, instead it should fall back to the other
@@ -385,8 +401,8 @@ async fn provision(
     // get_environment().
     let instance_metadata = imds::query(
         &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
+        Duration::from_secs_f64(clone_config.imds.connection_timeout_secs),
+        Duration::from_secs_f64(clone_config.imds.total_retry_timeout_secs),
         None, // default IMDS URL
     )
     .await

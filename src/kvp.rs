@@ -252,9 +252,7 @@ impl EmitKVPLayer {
                 )),
                 "failure" => Ok(build_failure_health_report(
                     &agent,
-                    reason
-                        .as_deref()
-                        .expect("Reason must be provided for failure"),
+                    reason.as_deref().unwrap_or("No failure reason provided"),
                     Some("stuff"),
                     &self.vm_id,
                     &timestamp,
