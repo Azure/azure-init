@@ -12,7 +12,8 @@ use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
-    goalstate, imds, media,
+    goalstate::report_provisioning_health,
+    imds, media,
     media::{get_mount_device, Environment},
     reqwest::{header, Client},
     Provision,
@@ -209,24 +210,6 @@ async fn main() -> ExitCode {
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
     let opts = Cli::parse();
 
-    const CONFIG_HEALTH_MESSAGE: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
-    <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
-        <GoalStateIncarnation>dummy_incarnation</GoalStateIncarnation>\n\
-        <Container>\n\
-            <ContainerId>dummy_container_id</ContainerId>\n\
-            <RoleInstanceList>\n\
-                <Role>\n\
-                    <InstanceId>dummy_instance_id</InstanceId>\n\
-                    <Health>\n\
-                        <State>NotReady</State>\n\
-                        <Substatus>ProvisioningFailed</Substatus>\n\
-                        <Description>Invalid configuration schema</Description>\n\
-                    </Health>\n\
-                </Role>\n\
-            </RoleInstanceList>\n\
-        </Container>\n\
-    </Health>";
-
     let temp_layer = tracing_subscriber::fmt::layer()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
         .with_writer(std::io::stderr)
@@ -245,9 +228,27 @@ async fn main() -> ExitCode {
             Err(error) => {
                 eprintln!("Failed to load configuration: {error:?}");
                 eprintln!("Example configuration:\n\n{}", Config::default());
-                tracing::error!(
+    
+            if let Err(report_error) = report_provisioning_health(
+                "NotReady",
+                Some("ProvisioningFailed"),
+                Some("Invalid configuration schema"),
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                None, // default wireserver URL
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
+                );
+            }
+
+            tracing::error!(
                     health_report = "failure",
-                    reason = format!("{}", CONFIG_HEALTH_MESSAGE)
+                    reason = %error,
+                "Invalid config during early startup"
             );
             return ExitCode::FAILURE;
             }
@@ -283,10 +284,50 @@ async fn main() -> ExitCode {
     }
 
     match provision(config, &vm_id, opts).await {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            tracing::info!(
+                target: "azure_init",
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+
+            if let Err(_report_err) = report_provisioning_health(
+                "Ready",
+                None,
+                None,
+                Duration::from_secs(2),
+                Duration::from_secs(300),
+                None,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to report provisioning success to Wireserver"
+                );
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
+
+            let failure_description = format!("Provisioning error: {:?}", e);
+            if let Err(report_err) = report_provisioning_health(
+                "NotReady",
+                Some("ProvisioningFailed"),
+                Some(&failure_description),
+                Duration::from_secs(2),
+                Duration::from_secs(300),
+                None,
+            )
+            .await
+            {
+                tracing::error!(
+                    health_report = "failure",
+                    reason = format!("{}", report_err)
+                );
+            }
+
             let config: u8 = exitcode::CONFIG
                 .try_into()
                 .expect("Error code must be less than 256");
@@ -337,36 +378,33 @@ async fn provision(
     let imds_http_timeout_sec: u64 = 5 * 60;
     let imds_http_retry_interval_sec: u64 = 2;
 
-    // Wrap the entire provisioning process in an async block to capture errors.
-    // If an error happens, capture the goalstate and call report_failure()
-    let provisioning_result: Result<(), anyhow::Error> = async {
-        // Username can be obtained either via fetching instance metadata from IMDS
-        // or mounting a local device for OVF environment file. It should not fail
-        // immediately in a single failure, instead it should fall back to the other
-        // mechanism. So it is not a good idea to use `?` for query() or
-        // get_environment().
-        let instance_metadata = imds::query(
-            &client,
-            Duration::from_secs(imds_http_retry_interval_sec),
-            Duration::from_secs(imds_http_timeout_sec),
-            None, // default IMDS URL
-        )
-        .await
-        .ok();
+    // Username can be obtained either via fetching instance metadata from IMDS
+    // or mounting a local device for OVF environment file. It should not fail
+    // immediately in a single failure, instead it should fall back to the other
+    // mechanism. So it is not a good idea to use `?` for query() or
+    // get_environment().
+    let instance_metadata = imds::query(
+        &client,
+        Duration::from_secs(imds_http_retry_interval_sec),
+        Duration::from_secs(imds_http_timeout_sec),
+        None, // default IMDS URL
+    )
+    .await
+    .ok();
 
-        let environment = get_environment().ok();
+    let environment = get_environment().ok();
 
-        let username =
-            get_username(instance_metadata.as_ref(), environment.as_ref())?;
+    let username =
+        get_username(instance_metadata.as_ref(), environment.as_ref())?;
 
-        // It is necessary to get the actual instance metadata after getting username,
-        // as it is not desirable to immediately return error before get_username.
-        let im = instance_metadata
-            .clone()
-            .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
+    // It is necessary to get the actual instance metadata after getting username,
+    // as it is not desirable to immediately return error before get_username.
+    let im = instance_metadata
+        .clone()
+        .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
 
-        let user = User::new(username, im.compute.public_keys)
-            .with_groups(opts.groups);
+    let user =
+        User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
     Provision::new(
         im.compute.os_profile.computer_name,
@@ -376,85 +414,12 @@ async fn provision(
     )
     .provision()?;
 
-        let vm_goalstate = goalstate::get_goalstate(
-            &client,
-            Duration::from_secs(imds_http_retry_interval_sec),
-            Duration::from_secs(imds_http_timeout_sec),
-            None, // default wireserver goalstate URL
-        )
-        .await
-        .with_context(|| {
-            tracing::error!("Failed to get the desired goalstate.");
-            "Failed to get desired goalstate."
-        })?;
+    mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
+        || {
+            tracing::error!("Failed to mark provisioning complete.");
+            "Failed to mark provisioning complete."
+        },
+    )?;
 
-        goalstate::report_health(
-            &client,
-            vm_goalstate,
-            Duration::from_secs(imds_http_retry_interval_sec),
-            Duration::from_secs(imds_http_timeout_sec),
-            None, // default wireserver health URL
-        )
-        .await
-        .with_context(|| {
-            tracing::error!("Failed to report VM health.");
-            "Failed to report VM health."
-        })?;
-
-        mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
-            || {
-                tracing::error!("Failed to mark provisioning complete.");
-                "Failed to mark provisioning complete."
-            },
-        )?;
-
-        Ok(())
-    }
-    .await;
-
-    match &provisioning_result {
-        Ok(_) => {
-            tracing::info!(
-                target: "azure_init",
-                health_report = "success",
-                "Provisioning completed successfully"
-            );
-        }
-        Err(e) => {
-            tracing::error!("Provisioning failed with error: {:?}", e);
-            // Report the provisioning failure via wireserver.
-            // If this fails, fallback to KVP reporting by logging the error.
-            if let Ok(vm_goalstate) = goalstate::get_goalstate(
-                &client,
-                Duration::from_secs(imds_http_retry_interval_sec),
-                Duration::from_secs(imds_http_timeout_sec),
-                None, // default wireserver health URL
-            )
-            .await
-            {
-                let failure_description =
-                    format!("Provisioning error: {:?}", e);
-                if let Err(report_err) = goalstate::report_failure(
-                    &client,
-                    vm_goalstate,
-                    &failure_description,
-                    Duration::from_secs(imds_http_retry_interval_sec),
-                    Duration::from_secs(imds_http_timeout_sec),
-                    None, // default wireserver health URL
-                )
-                .await
-                {
-                    tracing::error!(
-                        health_report = "failure",
-                        reason = format!("{}", report_err),
-                    );
-                }
-            } else {
-                tracing::error!(
-                    "Could not fetch goalstate for failure reporting"
-                );
-            }
-        }
-    }
-    provisioning_result
+    Ok(())
 }

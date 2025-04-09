@@ -241,14 +241,29 @@ impl EmitKVPLayer {
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
 
-        let kind = HealthReportKind::from_str(&health_report);
-        let (key, value) = build_health_kvp(
-            kind,
-            reason.as_deref(),
-            Some("stuff"),
-            "00000000-0000-0000-0000-000000000000",
-            &timestamp,
-        );
+        let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+        let kvp_result: Result<(String, String), String> =
+            match health_report.as_str() {
+                "success" => Ok(build_success_health_report(
+                    &agent,
+                    Some("optional_value"),
+                    &self.vm_id,
+                    &timestamp,
+                )),
+                "failure" => Ok(build_failure_health_report(
+                    &agent,
+                    reason
+                        .as_deref()
+                        .expect("Reason must be provided for failure"),
+                    Some("stuff"),
+                    &self.vm_id,
+                    &timestamp,
+                )),
+                other => Err(format!("Invalid health report kind: {}", other)),
+            };
+
+        let (key, value) =
+            kvp_result.expect("Failed to build health key-value pair");
 
         self.send_event(encode_kvp_item(&key, &value).concat());
     }
@@ -559,74 +574,69 @@ fn get_uptime() -> Duration {
     Duration::from_secs(uptime_seconds)
 }
 
-/// Represents the type of health report for provisioning.
-#[derive(PartialEq)]
-enum HealthReportKind {
-    Success,
-    Failure,
-}
-
-impl HealthReportKind {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "failure" => HealthReportKind::Failure,
-            "success" => HealthReportKind::Success,
-            _ => panic!("Invalid HealthReportKind: {}", s),
-        }
-    }
-}
-
-/// Builds the provisioning health KVP entry in the required format.
+/// Builds the success health KVP entry in the required format.
 ///
-/// For a failure, the expected format is:
-///   result=error|reason=<failure reason>|agent=Azure-Init/<version>|extra=stuff|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>|documentation_url=https://aka.ms/linuxprovisioningerror
-///
-/// For success, the expected format is:
+/// The expected format is:
 ///   result=success|agent=Azure-Init/<version>|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>[|optional_key=optional_value…]
 ///
 /// # Parameters
-/// - `status`: Specifies whether this is a success or failure report.
-/// - `reason`: For failure reports, the failure reason. Must be provided for failures.
+/// - `agent`: The agent version string.
+/// - `optional_key`: Optional additional key=value pairs.
+/// - `vm_id`: The VM ID.
+/// - `timestamp`: The precomputed timestamp in ISO 8601 format.
+///
+/// # Returns
+/// A tuple of (key, value) where key is fixed as "PROVISIONING_REPORT".
+fn build_success_health_report(
+    agent: &str,
+    optional_key: Option<&str>,
+    vm_id: &str,
+    timestamp: &str,
+) -> (String, String) {
+    let mut value = format!(
+        "result=success|agent={}|pps_type=None|vm_id={}|timestamp={}",
+        agent, vm_id, timestamp
+    );
+
+    if let Some(optional_val) = optional_key {
+        value.push_str(&format!("|optional_key={}", optional_val));
+    }
+
+    ("PROVISIONING_REPORT".to_string(), value)
+}
+
+/// Builds the failure health KVP entry in the required format.
+///
+/// The expected format is:
+///   result=error|reason=<failure reason>|agent=Azure-Init/<version>|extra=stuff|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>|documentation_url=https://aka.ms/linuxprovisioningerror
+///
+/// # Parameters
+/// - `agent`: The agent version string.
+/// - `reason`: The failure reason.
 /// - `extra`: Optional additional key=value pairs.
 /// - `vm_id`: The VM ID.
 /// - `timestamp`: The precomputed timestamp in ISO 8601 format.
 ///
 /// # Returns
 /// A tuple of (key, value) where key is fixed as "PROVISIONING_REPORT".
-fn build_health_kvp(
-    status: HealthReportKind,
-    reason: Option<&str>, // For failure, this is required.
+fn build_failure_health_report(
+    agent: &str,
+    reason: &str,
     extra: Option<&str>,
     vm_id: &str,
     timestamp: &str,
 ) -> (String, String) {
-    let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-
-    match status {
-        HealthReportKind::Failure => {
-            let final_reason =
-                reason.expect("Reason must be provided for failure");
-            let mut value = format!(
-                "result=error|reason={}|agent={}|",
-                final_reason, agent
-            );
-            if let Some(extra_val) = extra {
-                value.push_str(&format!("extra={}|", extra_val));
-            }
-            value.push_str(&format!(
-                "pps_type=None|vm_id={}|timestamp={}|documentation_url=https://aka.ms/linuxprovisioningerror",
-                vm_id, timestamp
-            ));
-            ("PROVISIONING_REPORT".to_string(), value)
-        }
-        HealthReportKind::Success => {
-            let value = format!(
-                "result=success|agent={}|pps_type=None|vm_id={}|timestamp={}",
-                agent, vm_id, timestamp
-            );
-            ("PROVISIONING_REPORT".to_string(), value)
-        }
+    let mut value = format!("result=error|reason={}|agent={}|", reason, agent);
+    if let Some(extra_val) = extra {
+        value.push_str(&format!("extra={}|", extra_val));
     }
+
+    value.push_str(&format!(
+        "pps_type=None|vm_id={}|timestamp={}|documentation_url=https://aka.ms/linuxprovisioningerror",
+            vm_id, timestamp
+    ));
+
+    ("PROVISIONING_REPORT".to_string(), value)
 }
 
 #[cfg(test)]

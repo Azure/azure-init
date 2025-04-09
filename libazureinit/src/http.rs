@@ -125,7 +125,7 @@ async fn request(
 
                         match response.error_for_status() {
                             Ok(response) => {
-                                if statuscode == StatusCode::OK {
+                                if statuscode == StatusCode::OK || statuscode == StatusCode::CREATED {
                                     tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
                                     return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }

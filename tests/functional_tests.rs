@@ -37,33 +37,24 @@ async fn main() {
     let http_timeout_sec: u64 = 5 * 60;
     let http_retry_interval_sec: u64 = 2;
 
-    let get_goalstate_result = goalstate::get_goalstate(
-        &client,
-        Duration::from_secs(http_retry_interval_sec),
-        Duration::from_secs(http_timeout_sec),
-        None, // default wireserver goalstate URL
-    )
-    .await;
-    let vm_goalstate = match get_goalstate_result {
-        Ok(vm_goalstate) => vm_goalstate,
-        Err(_err) => return,
-    };
-
-    println!("Goalstate successfully received");
-    println!();
     println!("Reporting VM Health to wireserver");
 
-    let report_health_result = goalstate::report_health(
-        &client,
-        vm_goalstate,
+    let report_health_result = goalstate::report_provisioning_health(
+        "Ready",
+        None,
+        None,
         Duration::from_secs(http_retry_interval_sec),
         Duration::from_secs(http_timeout_sec),
         None, // default wireserver health URL
     )
     .await;
+
     match report_health_result {
-        Ok(report_health) => report_health,
-        Err(_err) => return,
+        Ok(_) => println!("Health report successfully sent"),
+        Err(err) => {
+            println!("Failed to report health: {:?}", err);
+            return;
+        }
     };
 
     println!("VM Health successfully reported");
