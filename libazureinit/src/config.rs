@@ -12,6 +12,7 @@ use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -414,7 +415,6 @@ impl Config {
 
         if base_path.exists() {
             tracing::info!(path=?base_path, "Loading base configuration file");
-            check_azure_init_header(&base_path)?;
             figment = figment.merge(Toml::file(base_path));
         } else {
             tracing::warn!(
@@ -482,7 +482,6 @@ impl Config {
 
             for path_entry in entries {
                 tracing::info!("Merging configuration file: {:?}", path_entry);
-                check_azure_init_header(&path_entry)?;
                 figment = figment.merge(Toml::file(path_entry));
             }
             Ok(figment)
@@ -493,7 +492,8 @@ impl Config {
     }
 }
 
-/// Checks the first line of `file_path` for the `#azure-init-config` header.
+/// Checks that the first line of the file is `# ... azure-init-config`
+/// allowing any amount of whitespace between `#` and `azure-init-config`.`
 /// Returns an error if the file doesn't start with `#azure-init-config`.
 fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
     if !file_path.is_file() {
@@ -506,17 +506,18 @@ fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
         Error::Io(e)
     })?;
     let mut reader = std::io::BufReader::new(file);
-
     let mut first_line = String::new();
     let _ = reader.read_line(&mut first_line).map_err(|e| {
         tracing::error!("Error reading first line of {:?}: {:?}", file_path, e);
         Error::Io(e)
     })?;
 
-    if !first_line.trim_start().starts_with("#azure-init-config") {
+    let trimmed = first_line.trim();
+    let re = Regex::new(r"^#\s*azure-init-config$").unwrap();
+    if !re.is_match(trimmed) {
         tracing::error!(
-            "File {:?} missing `#azure-init-config` header in first line",
-            file_path
+            "File {:?} missing proper header. Expected 'azure-init-config', found '{}'",
+            file_path, trimmed
         );
         return Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -825,7 +826,7 @@ mod tests {
         path = "/etc/custom-write-files"
         owner = "test-user"
         group = "test-user"
-        permissions = 384
+        permissions = 0o600
         content = [ 104, 101, 108, 108, 111 ]
         overwrite = true
         create_parents = true
@@ -914,7 +915,7 @@ mod tests {
         assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
         assert_eq!(wf.owner, "test-user");
         assert_eq!(wf.group, "test-user");
-        assert_eq!(wf.permissions, 384);
+        assert_eq!(wf.permissions, 0o600);
         assert_eq!(wf.content, [104, 101, 108, 108, 111]);
         assert!(wf.overwrite);
         assert!(wf.create_parents);
@@ -1053,7 +1054,7 @@ mod tests {
         path = "/etc/custom-write-files"
         owner = "test-user"
         group = "test-user"
-        permissions = 384
+        permissions = 0o600
         content = [ 104, 101, 108, 108, 111 ]
         overwrite = true
         create_parents = true
@@ -1121,7 +1122,7 @@ mod tests {
         assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
         assert_eq!(wf.owner, "test-user");
         assert_eq!(wf.group, "test-user");
-        assert_eq!(wf.permissions, 384);
+        assert_eq!(wf.permissions, 0o600);
         assert_eq!(wf.content, [104, 101, 108, 108, 111]);
         assert!(wf.overwrite);
         assert!(wf.create_parents);

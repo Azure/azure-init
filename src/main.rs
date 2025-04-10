@@ -31,10 +31,6 @@ use sysinfo::System;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
-use libazureinit::config::{
-    DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
-    DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
-};
 use users::{get_group_by_name, get_user_by_name};
 
 // These should be set during the build process
