@@ -12,8 +12,10 @@ use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 use toml;
 use tracing;
@@ -181,6 +183,10 @@ impl Default for AzureProxyAgent {
     }
 }
 
+/// Global default timeout for Wire server connections.
+pub const DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS: f64 = 1200.0;
+/// Global default retry interval for Wire server requests.
+pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 2.0;
 /// Wire server configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Azure wire server.
@@ -200,9 +206,10 @@ pub struct Wireserver {
 impl Default for Wireserver {
     fn default() -> Self {
         Self {
-            connection_timeout_secs: 2.0,
+            connection_timeout_secs: DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
             read_timeout_secs: 60.0,
-            total_retry_timeout_secs: 1200.0,
+            total_retry_timeout_secs:
+                DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
         }
     }
 }
@@ -274,6 +281,61 @@ impl Default for AzureInitLogPath {
     }
 }
 
+/// Runcmd argument struct.
+///
+/// Each command is specified as an array of string arguments,
+/// passed directly to the underlying executable. For example:
+/// ```yaml
+/// runcmd:
+///   commands:
+///     - ["echo", "hello", "world"]
+///     - ["apt-get", "update"]
+///     - ["bash", "-c", "echo 'Done!' && exit 0"]
+/// ```
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(default)]
+pub struct RunCmd {
+    /// A list of commands, where each command itself is a list of arguments.
+    /// Defaults to an empty list if not specified.
+    pub commands: Vec<Vec<String>>,
+}
+
+// Represents an instruction to write a file during provisioning.
+///
+/// # Fields
+/// - `path`: The destination path of the file.
+/// - `owner`: The username (e.g. "root") that will own the file. Defaults to `root`.`
+/// - `group`: The group name (e.g. "root") that will own the file. Defaults to `root`.
+/// - `permissions`: Numeric file permissions in octal (e.g. 0o600). Defaults to `o600`.
+/// - `content`: Raw file content in bytes (could be binary).
+/// - `overwrite`: If `true`, overwrite existing files; otherwise skip if file already exists. Defaults to `true`.
+/// - `create_parents`: If `true`, create missing parent directories with perms 0o755 (root:root). Defaults to `true`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct WriteFiles {
+    pub path: PathBuf,
+    pub owner: String,
+    pub group: String,
+    pub permissions: u32,
+    pub content: Vec<u8>,
+    pub overwrite: bool,
+    pub create_parents: bool,
+}
+
+impl Default for WriteFiles {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            owner: "root".to_string(),
+            group: "root".to_string(),
+            permissions: 0o600,
+            content: Vec::new(),
+            overwrite: true,
+            create_parents: true,
+        }
+    }
+}
+
 /// General configuration struct for azure-init.
 ///
 /// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
@@ -292,6 +354,8 @@ pub struct Config {
     pub telemetry: Telemetry,
     pub azure_init_data_dir: AzureInitDataDir,
     pub azure_init_log_path: AzureInitLogPath,
+    pub runcmd: RunCmd,
+    pub write_files: Vec<WriteFiles>,
 }
 
 /// Implements `Display` for `Config`, formatting it as a readable TOML string.
@@ -363,6 +427,7 @@ impl Config {
                     "Merging configuration file from CLI: {:?}",
                     cli_path
                 );
+                check_azure_init_header(&cli_path)?;
                 figment = figment.merge(Toml::file(cli_path));
             }
         }
@@ -421,6 +486,42 @@ impl Config {
     }
 }
 
+/// Checks that the first line of the file is `# ... azure-init-config`
+/// allowing any amount of whitespace between `#` and `azure-init-config`.`
+/// Returns an error if the file doesn't start with `#azure-init-config`.
+fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
+    if !file_path.is_file() {
+        // If it's not a file, ignore or skip the check
+        return Ok(());
+    }
+
+    let file = fs::File::open(file_path).map_err(|e| {
+        tracing::error!("Failed to open file {:?}: {:?}", file_path, e);
+        Error::Io(e)
+    })?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut first_line = String::new();
+    let _ = reader.read_line(&mut first_line).map_err(|e| {
+        tracing::error!("Error reading first line of {:?}: {:?}", file_path, e);
+        Error::Io(e)
+    })?;
+
+    let trimmed = first_line.trim();
+    let re = Regex::new(r"^#\s*azure-init-config$").unwrap();
+    if !re.is_match(trimmed) {
+        tracing::error!(
+            "File {:?} missing proper header. Expected 'azure-init-config', found '{}'",
+            file_path, trimmed
+        );
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("File {:?} missing `#azure-init-config` header", file_path),
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +566,7 @@ mod tests {
 
         tracing::debug!("Writing an invalid configuration file...");
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -502,6 +604,7 @@ mod tests {
             "Writing an invalid hostname provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -537,6 +640,7 @@ mod tests {
             "Writing an invalid user provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -575,6 +679,7 @@ mod tests {
             "Writing an invalid password provisioner configuration file..."
         );
         let mut file = fs::File::create(&file_path)?;
+        writeln!(file, "#azure-init-config")?;
         writeln!(
             file,
             r#"
@@ -607,7 +712,8 @@ mod tests {
         let empty_file_path = dir.path().join("empty_config.toml");
 
         tracing::debug!("Creating an empty configuration file...");
-        fs::File::create(&empty_file_path)?;
+        let mut empty_file = fs::File::create(&empty_file_path)?;
+        writeln!(empty_file, "#azure-init-config")?;
 
         tracing::debug!("Loading configuration with empty file...");
         let config = Config::load_from(empty_file_path, drop_in_path, None)?;
@@ -659,6 +765,10 @@ mod tests {
             "/var/log/azure-init.log"
         );
 
+        assert!(config.runcmd.commands.is_empty());
+
+        assert!(config.write_files.is_empty());
+
         tracing::debug!("test_empty_config_file_uses_defaults_when_merged completed successfully.");
 
         Ok(())
@@ -674,6 +784,7 @@ mod tests {
             "Writing an override configuration file with custom values..."
         );
         let mut override_file = fs::File::create(&override_file_path)?;
+        writeln!(override_file, "#azure-init-config")?;
         writeln!(
             override_file,
             r#"[ssh]
@@ -696,6 +807,19 @@ mod tests {
         path = "/custom/azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
+        [[write_files]]
+        path = "/etc/custom-write-files"
+        owner = "test-user"
+        group = "test-user"
+        permissions = 0o600
+        content = [ 104, 101, 108, 108, 111 ]
+        overwrite = true
+        create_parents = true
         "#
         )?;
 
@@ -765,6 +889,26 @@ mod tests {
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
         );
+
+        tracing::debug!("Verifying merged runcmd configuration...");
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
+        );
+
+        tracing::debug!("Verifying merged write_files configuration...");
+        assert_eq!(config.write_files.len(), 1);
+        let wf = &config.write_files[0];
+        assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
+        assert_eq!(wf.owner, "test-user");
+        assert_eq!(wf.group, "test-user");
+        assert_eq!(wf.permissions, 0o600);
+        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert!(wf.overwrite);
+        assert!(wf.create_parents);
 
         tracing::debug!(
             "test_load_and_merge_with_default_config completed successfully."
@@ -838,11 +982,19 @@ mod tests {
             "/var/lib/azure-init/"
         );
 
-        tracing::debug!("Verifying merged telemetry log path configuration...");
+        tracing::debug!(
+            "Verifying default telemetry log path configuration..."
+        );
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/var/log/azure-init.log"
         );
+
+        tracing::debug!("Verifying default runcmd configuration...");
+        assert!(config.runcmd.commands.is_empty());
+
+        tracing::debug!("Verifying default write_files configuration...");
+        assert!(config.write_files.is_empty());
 
         tracing::debug!("test_default_config completed successfully.");
 
@@ -858,7 +1010,8 @@ mod tests {
 
         fs::write(
             &override_file_path,
-            r#"[ssh]
+            r#"#azure-init-config
+        [ssh]
         authorized_keys_path = ".ssh/authorized_keys"
         query_sshd_config = false
         [user_provisioners]
@@ -878,6 +1031,19 @@ mod tests {
         path = "/cli-override-azure-init-data-dir"
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
+        [runcmd]
+        commands = [
+            ["echo", "hello"],
+            ["apt-get", "update"]
+        ]
+        [[write_files]]
+        path = "/etc/custom-write-files"
+        owner = "test-user"
+        group = "test-user"
+        permissions = 0o600
+        content = [ 104, 101, 108, 108, 111 ]
+        overwrite = true
+        create_parents = true
         "#,
         )?;
 
@@ -929,6 +1095,24 @@ mod tests {
             "/custom/path/azure-init.log"
         );
 
+        assert_eq!(
+            config.runcmd.commands,
+            vec![
+                vec!["echo".to_string(), "hello".to_string()],
+                vec!["apt-get".to_string(), "update".to_string()],
+            ]
+        );
+
+        assert_eq!(config.write_files.len(), 1);
+        let wf = &config.write_files[0];
+        assert_eq!(wf.path.to_str().unwrap(), "/etc/custom-write-files");
+        assert_eq!(wf.owner, "test-user");
+        assert_eq!(wf.group, "test-user");
+        assert_eq!(wf.permissions, 0o600);
+        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert!(wf.overwrite);
+        assert!(wf.create_parents);
+
         Ok(())
     }
 
@@ -969,6 +1153,7 @@ mod tests {
 
         tracing::debug!("Writing base configuration...");
         let mut base_file = fs::File::create(&base_file_path)?;
+        writeln!(base_file, "#azure-init-config")?;
         writeln!(
             base_file,
             r#"
@@ -981,6 +1166,7 @@ mod tests {
 
         tracing::debug!("Writing first override configuration...");
         let mut override_file_1 = fs::File::create(&override_file_path_1)?;
+        writeln!(override_file_1, "#azure-init-config")?;
         writeln!(
             override_file_1,
             r#"
@@ -991,6 +1177,7 @@ mod tests {
 
         tracing::debug!("Writing second override configuration...");
         let mut override_file_2 = fs::File::create(&override_file_path_2)?;
+        writeln!(override_file_2, "#azure-init-config")?;
         writeln!(
             override_file_2,
             r#"
