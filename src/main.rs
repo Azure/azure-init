@@ -120,6 +120,8 @@ async fn main() -> ExitCode {
         }
     };
 
+    tracing::error!("THIS IS MY MESSAGE!");
+
     if let Err(e) = setup_layers(tracer, &vm_id, Some(&config)) {
         tracing::error!("Failed to set final logging subscriber: {e:?}");
     }
