@@ -159,6 +159,19 @@ impl EmitKVPLayer {
         })
     }
 
+    pub fn noop() -> Self {
+        // Create a dummy channel that we never actually use
+        let (events_tx, _events_rx): (
+            UnboundedSender<Vec<u8>>,
+            UnboundedReceiver<Vec<u8>>,
+        ) = tokio::sync::mpsc::unbounded_channel();
+
+        Self {
+            events_tx,
+            vm_id: String::new(), // or "NOOP".to_string()
+        }
+    }
+
     /// An asynchronous task that serializes incoming KVP data to the specified file.
     /// This function manages the file I/O operations to ensure the data is written
     /// and flushed consistently.
