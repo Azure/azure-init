@@ -5,7 +5,6 @@ use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -14,7 +13,7 @@ use tracing_subscriber::{
 };
 
 use crate::kvp::EmitKVPLayer;
-use libazureinit::config::{Config, DEFAULT_AZURE_INIT_LOG_PATH};
+use libazureinit::config::Config;
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()
@@ -38,7 +37,7 @@ pub fn initialize_tracing() -> sdktrace::Tracer {
 pub fn setup_layers(
     tracer: sdktrace::Tracer,
     vm_id: &str,
-    config: Option<&Config>,
+    config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
@@ -59,9 +58,7 @@ pub fn setup_layers(
         .join(","),
     )?;
 
-    let kvp_enabled = config
-        .map(|cfg| cfg.telemetry.kvp_diagnostics)
-        .unwrap_or(true);
+    let kvp_enabled = config.telemetry.kvp_diagnostics;
 
     let emit_kvp_layer = if kvp_enabled {
         match EmitKVPLayer::new(
@@ -87,9 +84,7 @@ pub fn setup_layers(
         .with_writer(std::io::stderr)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
-    let log_path = config
-        .map(|cfg| cfg.azure_init_log_path.path.clone())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_AZURE_INIT_LOG_PATH));
+    let log_path = config.azure_init_log_path.path.clone();
 
     let file_layer = match OpenOptions::new()
         .create(true)
