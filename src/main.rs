@@ -24,6 +24,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
 use tracing::instrument;
+use tracing_subscriber::{prelude::*, Layer};
 
 // These should be set during the build process
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -105,24 +106,39 @@ async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
 
-    if let Err(e) = setup_layers(tracer.clone(), &vm_id, None) {
-        eprintln!("Warning: Failed to set up tracing layers: {:?}", e);
-    }
-
     let opts = Cli::parse();
 
-    let config = match Config::load(opts.config.clone()) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("Failed to load configuration: {error:?}");
-            eprintln!("Example configuration:\n\n{}", Config::default());
-            return ExitCode::FAILURE;
-        }
-    };
+    let temp_layer = tracing_subscriber::fmt::layer()
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
+        .with_writer(std::io::stderr)
+        .with_filter(tracing_subscriber::EnvFilter::new(
+            "libazureinit::config=info",
+        ));
 
-    if let Err(e) = setup_layers(tracer, &vm_id, Some(&config)) {
+    let temp_subscriber =
+        tracing_subscriber::Registry::default().with(temp_layer);
+
+    let config =
+        match tracing::subscriber::with_default(temp_subscriber, || {
+            Config::load(opts.config.clone())
+        }) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                eprintln!("Failed to load configuration: {error:?}");
+                eprintln!("Example configuration:\n\n{}", Config::default());
+                return ExitCode::FAILURE;
+            }
+        };
+
+    if let Err(e) = setup_layers(tracer, &vm_id, &config) {
         tracing::error!("Failed to set final logging subscriber: {e:?}");
     }
+
+    tracing::info!(
+        target = "libazureinit::config::success",
+        "Final configuration: {:#?}",
+        config
+    );
 
     if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(
