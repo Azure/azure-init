@@ -49,8 +49,6 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
 
 /// Timeout for communicating with IMDS.
 pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;
-/// Timeout for communicating with wireserver for goalstate, health.
-pub(crate) const WIRESERVER_HTTP_TIMEOUT_SEC: u64 = 30;
 
 /// Send an HTTP GET request to the given URL with an empty body.
 #[instrument(err, skip_all)]
