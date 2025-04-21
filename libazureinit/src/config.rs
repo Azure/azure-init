@@ -181,10 +181,11 @@ impl Default for AzureProxyAgent {
     }
 }
 
-/// Global default timeout for Wire server connections.
+/// Retry wireserver up to 20 minutes.  The VM has most likely failed provisioning
+/// due to timeout at this point.
 pub const DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS: f64 = 1200.0;
-/// Global default retry interval for Wire server requests.
-pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 2.0;
+pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 60.0;
+pub const DEFAULT_WIRESERVER_READ_TIMEOUT_SECS: f64 = 60.0;
 /// Wire server configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Azure wire server.
@@ -205,7 +206,7 @@ impl Default for Wireserver {
     fn default() -> Self {
         Self {
             connection_timeout_secs: DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
-            read_timeout_secs: 60.0,
+            read_timeout_secs: DEFAULT_WIRESERVER_READ_TIMEOUT_SECS,
             total_retry_timeout_secs:
                 DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
         }
@@ -648,7 +649,7 @@ mod tests {
 
         assert!(config.azure_proxy_agent.enable);
 
-        assert_eq!(config.wireserver.connection_timeout_secs, 2.0);
+        assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
         assert_eq!(config.wireserver.read_timeout_secs, 60.0);
         assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
 
@@ -828,7 +829,7 @@ mod tests {
         assert!(config.azure_proxy_agent.enable);
 
         tracing::debug!("Verifying default wireserver configuration...");
-        assert_eq!(config.wireserver.connection_timeout_secs, 2.0);
+        assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
         assert_eq!(config.wireserver.read_timeout_secs, 60.0);
         assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
 

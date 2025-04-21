@@ -5,7 +5,8 @@ use libazureinit::config::Config;
 use libazureinit::imds::PublicKeys;
 use libazureinit::User;
 use libazureinit::{
-    goalstate, imds,
+    health::report_ready,
+    imds,
     reqwest::{header, Client},
     Provision,
 };
@@ -34,28 +35,19 @@ async fn main() {
 
     println!("Querying wireserver for Goalstate");
 
-    let http_timeout_sec: u64 = 5 * 60;
-    let http_retry_interval_sec: u64 = 2;
-
     println!("Reporting VM Health to wireserver");
 
-    let report_health_result = goalstate::report_provisioning_health(
-        "Ready",
-        None,
-        None,
-        Duration::from_secs(http_retry_interval_sec),
-        Duration::from_secs(http_timeout_sec),
-        None, // default wireserver health URL
-    )
-    .await;
+    if let Err(err) = report_ready(&config, None).await {
+        eprintln!("→ failed to report initial ready: {:?}", err);
+    }
 
-    match report_health_result {
-        Ok(_) => println!("Health report successfully sent"),
+    match report_ready(&config, None).await {
+        Ok(()) => println!("Health report successfully sent"),
         Err(err) => {
             println!("Failed to report health: {:?}", err);
             return;
         }
-    };
+    }
 
     println!("VM Health successfully reported");
 

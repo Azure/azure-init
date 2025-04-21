@@ -12,7 +12,7 @@ use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
-    goalstate::report_provisioning_health,
+    health::{report_failure, report_ready},
     imds, media,
     media::{get_mount_device, Environment},
     reqwest::{header, Client},
@@ -234,16 +234,12 @@ async fn main() -> ExitCode {
                 eprintln!("Failed to load configuration: {error:?}");
                 eprintln!("Example configuration:\n\n{}", Config::default());
     
-            if let Err(report_error) = report_provisioning_health(
-                "NotReady",
-                Some("ProvisioningFailed"),
-                Some("Invalid configuration schema"),
-                Duration::from_secs_f64(
-                    DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
-                ),
-                Duration::from_secs_f64(
-                    DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
-                ),
+            // Build temporary config to pass in wireserver defaults for report_failure
+            let cfg = Config::default();
+
+            if let Err(report_error) = report_failure(
+                "Invalid configuration schema",
+                &cfg,
                 None, // default wireserver URL
             )
             .await
@@ -295,20 +291,7 @@ async fn main() -> ExitCode {
     let clone_config = config.clone();
     match provision(config, &vm_id, opts).await {
         Ok(_) => {
-            if let Err(_report_err) = report_provisioning_health(
-                "Ready",
-                None,
-                None,
-                Duration::from_secs_f64(
-                    clone_config.wireserver.connection_timeout_secs,
-                ),
-                Duration::from_secs_f64(
-                    clone_config.wireserver.total_retry_timeout_secs,
-                ),
-                None,
-            )
-            .await
-            {
+            if let Err(_report_err) = report_ready(&clone_config, None).await {
                 tracing::warn!(
                     "Failed to report provisioning success to Wireserver"
                 );
@@ -327,19 +310,8 @@ async fn main() -> ExitCode {
             eprintln!("{e:?}");
 
             let failure_description = format!("Provisioning error: {:?}", e);
-            if let Err(report_err) = report_provisioning_health(
-                "NotReady",
-                Some("ProvisioningFailed"),
-                Some(&failure_description),
-                Duration::from_secs_f64(
-                    clone_config.wireserver.connection_timeout_secs,
-                ),
-                Duration::from_secs_f64(
-                    clone_config.wireserver.total_retry_timeout_secs,
-                ),
-                None,
-            )
-            .await
+            if let Err(report_err) =
+                report_failure(&failure_description, &clone_config, None).await
             {
                 tracing::error!(
                     health_report = "failure",
