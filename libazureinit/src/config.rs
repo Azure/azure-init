@@ -200,6 +200,9 @@ pub struct Wireserver {
 
     /// Total retry timeout in seconds for wire server requests.
     pub total_retry_timeout_secs: f64,
+
+    /// URL to POST provisioning health updates to.
+    pub health_endpoint: String,
 }
 
 impl Default for Wireserver {
@@ -209,6 +212,8 @@ impl Default for Wireserver {
             read_timeout_secs: DEFAULT_WIRESERVER_READ_TIMEOUT_SECS,
             total_retry_timeout_secs:
                 DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
+            health_endpoint: "http://168.63.129.16/provisioning/health"
+                .to_string(),
         }
     }
 }
@@ -652,6 +657,10 @@ mod tests {
         assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
         assert_eq!(config.wireserver.read_timeout_secs, 60.0);
         assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
+        assert_eq!(
+            config.wireserver.health_endpoint,
+            "http://168.63.129.16/provisioning/health",
+        );
 
         assert!(config.telemetry.kvp_diagnostics);
 
@@ -832,6 +841,10 @@ mod tests {
         assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
         assert_eq!(config.wireserver.read_timeout_secs, 60.0);
         assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
+        assert_eq!(
+            config.wireserver.health_endpoint,
+            "http://168.63.129.16/provisioning/health",
+        );
 
         tracing::debug!("Verifying default telemetry configuration...");
         assert!(config.telemetry.kvp_diagnostics);
