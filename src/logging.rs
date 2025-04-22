@@ -5,7 +5,6 @@ use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -14,7 +13,7 @@ use tracing_subscriber::{
 };
 
 use crate::kvp::EmitKVPLayer;
-use libazureinit::config::{Config, DEFAULT_AZURE_INIT_LOG_PATH};
+use libazureinit::config::Config;
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()
@@ -38,7 +37,7 @@ pub fn initialize_tracing() -> sdktrace::Tracer {
 pub fn setup_layers(
     tracer: sdktrace::Tracer,
     vm_id: &str,
-    config: Option<&Config>,
+    config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
@@ -59,11 +58,7 @@ pub fn setup_layers(
         .join(","),
     )?;
 
-    let kvp_enabled = config
-        .map(|cfg| cfg.telemetry.kvp_diagnostics)
-        .unwrap_or(true);
-
-    let emit_kvp_layer = if kvp_enabled {
+    let emit_kvp_layer = if config.telemetry.kvp_diagnostics {
         match EmitKVPLayer::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
@@ -87,14 +82,10 @@ pub fn setup_layers(
         .with_writer(std::io::stderr)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
-    let log_path = config
-        .map(|cfg| cfg.azure_init_log_path.path.clone())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_AZURE_INIT_LOG_PATH));
-
     let file_layer = match OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
+        .open(&config.azure_init_log_path.path)
     {
         Ok(file) => {
             if let Err(e) = file.set_permissions(Permissions::from_mode(0o600))
@@ -102,7 +93,7 @@ pub fn setup_layers(
                 event!(
                     Level::WARN,
                     "Failed to set permissions on {}: {}.",
-                    log_path.display(),
+                    config.azure_init_log_path.path.display(),
                     e,
                 );
             }
@@ -118,7 +109,7 @@ pub fn setup_layers(
             event!(
                 Level::ERROR,
                 "Could not open configured log file {}: {}. Continuing without file logging.",
-                log_path.display(),
+                config.azure_init_log_path.path.display(),
                 e
             );
 
