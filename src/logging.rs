@@ -58,9 +58,7 @@ pub fn setup_layers(
         .join(","),
     )?;
 
-    let kvp_enabled = config.telemetry.kvp_diagnostics;
-
-    let emit_kvp_layer = if kvp_enabled {
+    let emit_kvp_layer = if config.telemetry.kvp_diagnostics {
         match EmitKVPLayer::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
@@ -84,12 +82,10 @@ pub fn setup_layers(
         .with_writer(std::io::stderr)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
-    let log_path = config.azure_init_log_path.path.clone();
-
     let file_layer = match OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
+        .open(&config.azure_init_log_path.path)
     {
         Ok(file) => {
             if let Err(e) = file.set_permissions(Permissions::from_mode(0o600))
@@ -97,7 +93,7 @@ pub fn setup_layers(
                 event!(
                     Level::WARN,
                     "Failed to set permissions on {}: {}.",
-                    log_path.display(),
+                    config.azure_init_log_path.path.display(),
                     e,
                 );
             }
@@ -113,7 +109,7 @@ pub fn setup_layers(
             event!(
                 Level::ERROR,
                 "Could not open configured log file {}: {}. Continuing without file logging.",
-                log_path.display(),
+                config.azure_init_log_path.path.display(),
                 e
             );
 
