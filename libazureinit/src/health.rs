@@ -15,22 +15,16 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::http;
 
-const DEFAULT_HEALTH_URL: &str = "http://168.63.129.16/provisioning/health";
-
 /// Report that provisioning is ready.
-pub async fn report_ready(
-    config: &Config,
-    url_override: Option<&str>,
-) -> Result<(), Error> {
+pub async fn report_ready(config: &Config) -> Result<(), Error> {
     tracing::info!("Reporting ready provisioning health");
-    _report("Ready", None, None, &config.wireserver, url_override).await
+    _report("Ready", None, None, &config.wireserver).await
 }
 
 /// Report that provisioning has failed.
 pub async fn report_failure(
     message: &str,
     config: &Config,
-    url_override: Option<&str>,
 ) -> Result<(), Error> {
     tracing::info!(failure_reason=%message, "Reporting failure provisioning health");
     _report(
@@ -38,7 +32,20 @@ pub async fn report_failure(
         Some("ProvisioningFailed"),
         Some(message),
         &config.wireserver,
-        url_override,
+    )
+    .await
+}
+
+/// Report that provisioning is in progress.
+pub async fn report_in_progress(
+    message: &str,
+    config: &Config,
+) -> Result<(), Error> {
+    _report(
+        "InProgress",
+        Some("ProvisioningInProgress"),
+        Some(message),
+        &config.wireserver,
     )
     .await
 }
@@ -50,13 +57,12 @@ async fn _report(
     substatus: Option<&str>,
     description: Option<&str>,
     cfg: &crate::config::Wireserver,
-    url_override: Option<&str>,
 ) -> Result<(), Error> {
-    let body = if state == "NotReady" {
+    let body = if let Some(sub) = substatus {
         json!({
             "state": state,
             "details": {
-                "subStatus": substatus.unwrap_or("Provisioning"),
+                "subStatus": sub,
                 "description": description
             }
         })
@@ -82,8 +88,6 @@ async fn _report(
 
     tracing::info!(?headers, "Prepared HTTP headers");
 
-    let url = url_override.unwrap_or(DEFAULT_HEALTH_URL);
-
     let connect_timeout = Duration::from_secs_f64(cfg.connection_timeout_secs);
     let read_timeout = Duration::from_secs_f64(cfg.read_timeout_secs);
     let retry_for = Duration::from_secs_f64(cfg.total_retry_timeout_secs);
@@ -102,28 +106,31 @@ async fn _report(
             read_timeout,
             connect_timeout,
             remaining,
-            url,
+            &cfg.health_endpoint,
         )
         .await?;
 
-        match resp.status() {
-            StatusCode::CREATED | StatusCode::OK => {
-                tracing::info!("Provisioning-health report succeeded");
-                return Ok(());
-            }
-            StatusCode::TOO_MANY_REQUESTS => {
-                tracing::warn!("429 from wireserver, retrying…")
-            }
-            StatusCode::SERVICE_UNAVAILABLE => {
-                tracing::warn!("503 from wireserver, retrying…")
-            }
-            other => {
-                tracing::warn!("Non-retryable status, bailing out");
-                return Err(Error::HttpStatus {
-                    endpoint: url.to_string(),
-                    status: other,
-                });
-            }
+        let status = resp.status();
+        tracing::info!(target: "libazureinit::health::status", http_status = %status, "Wireserver replied");
+
+        if status == StatusCode::CREATED || status == StatusCode::OK {
+            tracing::info!(target: "libazureinit::health::status", "Provisioning-health report succeeded");
+            return Ok(());
+        }
+
+        if status == StatusCode::TOO_MANY_REQUESTS
+            || status == StatusCode::SERVICE_UNAVAILABLE
+        {
+            tracing::warn!("Retryable HTTP status {}, will retry", status);
+        } else {
+            tracing::error!(
+                "Non-retryable HTTP status {}, bailing out",
+                status
+            );
+            return Err(Error::HttpStatus {
+                endpoint: cfg.health_endpoint.clone(),
+                status,
+            });
         }
 
         remaining = new_remaining;
@@ -135,20 +142,20 @@ async fn _report(
 
 #[cfg(test)]
 mod tests {
-    use super::{report_failure, report_ready};
+    use super::{report_failure, report_in_progress, report_ready};
     use crate::config::{Config, Wireserver};
     use crate::unittest::{get_http_response_payload, serve_requests};
     use reqwest::StatusCode;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    fn fast_config() -> Config {
+    fn fast_config(mock_url: Option<String>) -> Config {
         let mut cfg = Config::default();
         cfg.wireserver = Wireserver {
             connection_timeout_secs: 0.01,
             read_timeout_secs: 0.01,
             total_retry_timeout_secs: 0.05,
-            ..Default::default()
+            health_endpoint: mock_url.unwrap_or(cfg.wireserver.health_endpoint),
         };
         cfg
     }
@@ -159,6 +166,7 @@ mod tests {
     async fn test_report_all_retryable() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
         let payload =
             get_http_response_payload(&StatusCode::SERVICE_UNAVAILABLE, "");
         let cancel = CancellationToken::new();
@@ -168,10 +176,8 @@ mod tests {
             cancel.clone(),
         ));
 
-        let cfg = fast_config();
-        let result =
-            report_failure("oops", &cfg, Some(&format!("http://{}", addr)))
-                .await;
+        let cfg = fast_config(Some(mock_url));
+        let result = report_failure("oops", &cfg).await;
 
         assert!(result.is_err(), "should have timed out after retrying");
         cancel.cancel();
@@ -183,6 +189,7 @@ mod tests {
     async fn test_report_immediate_success() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
         let payload = get_http_response_payload(&StatusCode::CREATED, "");
         let cancel = CancellationToken::new();
         let _server = tokio::spawn(serve_requests(
@@ -191,9 +198,8 @@ mod tests {
             cancel.clone(),
         ));
 
-        let cfg = fast_config();
-        let result =
-            report_ready(&cfg, Some(&format!("http://{}", addr))).await;
+        let cfg = fast_config(Some(mock_url));
+        let result = report_ready(&cfg).await;
         assert!(result.is_ok(), "201 Created should be accepted as success");
 
         cancel.cancel();
@@ -205,6 +211,7 @@ mod tests {
     async fn test_report_unexpected_code() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
         let payload = get_http_response_payload(&StatusCode::BAD_REQUEST, "");
         let cancel = CancellationToken::new();
         let _server = tokio::spawn(serve_requests(
@@ -213,12 +220,31 @@ mod tests {
             cancel.clone(),
         ));
 
-        let cfg = fast_config();
-        let result =
-            report_failure("err", &cfg, Some(&format!("http://{}", addr)))
-                .await;
+        let cfg = fast_config(Some(mock_url));
+        let result = report_failure("err", &cfg).await;
 
         assert!(result.is_err(), "400 Bad Request should fail immediately");
+        cancel.cancel();
+    }
+
+    /// “InProgress” should be treated as success on 200 or 201 immediately.
+    #[tokio::test]
+    async fn test_report_in_progress_immediate_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
+        let payload = get_http_response_payload(&StatusCode::CREATED, "");
+        let cancel = CancellationToken::new();
+        let _server =
+            tokio::spawn(serve_requests(listener, payload, cancel.clone()));
+
+        let cfg = fast_config(Some(mock_url));
+        let res = report_in_progress("Halfway there", &cfg).await;
+        assert!(
+            res.is_ok(),
+            "201 Created (or 200 OK) should be accepted as success"
+        );
+
         cancel.cancel();
     }
 
@@ -227,7 +253,7 @@ mod tests {
     /// we expect both `report_ready` and `report_failure` to error out fast.
     #[tokio::test]
     async fn test_public_wrappers_error_on_dead_endpoint() {
-        let mut cfg = fast_config();
+        let mut cfg = fast_config(None);
         // shrink the wireserver timeouts so we fail immediately
         cfg.wireserver = crate::config::Wireserver {
             connection_timeout_secs: 0.01,
@@ -236,9 +262,9 @@ mod tests {
             ..Default::default()
         };
 
-        // no override == real DEFAULT_HEALTH_URL, which we can't reach in tests
-        let r1 = report_ready(&cfg, None).await;
-        let r2 = report_failure("no config", &cfg, None).await;
+        // no override == real health_endpoint, which we can't reach in tests
+        let r1 = report_ready(&cfg).await;
+        let r2 = report_failure("no config", &cfg).await;
         assert!(
             r1.is_err(),
             "report_ready should fail against a dead server"
