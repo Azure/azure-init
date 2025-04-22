@@ -27,11 +27,6 @@ use sysinfo::System;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
-use libazureinit::config::{
-    DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS,
-    DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
-};
-
 // These should be set during the build process
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
@@ -233,29 +228,25 @@ async fn main() -> ExitCode {
             Err(error) => {
                 eprintln!("Failed to load configuration: {error:?}");
                 eprintln!("Example configuration:\n\n{}", Config::default());
-    
-            // Build temporary config to pass in wireserver defaults for report_failure
-            let cfg = Config::default();
 
-            if let Err(report_error) = report_failure(
-                "Invalid configuration schema",
-                &cfg,
-                None, // default wireserver URL
-            )
-            .await
-            {
-                tracing::warn!(
-                    "Failed to send provisioning failure report: {:?}",
-                    report_error
+                // Build temporary config to pass in wireserver defaults for report_failure
+                let cfg = Config::default();
+
+                if let Err(report_error) =
+                    report_failure("Invalid configuration schema", &cfg).await
+                {
+                    tracing::warn!(
+                        "Failed to send provisioning failure report: {:?}",
+                        report_error
+                    );
+                }
+
+                tracing::error!(
+                        health_report = "failure",
+                        reason = %error,
+                    "Invalid config during early startup"
                 );
-            }
-
-            tracing::error!(
-                    health_report = "failure",
-                    reason = %error,
-                "Invalid config during early startup"
-            );
-            return ExitCode::FAILURE;
+                return ExitCode::FAILURE;
             }
         };
 
@@ -291,7 +282,7 @@ async fn main() -> ExitCode {
     let clone_config = config.clone();
     match provision(config, &vm_id, opts).await {
         Ok(_) => {
-            if let Err(_report_err) = report_ready(&clone_config, None).await {
+            if let Err(_report_err) = report_ready(&clone_config).await {
                 tracing::warn!(
                     "Failed to report provisioning success to Wireserver"
                 );
@@ -311,7 +302,7 @@ async fn main() -> ExitCode {
 
             let failure_description = format!("Provisioning error: {:?}", e);
             if let Err(report_err) =
-                report_failure(&failure_description, &clone_config, None).await
+                report_failure(&failure_description, &clone_config).await
             {
                 tracing::error!(
                     health_report = "failure",

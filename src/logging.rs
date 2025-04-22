@@ -54,6 +54,7 @@ pub fn setup_layers(
             "libazureinit::user::add",
             "libazureinit::status::success",
             "libazureinit::status::retrieved_vm_id",
+            "libazureinit::health::status",
         ]
         .join(","),
     )?;

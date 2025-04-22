@@ -33,23 +33,14 @@ async fn main() {
     println!("**********************************");
     println!();
 
-    println!("Querying wireserver for Goalstate");
-
     println!("Reporting VM Health to wireserver");
-
-    if let Err(err) = report_ready(&config, None).await {
-        eprintln!("→ failed to report initial ready: {:?}", err);
-    }
-
-    match report_ready(&config, None).await {
-        Ok(()) => println!("Health report successfully sent"),
+    match report_ready(&config).await {
+        Ok(()) => println!("VM Health successfully reported"),
         Err(err) => {
             println!("Failed to report health: {:?}", err);
             return;
         }
     }
-
-    println!("VM Health successfully reported");
 
     let imds_http_timeout_sec: u64 = 5 * 60;
     let imds_http_retry_interval_sec: u64 = 2;
