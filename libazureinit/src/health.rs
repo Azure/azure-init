@@ -111,17 +111,48 @@ async fn _report(
         .await?;
 
         let status = resp.status();
-        tracing::info!(target: "libazureinit::health::status", "Wireserver replied with status {}", status);
+        tracing::info!(
+            target: "libazureinit::health::status",
+            "Wireserver replied with status {}",
+            status
+        );
 
-        if status == StatusCode::CREATED || status == StatusCode::OK {
-            tracing::info!(target: "libazureinit::health::status", "Report {} succeeded", state);
+        if status.is_success() {
+            tracing::info!(
+                target: "libazureinit::health::status",
+                "Report '{}' succeeded",
+                state
+            );
             return Ok(());
         }
 
         if status == StatusCode::TOO_MANY_REQUESTS
             || status == StatusCode::SERVICE_UNAVAILABLE
         {
-            tracing::warn!("Retryable HTTP status {}, will retry", status);
+            if let Some(retry_after) = resp.headers().get("Retry-After") {
+                if let Some(delay_secs) = retry_after
+                    .to_str()
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    tracing::warn!(
+                        "Retryable HTTP status {} received with Retry-After: {}s. Sleeping before retrying...",
+                        status,
+                        delay_secs
+                    );
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                } else {
+                    tracing::warn!(
+                        "Retryable HTTP status {} received. No valid Retry-After, retrying...",
+                        status
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    "Retryable HTTP status {} received. No Retry-After header, retrying...",
+                    status
+                );
+            }
         } else {
             tracing::error!(
                 "Non-retryable HTTP status {}, bailing out",
@@ -136,7 +167,7 @@ async fn _report(
         remaining = new_remaining;
     }
 
-    tracing::warn!("Report {} timed out", state);
+    tracing::warn!("Report '{}' timed out", state);
     Err(Error::Timeout)
 }
 
