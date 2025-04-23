@@ -17,7 +17,7 @@ use crate::http;
 
 /// Report that provisioning is ready.
 pub async fn report_ready(config: &Config) -> Result<(), Error> {
-    tracing::info!("Reporting ready provisioning health");
+    tracing::info!("Reporting provisioning complete");
     _report("Ready", None, None, &config.wireserver).await
 }
 
@@ -26,7 +26,7 @@ pub async fn report_failure(
     message: &str,
     config: &Config,
 ) -> Result<(), Error> {
-    tracing::info!(failure_reason=%message, "Reporting failure provisioning health");
+    tracing::info!(failure_reason=%message, "Reporting provisioning failed with the message {}", message);
     _report(
         "NotReady",
         Some("ProvisioningFailed"),
@@ -111,10 +111,10 @@ async fn _report(
         .await?;
 
         let status = resp.status();
-        tracing::info!(target: "libazureinit::health::status", http_status = %status, "Wireserver replied");
+        tracing::info!(target: "libazureinit::health::status", "Wireserver replied with status {}", status);
 
         if status == StatusCode::CREATED || status == StatusCode::OK {
-            tracing::info!(target: "libazureinit::health::status", "Provisioning-health report succeeded");
+            tracing::info!(target: "libazureinit::health::status", "Report {} succeeded", state);
             return Ok(());
         }
 
@@ -136,7 +136,7 @@ async fn _report(
         remaining = new_remaining;
     }
 
-    tracing::warn!("Provisioning-health report timed out");
+    tracing::warn!("Report {} timed out", state);
     Err(Error::Timeout)
 }
 
