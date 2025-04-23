@@ -6,7 +6,10 @@ mod logging;
 pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::{anyhow, Context, Result};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use clap::Parser;
+use flate2::read::GzDecoder;
 use libazureinit::config::{Config, WriteFiles};
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
@@ -23,7 +26,7 @@ use libazureinit::{
 };
 use nix::unistd::{chown, Gid, Uid};
 use std::fs::{DirBuilder, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -128,9 +131,11 @@ fn create_dirs_with_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 /// Applies a list of `WriteFiles` specifications, creating or overwriting each file
-/// according to its config. Returns a string describing the last processed file,
-// or an error if any individual file creation fails, e.g., missing directories,
-/// I/O issues, or ownership/permission problems.
+/// according to its config. If `fail_provisioning_upon_failure` is `true` for a file
+/// and an error occurs, provisioning will fail. Otherwise, the error is logged and processing continues.
+///
+/// Returns a string describing the last successfully processed file (if any), or an error if one occurs
+/// with `fail_provisioning_upon_failure = true`.
 fn apply_write_files(
     write_files: &[WriteFiles],
 ) -> Result<String, anyhow::Error> {
@@ -140,27 +145,52 @@ fn apply_write_files(
     }
 
     let mut last_path = String::new();
+
     for wf in write_files {
-        let written_path = write_single_file(wf).with_context(|| {
-            format!("Failed to process write_files entry: {:?}", wf.path)
-        })?;
-        tracing::info!(
-            "Successfully processed write_files entry: {:?}",
-            written_path
-        );
-        last_path = written_path;
+        match write_single_file(wf) {
+            Ok(written_path) => {
+                tracing::info!(
+                    "Successfully processed write_files entry: {:?}",
+                    written_path
+                );
+                last_path = written_path;
+            }
+            Err(e) => {
+                if wf.fail_provisioning_upon_failure {
+                    tracing::error!(
+                        "Aborting provisioning: write_files entry {:?} failed and `fail_provisioning_upon_failure` is true",
+                        wf.path
+                    );
+                    return Err(e);
+                } else {
+                    tracing::warn!(
+                        "write_files entry {:?} failed, but continuing because `fail_provisioning_upon_failure` is false: {:?}",
+                        wf.path,
+                        e
+                    );
+                }
+            }
+        }
     }
 
     Ok(last_path)
 }
 
-/// Creates or overwrites a single file specified by `WriteFiles`.
+/// Creates or overwrites a single file specified by a `WriteFiles` configuration entry.
 ///
-/// 1. Ensures parent directories exist (if `create_parents` is true).
-/// 2. Honors the `overwrite` flag (skips if false and file exists).
-/// 3. Creates the file with the specified permissions (`mode(...)=wf.permissions`).
-/// 4. Looks up `wf.owner` and `wf.group` via the `users` crate and uses `nix` to `chown` the file.
-/// 5. Writes `wf.content` to the file.
+/// This function ensures that the file is created with the correct ownership, permissions,
+/// and content. It supports optional encoding mechanisms for binary or compressed content.
+///
+/// ### Steps:
+/// 1. If `create_parents` is true, all parent directories will be created with 0o755 permissions.
+/// 2. If the file exists and `overwrite` is false, the function will abort with an error.
+/// 3. The file is created or opened with the specified `permissions`.
+/// 4. Ownership is set to the specified `owner` and `group` using the `users` and `nix` crates.
+/// 5. The `content` field is optionally decoded based on the `encoding`:
+///    - `"b64"`: Base64-decoded before writing
+///    - `"b64+gz"`: Base64-decoded, then gunzipped before writing
+///    - `None`: Raw bytes from `content` are used
+/// 6. Content is written to the file.
 ///
 /// Returns a string describing the file path on success.
 #[instrument]
@@ -235,12 +265,59 @@ fn write_single_file(wf: &WriteFiles) -> Result<String, anyhow::Error> {
         wf.permissions
     );
 
-    file.write_all(&wf.content)
+    let decoded_content = match wf.encoding.as_deref() {
+        Some("b64") => {
+            tracing::info!("Decoding base64 content for {:?}", wf.path);
+            STANDARD.decode(&wf.content).with_context(|| {
+                format!("Failed to base64 decode content for {:?}", wf.path)
+            })?
+        }
+        Some("b64+gz") => {
+            tracing::info!("Decoding base64+gzip content for {:?}", wf.path);
+            let compressed =
+                STANDARD.decode(&wf.content).with_context(|| {
+                    format!(
+                        "Failed to base64 decode (gzipped) content for {:?}",
+                        wf.path
+                    )
+                })?;
+
+            let mut decoder = GzDecoder::new(&compressed[..]);
+            let mut uncompressed = Vec::new();
+            decoder.read_to_end(&mut uncompressed).with_context(|| {
+                format!("Failed to gunzip content for {:?}", wf.path)
+            })?;
+
+            tracing::info!(
+                "Successfully decompressed {} bytes for {:?}",
+                uncompressed.len(),
+                wf.path
+            );
+            uncompressed
+        }
+        Some(enc) => {
+            tracing::error!(
+                "Unsupported encoding {:?} for file {:?}",
+                enc,
+                wf.path
+            );
+            return Err(anyhow!("Unsupported encoding: {}", enc));
+        }
+        None => {
+            tracing::info!(
+                "No encoding specified; writing raw content to {:?}",
+                wf.path
+            );
+            wf.content.clone()
+        }
+    };
+
+    file.write_all(&decoded_content)
         .with_context(|| format!("Failed to write content to {:?}", wf.path))?;
 
     tracing::info!(
         "Successfully wrote {} bytes to file {:?}",
-        wf.content.len(),
+        decoded_content.len(),
         wf.path
     );
 
@@ -425,6 +502,7 @@ async fn provision(
         if cmd_args.is_empty() {
             continue;
         }
+
         let (executable, rest) = cmd_args.split_first().unwrap();
 
         let status = std::process::Command::new(executable)
@@ -436,16 +514,25 @@ async fn provision(
 
         if !status.success() {
             let code = status.code().unwrap_or(-1);
-            tracing::error!(
-                "runcmd command {:?} failed with exit code {}",
-                cmd_args,
-                code
-            );
-            return Err(anyhow!(
-                "runcmd command {:?} failed with exit code {}",
-                cmd_args,
-                code
-            ));
+
+            if clone_config.runcmd.fail_provisioning_upon_failure {
+                tracing::error!(
+                    "runcmd command {:?} failed with exit code {}",
+                    cmd_args,
+                    code
+                );
+                return Err(anyhow!(
+                    "runcmd command {:?} failed with exit code {}",
+                    cmd_args,
+                    code
+                ));
+            } else {
+                tracing::warn!(
+                    "runcmd command {:?} failed with exit code {}, but continuing because fail_provisioning_upon_failure=false",
+                    cmd_args,
+                    code
+                );
+            }
         }
     }
 

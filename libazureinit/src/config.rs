@@ -298,12 +298,25 @@ impl Default for AzureInitLogPath {
 ///     - ["apt-get", "update"]
 ///     - ["bash", "-c", "echo 'Done!' && exit 0"]
 /// ```
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct RunCmd {
     /// A list of commands, where each command itself is a list of arguments.
     /// Defaults to an empty list if not specified.
     pub commands: Vec<Vec<String>>,
+
+    /// Whether provisioning should fail if `runcmd` encounters an error.
+    /// Defaults to `true`.
+    pub fail_provisioning_upon_failure: bool,
+}
+
+impl Default for RunCmd {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+            fail_provisioning_upon_failure: true,
+        }
+    }
 }
 
 // Represents an instruction to write a file during provisioning.
@@ -314,8 +327,36 @@ pub struct RunCmd {
 /// - `group`: The group name (e.g. "root") that will own the file. Defaults to `root`.
 /// - `permissions`: Numeric file permissions in octal (e.g. 0o600). Defaults to `o600`.
 /// - `content`: Raw file content in bytes (could be binary).
+/// - `encoding`: Optional encoding for the content. Supported values:
+///     - `"b64"`: Base64-encoded content.
+///     - `"b64+gz"`: Base64-encoded and gzipped content.
 /// - `overwrite`: If `true`, overwrite existing files; otherwise skip if file already exists. Defaults to `true`.
 /// - `create_parents`: If `true`, create missing parent directories with perms 0o755 (root:root). Defaults to `true`.
+/// - `fail_provisioning_upon_failure`: If `true`, fail provisioning if `WriteFiles` logic encounters an error. Defaults to `true`.
+///
+/// # Examples
+/// ```toml
+/// [[write_files]]
+/// path = "/etc/example.conf"
+/// owner = "test-user"
+/// group = "test-user"
+/// permissions = 0o644
+/// content = [104, 101, 108, 108, 111]  # "hello"
+/// overwrite = true
+/// create_parents = true
+/// fail_provisioning_upon_failure = true
+///
+/// [[write_files]]
+/// path = "/etc/encoded.txt"
+/// owner = "test-user"
+/// group = "test-user"
+/// permissions = 0o600
+/// content = [97, 71, 86, 115, 98, 71, 56, 61]  # "aGVsbG8=" which is "hello"
+/// encoding = "b64"
+/// overwrite = true
+/// create_parents = true
+/// fail_provisioning_upon_failure = true
+/// ```
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct WriteFiles {
@@ -324,8 +365,10 @@ pub struct WriteFiles {
     pub group: String,
     pub permissions: u32,
     pub content: Vec<u8>,
+    pub encoding: Option<String>,
     pub overwrite: bool,
     pub create_parents: bool,
+    pub fail_provisioning_upon_failure: bool,
 }
 
 impl Default for WriteFiles {
@@ -336,8 +379,10 @@ impl Default for WriteFiles {
             group: "root".to_string(),
             permissions: 0o600,
             content: Vec::new(),
+            encoding: None,
             overwrite: true,
             create_parents: true,
+            fail_provisioning_upon_failure: true,
         }
     }
 }
@@ -433,8 +478,10 @@ impl Config {
                     "Merging configuration file from CLI: {:?}",
                     cli_path
                 );
-                check_azure_init_header(&cli_path)?;
-                figment = figment.merge(Toml::file(cli_path));
+
+                if check_azure_init_header(&cli_path)? {
+                    figment = figment.merge(Toml::file(cli_path));
+                }
             }
         }
 
@@ -492,13 +539,12 @@ impl Config {
     }
 }
 
-/// Checks that the first line of the file is `# ... azure-init-config`
-/// allowing any amount of whitespace between `#` and `azure-init-config`.`
-/// Returns an error if the file doesn't start with `#azure-init-config`.
-fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
+/// Checks if the first line of the file is a valid azure-init config header.
+/// Accepts `#azure-init-config` or `#   azure-init-config` (any whitespace).
+/// Returns `true` if the header is present, `false` otherwise..
+fn check_azure_init_header(file_path: &Path) -> Result<bool, Error> {
     if !file_path.is_file() {
-        // If it's not a file, ignore or skip the check
-        return Ok(());
+        return Ok(false);
     }
 
     let file = fs::File::open(file_path).map_err(|e| {
@@ -515,17 +561,15 @@ fn check_azure_init_header(file_path: &Path) -> Result<(), Error> {
     let trimmed = first_line.trim();
     let re = Regex::new(r"^#\s*azure-init-config$").unwrap();
     if !re.is_match(trimmed) {
-        tracing::error!(
-            "File {:?} missing proper header. Expected 'azure-init-config', found '{}'",
-            file_path, trimmed
+        tracing::info!(
+            "Skipping file {:?}: missing `# azure-init-config` header (found '{}')",
+            file_path,
+            trimmed
         );
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("File {:?} missing `#azure-init-config` header", file_path),
-        )));
+        return Ok(false);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -776,6 +820,7 @@ mod tests {
         );
 
         assert!(config.runcmd.commands.is_empty());
+        assert!(config.runcmd.fail_provisioning_upon_failure);
 
         assert!(config.write_files.is_empty());
 
@@ -822,14 +867,17 @@ mod tests {
             ["echo", "hello"],
             ["apt-get", "update"]
         ]
+        fail_provisioning_upon_failure = false
         [[write_files]]
         path = "/etc/custom-write-files"
         owner = "test-user"
         group = "test-user"
         permissions = 0o600
         content = [ 104, 101, 108, 108, 111 ]
+        encoding = "b64"
         overwrite = true
         create_parents = true
+        fail_provisioning_upon_failure = false
         "#
         )?;
 
@@ -908,6 +956,7 @@ mod tests {
                 vec!["apt-get".to_string(), "update".to_string()],
             ]
         );
+        assert!(!config.runcmd.fail_provisioning_upon_failure);
 
         tracing::debug!("Verifying merged write_files configuration...");
         assert_eq!(config.write_files.len(), 1);
@@ -917,8 +966,10 @@ mod tests {
         assert_eq!(wf.group, "test-user");
         assert_eq!(wf.permissions, 0o600);
         assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert_eq!(wf.encoding.as_deref(), Some("b64"));
         assert!(wf.overwrite);
         assert!(wf.create_parents);
+        assert!(!wf.fail_provisioning_upon_failure);
 
         tracing::debug!(
             "test_load_and_merge_with_default_config completed successfully."
@@ -1006,6 +1057,7 @@ mod tests {
 
         tracing::debug!("Verifying default runcmd configuration...");
         assert!(config.runcmd.commands.is_empty());
+        assert!(config.runcmd.fail_provisioning_upon_failure);
 
         tracing::debug!("Verifying default write_files configuration...");
         assert!(config.write_files.is_empty());
@@ -1050,14 +1102,17 @@ mod tests {
             ["echo", "hello"],
             ["apt-get", "update"]
         ]
+        fail_provisioning_upon_failure = false
         [[write_files]]
         path = "/etc/custom-write-files"
         owner = "test-user"
         group = "test-user"
         permissions = 0o600
         content = [ 104, 101, 108, 108, 111 ]
+        encoding = "b64"
         overwrite = true
         create_parents = true
+        fail_provisioning_upon_failure = false
         "#,
         )?;
 
@@ -1116,6 +1171,7 @@ mod tests {
                 vec!["apt-get".to_string(), "update".to_string()],
             ]
         );
+        assert!(!config.runcmd.fail_provisioning_upon_failure);
 
         assert_eq!(config.write_files.len(), 1);
         let wf = &config.write_files[0];
@@ -1124,8 +1180,10 @@ mod tests {
         assert_eq!(wf.group, "test-user");
         assert_eq!(wf.permissions, 0o600);
         assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert_eq!(wf.encoding.as_deref(), Some("b64"));
         assert!(wf.overwrite);
         assert!(wf.create_parents);
+        assert!(!wf.fail_provisioning_upon_failure);
 
         Ok(())
     }
