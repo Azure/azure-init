@@ -6,7 +6,7 @@ mod logging;
 pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use libazureinit::config::Config;
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
@@ -56,6 +56,14 @@ struct Cli {
         env = "AZURE_INIT_CONFIG"
     )]
     config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    Clear,
 }
 
 #[instrument]
@@ -100,6 +108,40 @@ fn get_username(
         })
 }
 
+/// Clears the provisioning state marker for the current VM.
+///
+/// This removes the `.provisioned` file named after the VM ID from the
+/// configured azure-init data directory (typically `/var/lib/azure-init`).
+/// Removing this file allows provisioning to run again on the next startup.
+#[instrument]
+fn clear_provisioning_status(
+    config: &Config,
+    vm_id: &str,
+) -> Result<(), std::io::Error> {
+    let provisioned_marker = &config
+        .azure_init_data_dir
+        .path
+        .join(format!("{vm_id}.provisioned"));
+
+    match std::fs::remove_file(provisioned_marker) {
+        Ok(_) => {
+            tracing::info!(
+                "Successfully cleared provisioning state at: {:?}",
+                provisioned_marker
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                "No provisioning state to clear at: {:?}",
+                provisioned_marker
+            );
+        }
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let tracer = initialize_tracing();
@@ -139,6 +181,16 @@ async fn main() -> ExitCode {
         "Final configuration: {:#?}",
         config
     );
+
+    if let Some(Command::Clear) = &opts.command {
+        return match clear_provisioning_status(&config, &vm_id) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(e) => {
+                tracing::error!("Failed to clear provisioning state: {e:?}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(
