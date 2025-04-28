@@ -287,7 +287,6 @@ fn write_single_file(wf: &WriteFiles) -> Result<String, anyhow::Error> {
             decoder.read_to_end(&mut uncompressed).with_context(|| {
                 format!("Failed to gunzip content for {:?}", wf.path)
             })?;
-
             tracing::info!(
                 "Successfully decompressed {} bytes for {:?}",
                 uncompressed.len(),
@@ -308,7 +307,7 @@ fn write_single_file(wf: &WriteFiles) -> Result<String, anyhow::Error> {
                 "No encoding specified; writing raw content to {:?}",
                 wf.path
             );
-            wf.content.clone()
+            wf.content.as_bytes().to_vec()
         }
     };
 

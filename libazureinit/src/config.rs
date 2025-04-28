@@ -326,7 +326,7 @@ impl Default for RunCmd {
 /// - `owner`: The username (e.g. "root") that will own the file. Defaults to `root`.`
 /// - `group`: The group name (e.g. "root") that will own the file. Defaults to `root`.
 /// - `permissions`: Numeric file permissions in octal (e.g. 0o600). Defaults to `o600`.
-/// - `content`: Raw file content in bytes (could be binary).
+/// - `content`: Raw file content as a string (e.g., `"hello"` or base64-encoded).
 /// - `encoding`: Optional encoding for the content. Supported values:
 ///     - `"b64"`: Base64-encoded content.
 ///     - `"b64+gz"`: Base64-encoded and gzipped content.
@@ -341,7 +341,7 @@ impl Default for RunCmd {
 /// owner = "test-user"
 /// group = "test-user"
 /// permissions = 0o644
-/// content = [104, 101, 108, 108, 111]  # "hello"
+/// content = "hello"
 /// overwrite = true
 /// create_parents = true
 /// fail_provisioning_upon_failure = true
@@ -351,7 +351,7 @@ impl Default for RunCmd {
 /// owner = "test-user"
 /// group = "test-user"
 /// permissions = 0o600
-/// content = [97, 71, 86, 115, 98, 71, 56, 61]  # "aGVsbG8=" which is "hello"
+/// content = "aGVsbG8="  # "hello" encoded in base64
 /// encoding = "b64"
 /// overwrite = true
 /// create_parents = true
@@ -364,7 +364,7 @@ pub struct WriteFiles {
     pub owner: String,
     pub group: String,
     pub permissions: u32,
-    pub content: Vec<u8>,
+    pub content: String,
     pub encoding: Option<String>,
     pub overwrite: bool,
     pub create_parents: bool,
@@ -378,7 +378,7 @@ impl Default for WriteFiles {
             owner: "root".to_string(),
             group: "root".to_string(),
             permissions: 0o600,
-            content: Vec::new(),
+            content: String::new(),
             encoding: None,
             overwrite: true,
             create_parents: true,
@@ -873,7 +873,7 @@ mod tests {
         owner = "test-user"
         group = "test-user"
         permissions = 0o600
-        content = [ 104, 101, 108, 108, 111 ]
+        content = "hello"
         encoding = "b64"
         overwrite = true
         create_parents = true
@@ -965,7 +965,7 @@ mod tests {
         assert_eq!(wf.owner, "test-user");
         assert_eq!(wf.group, "test-user");
         assert_eq!(wf.permissions, 0o600);
-        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert_eq!(wf.content, "hello");
         assert_eq!(wf.encoding.as_deref(), Some("b64"));
         assert!(wf.overwrite);
         assert!(wf.create_parents);
@@ -1108,7 +1108,7 @@ mod tests {
         owner = "test-user"
         group = "test-user"
         permissions = 0o600
-        content = [ 104, 101, 108, 108, 111 ]
+        content = "hello"
         encoding = "b64"
         overwrite = true
         create_parents = true
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(wf.owner, "test-user");
         assert_eq!(wf.group, "test-user");
         assert_eq!(wf.permissions, 0o600);
-        assert_eq!(wf.content, [104, 101, 108, 108, 111]);
+        assert_eq!(wf.content, "hello");
         assert_eq!(wf.encoding.as_deref(), Some("b64"));
         assert!(wf.overwrite);
         assert!(wf.create_parents);
