@@ -33,21 +33,16 @@ done
 
 EPOCH=$(date +%s)
 TEMP_DIR=/tmp/staging.$EPOCH
-TARGET_DIR=azure-init
-STAGING_DIR=$TEMP_DIR/$TARGET_DIR
+STAGING_DIR=$TEMP_DIR/install
 echo "*********************************************************************"
 echo "Building the agent"
 echo "*********************************************************************"
-
-cargo build
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
 echo "*********************************************************************"
 echo "Staging artifacts to $STAGING_DIR"
 echo "*********************************************************************"
-mkdir -p "$STAGING_DIR"
-cp "$ROOT_DIR"/target/debug/azure-init "$STAGING_DIR"/
-cp "$ROOT_DIR"/config/azure-init.service "$STAGING_DIR"/
+make install DESTDIR="$STAGING_DIR"
 cp "$ROOT_DIR"/demo/customdata_template.yml "$TEMP_DIR"/customdata.yml
 echo "Done"
 
@@ -55,7 +50,7 @@ echo "*********************************************************************"
 echo "Creating azure-init.tgz package for upload"
 echo "*********************************************************************"
 rm -f ./azure-init.tgz
-tar cvfz azure-init.tgz -C "$TEMP_DIR" "$TARGET_DIR"
+tar cvfz azure-init.tgz -C "$STAGING_DIR" .
 echo "Done"
 
 RG="${RG:-testagent-$EPOCH}"

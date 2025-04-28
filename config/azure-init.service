@@ -4,11 +4,10 @@ After=hypervkvpd.service hv-kvp-daemon.service
 Wants=hypervkvpd.service hv-kvp-daemon.service
 After=network-online.target
 Wants=network-online.target
-ConditionFileIsExecutable=/var/lib/azure-init/azure-init
 
 [Service]
 Type=oneshot
-ExecStart=/var/lib/azure-init/azure-init
+ExecStart=/usr/bin/azure-init
 StandardOutput=journal+console
 StandardError=journal+console
 

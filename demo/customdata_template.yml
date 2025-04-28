@@ -17,8 +17,7 @@ write_files:
           sleep 1
       done
       wget -O /run/azure-init.tgz __SASURL__
-      tar -xf /run/azure-init.tgz -C /var/lib
-      mv /var/lib/azure-init/azure-init.service /lib/systemd/system/azure-init.service
+      tar -xf /run/azure-init.tgz -C /
       systemctl enable /lib/systemd/system/azure-init.service
       mkdir --parents /etc/netplan
       cat > /etc/netplan/eth0.yaml <<EOF
