@@ -26,11 +26,16 @@ pub async fn report_failure(
     message: &str,
     config: &Config,
 ) -> Result<(), Error> {
-    tracing::info!(failure_reason=%message, "Reporting provisioning failed with the message {}", message);
+    let formatted_message = format!("reason={}", message);
+    tracing::info!(
+        failure_reason = %formatted_message,
+        "Reporting provisioning failed with the message: {}",
+        message
+    );
     _report(
         "NotReady",
         Some("ProvisioningFailed"),
-        Some(message),
+        Some(&formatted_message),
         &config.wireserver,
     )
     .await
