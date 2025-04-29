@@ -63,7 +63,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    Clear,
+    Clean {
+        #[arg(long, default_value_t = true)]
+        provision: bool,
+
+        #[arg(long)]
+        logs: bool,
+    },
 }
 
 #[instrument]
@@ -108,7 +114,7 @@ fn get_username(
         })
 }
 
-/// Clears the provisioning state marker for the current VM.
+/// Cleans the provisioning state marker for the current VM.
 ///
 /// This removes the `.provisioned` file named after the VM ID from the
 /// configured azure-init data directory (typically `/var/lib/azure-init`).
@@ -135,6 +141,28 @@ fn clear_provisioning_status(
                 "No provisioning state to clear at: {:?}",
                 provisioned_marker
             );
+        }
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
+}
+
+/// Clears the azure-init log file defined in the configuration.
+///
+/// This removes the log file at the path configured by `azure_init_log_path`,
+/// which defaults to `/var/log/azure-init.log`. If the file does not exist,
+/// a message is logged but no error is returned.
+#[instrument]
+fn clear_log_file(config: &Config) -> Result<(), std::io::Error> {
+    let log_path = &config.azure_init_log_path.path;
+
+    match std::fs::remove_file(log_path) {
+        Ok(_) => {
+            tracing::info!("Successfully cleared log file at: {:?}", log_path);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!("No log file found to clear at: {:?}", log_path);
         }
         Err(e) => return Err(e),
     }
@@ -182,14 +210,24 @@ async fn main() -> ExitCode {
         config
     );
 
-    if let Some(Command::Clear) = &opts.command {
-        return match clear_provisioning_status(&config, &vm_id) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => {
-                tracing::error!("Failed to clear provisioning state: {e:?}");
-                ExitCode::FAILURE
+    if let Some(Command::Clean { provision, logs }) = &opts.command {
+        if *provision {
+            match clear_provisioning_status(&config, &vm_id) {
+                Ok(_) => tracing::info!("Provisioning state cleared."),
+                Err(e) => {
+                    tracing::error!("Failed to clear provisioning state: {e:?}")
+                }
             }
-        };
+        }
+
+        if *logs {
+            match clear_log_file(&config) {
+                Ok(_) => tracing::info!("Log file cleared."),
+                Err(e) => tracing::error!("Failed to clear log file: {e:?}"),
+            }
+        }
+
+        return ExitCode::SUCCESS;
     }
 
     if is_provisioning_complete(Some(&config), &vm_id) {
