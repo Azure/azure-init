@@ -33,6 +33,7 @@ const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 /// Minimal provisioning agent for Azure
 ///
 /// Create a user, add SSH public keys, and set the hostname.
+/// By default, if no subcommand is specified, this will provision the host.
 ///
 /// Arguments provided via command-line arguments override any arguments provided
 /// via environment variables.
@@ -63,10 +64,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Clean up files created by azure-init
     Clean {
+        /// Cleans the provisioning state for the current VM
         #[arg(long, default_value_t = true)]
         provision: bool,
 
+        /// Cleans the log files as defined in the configuration file
         #[arg(long)]
         logs: bool,
     },
@@ -120,7 +124,7 @@ fn get_username(
 /// configured azure-init data directory (typically `/var/lib/azure-init`).
 /// Removing this file allows provisioning to run again on the next startup.
 #[instrument]
-fn clear_provisioning_status(
+fn clean_provisioning_status(
     config: &Config,
     vm_id: &str,
 ) -> Result<(), std::io::Error> {
@@ -132,7 +136,7 @@ fn clear_provisioning_status(
     match std::fs::remove_file(provisioned_marker) {
         Ok(_) => {
             tracing::info!(
-                "Successfully cleared provisioning state at: {:?}",
+                "Successfully clear provisioning state at: {:?}",
                 provisioned_marker
             );
         }
@@ -148,13 +152,13 @@ fn clear_provisioning_status(
     Ok(())
 }
 
-/// Clears the azure-init log file defined in the configuration.
+/// Cleans the azure-init log file defined in the configuration.
 ///
 /// This removes the log file at the path configured by `azure_init_log_path`,
 /// which defaults to `/var/log/azure-init.log`. If the file does not exist,
 /// a message is logged but no error is returned.
 #[instrument]
-fn clear_log_file(config: &Config) -> Result<(), std::io::Error> {
+fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     let log_path = &config.azure_init_log_path.path;
 
     match std::fs::remove_file(log_path) {
@@ -210,9 +214,9 @@ async fn main() -> ExitCode {
         config
     );
 
-    if let Some(Command::Clean { provision, logs }) = &opts.command {
-        if *provision {
-            match clear_provisioning_status(&config, &vm_id) {
+    if let Some(Command::Clean { provision, logs }) = opts.command {
+        if provision {
+            match clean_provisioning_status(&config, &vm_id) {
                 Ok(_) => tracing::info!("Provisioning state cleared."),
                 Err(e) => {
                     tracing::error!("Failed to clear provisioning state: {e:?}")
@@ -220,8 +224,8 @@ async fn main() -> ExitCode {
             }
         }
 
-        if *logs {
-            match clear_log_file(&config) {
+        if logs {
+            match clean_log_file(&config) {
                 Ok(_) => tracing::info!("Log file cleared."),
                 Err(e) => tracing::error!("Failed to clear log file: {e:?}"),
             }
