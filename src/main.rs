@@ -118,35 +118,63 @@ fn get_username(
         })
 }
 
-/// Cleans the provisioning state marker for the current VM.
+/// Cleans all provisioning state marker files from the azure-init data directory.
 ///
-/// This removes the `.provisioned` file named after the VM ID from the
-/// configured azure-init data directory (typically `/var/lib/azure-init`).
-/// Removing this file allows provisioning to run again on the next startup.
+/// This removes all files ending in `.provisioned` from the directory specified
+/// by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker files
+/// indicate that provisioning has completed. Removing them allows azure-init to
+/// re-run provisioning logic on the next boot.
 #[instrument]
-fn clean_provisioning_status(
-    config: &Config,
-    vm_id: &str,
-) -> Result<(), std::io::Error> {
-    let provisioned_marker = &config
-        .azure_init_data_dir
-        .path
-        .join(format!("{vm_id}.provisioned"));
+fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
+    let data_dir = &config.azure_init_data_dir.path;
+    let mut found = false;
 
-    match std::fs::remove_file(provisioned_marker) {
-        Ok(_) => {
-            tracing::info!(
-                "Successfully clear provisioning state at: {:?}",
-                provisioned_marker
-            );
+    for entry in std::fs::read_dir(data_dir)? {
+        let path = match entry {
+            Ok(e) => e.path(),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to read directory entry in {:?}: {:?}",
+                    data_dir,
+                    e
+                );
+                return Err(e);
+            }
+        };
+
+        if path.extension().is_some_and(|ext| ext == "provisioned") {
+            found = true;
+
+            match std::fs::remove_file(&path) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Successfully removed provisioning state at: {:?}",
+                        path
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::info!(
+                        "No provisioning marker found at: {:?}",
+                        path
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to clean provisioning marker {:?}: {:?}",
+                        path,
+                        e
+                    );
+                    return Err(e);
+                }
+            }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!(
-                "No provisioning state to clear at: {:?}",
-                provisioned_marker
-            );
-        }
-        Err(e) => return Err(e),
+    }
+
+    if !found {
+        tracing::info!(
+            "No provisioning marker files (*.provisioned) found in {:?}",
+            data_dir
+        );
     }
 
     Ok(())
@@ -163,12 +191,15 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
 
     match std::fs::remove_file(log_path) {
         Ok(_) => {
-            tracing::info!("Successfully cleared log file at: {:?}", log_path);
+            tracing::info!("Successfully removed log file at: {:?}", log_path);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!("No log file found to clear at: {:?}", log_path);
+            tracing::info!("No log file found at: {:?}", log_path);
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            tracing::error!("Failed to clean log file {:?}: {:?}", log_path, e);
+            return Err(e);
+        }
     }
 
     Ok(())
@@ -215,20 +246,12 @@ async fn main() -> ExitCode {
     );
 
     if let Some(Command::Clean { provision, logs }) = opts.command {
-        if provision {
-            match clean_provisioning_status(&config, &vm_id) {
-                Ok(_) => tracing::info!("Provisioning state cleared."),
-                Err(e) => {
-                    tracing::error!("Failed to clear provisioning state: {e:?}")
-                }
-            }
+        if provision && clean_provisioning_status(&config).is_err() {
+            return ExitCode::FAILURE;
         }
 
-        if logs {
-            match clean_log_file(&config) {
-                Ok(_) => tracing::info!("Log file cleared."),
-                Err(e) => tracing::error!("Failed to clear log file: {e:?}"),
-            }
+        if logs && clean_log_file(&config).is_err() {
+            return ExitCode::FAILURE;
         }
 
         return ExitCode::SUCCESS;
