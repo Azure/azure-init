@@ -132,7 +132,8 @@ async fn main() -> ExitCode {
                 let cfg = Config::default();
 
                 if let Err(report_error) =
-                    report_failure("Invalid configuration schema", &cfg).await
+                    report_failure("Invalid configuration schema", &cfg, &vm_id)
+                        .await
                 {
                     tracing::warn!(
                         "Failed to send provisioning failure report: {:?}",
@@ -189,7 +190,8 @@ async fn main() -> ExitCode {
 
             let failure_description = format!("Provisioning error: {:?}", e);
             if let Err(report_err) =
-                report_failure(&failure_description, &clone_config).await
+                report_failure(&failure_description, &clone_config, &vm_id)
+                    .await
             {
                 tracing::error!(
                     health_report = "failure",
