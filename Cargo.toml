@@ -32,7 +32,7 @@ predicates-tree = "1.0.11"
 tempfile = "3.3.0"
 
 # Pin idna_adapter to <=1.2.0 for MSRV issues with cargo-clippy of Rust 1.78.0.
-idna_adapter = "<=1.2.0"
+idna_adapter = "<=1.2.1"
 
 [dependencies.libazureinit]
 path = "libazureinit"
