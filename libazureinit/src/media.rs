@@ -55,16 +55,16 @@ use fstab::FsTab;
 /// * `State` - The state of the media, either `Mounted` or `Unmounted`.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct Environment {
-    #[serde(rename = "ProvisioningSection")]
+    #[serde(rename = "wa:ProvisioningSection")]
     pub provisioning_section: ProvisioningSection,
-    #[serde(rename = "PlatformSettingsSection")]
+    #[serde(rename = "wa:PlatformSettingsSection")]
     pub platform_settings_section: PlatformSettingsSection,
 }
 
 /// Provisioning section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct ProvisioningSection {
-    #[serde(rename = "Version")]
+    #[serde(rename = "wa:Version")]
     pub version: String,
     #[serde(rename = "LinuxProvisioningConfigurationSet")]
     pub linux_prov_conf_set: LinuxProvisioningConfigurationSet,
@@ -84,7 +84,7 @@ pub struct LinuxProvisioningConfigurationSet {
 /// Platform settings section of the environment configuration.
 #[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 pub struct PlatformSettingsSection {
-    #[serde(rename = "Version")]
+    #[serde(rename = "wa:Version")]
     pub version: String,
     #[serde(rename = "PlatformSettings")]
     pub platform_settings: PlatformSettings,
@@ -287,23 +287,24 @@ impl Media<Mounted> {
 ///
 /// // Example dummy OVF environment data
 /// let ovf_body = r#"
-/// <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1">
-///     <ProvisioningSection>
-///         <Version>1.0</Version>
+/// <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+///     xmlns:wa="http://schemas.microsoft.com/windowsazure">
+///     <wa:ProvisioningSection>
+///         <wa:Version>1.0</wa:Version>
 ///         <LinuxProvisioningConfigurationSet>
 ///             <UserName>myusername</UserName>
 ///             <UserPassword></UserPassword>
 ///             <DisableSshPasswordAuthentication>false</DisableSshPasswordAuthentication>
 ///             <HostName>myhostname</HostName>
 ///         </LinuxProvisioningConfigurationSet>
-///     </ProvisioningSection>
-///     <PlatformSettingsSection>
-///         <Version>1.0</Version>
+///     </wa:ProvisioningSection>
+///     <wa:PlatformSettingsSection>
+///         <wa:Version>1.0</wa:Version>
 ///         <PlatformSettings>
 ///             <PreprovisionedVm>false</PreprovisionedVm>
 ///             <PreprovisionedVmType>None</PreprovisionedVmType>
 ///         </PlatformSettings>
-///     </PlatformSettingsSection>
+///     </wa:PlatformSettingsSection>
 /// </Environment>
 /// "#;
 ///
