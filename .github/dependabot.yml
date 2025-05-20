@@ -9,6 +9,8 @@ updates:
     schedule:
       interval: "weekly"
     ignore:
+      - dependency-name: "idna_adapter"
+        # stay with <= 1.2.0 for Rust 1.78
       - dependency-name: "litemap"
         # stay with <= 0.7.4 for Rust 1.76
       - dependency-name: "zerofrom"
