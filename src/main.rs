@@ -6,7 +6,7 @@ mod logging;
 pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use libazureinit::config::Config;
 use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
@@ -33,6 +33,7 @@ const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 /// Minimal provisioning agent for Azure
 ///
 /// Create a user, add SSH public keys, and set the hostname.
+/// By default, if no subcommand is specified, this will provision the host.
 ///
 /// Arguments provided via command-line arguments override any arguments provided
 /// via environment variables.
@@ -56,6 +57,23 @@ struct Cli {
         env = "AZURE_INIT_CONFIG"
     )]
     config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Clean up files created by azure-init
+    Clean {
+        /// Cleans the provisioning state for the current VM
+        #[arg(long, default_value_t = true)]
+        provision: bool,
+
+        /// Cleans the log files as defined in the configuration file
+        #[arg(long)]
+        logs: bool,
+    },
 }
 
 #[instrument]
@@ -100,6 +118,93 @@ fn get_username(
         })
 }
 
+/// Cleans all provisioning state marker files from the azure-init data directory.
+///
+/// This removes all files ending in `.provisioned` from the directory specified
+/// by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker files
+/// indicate that provisioning has completed. Removing them allows azure-init to
+/// re-run provisioning logic on the next boot.
+#[instrument]
+fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
+    let data_dir = &config.azure_init_data_dir.path;
+    let mut found = false;
+
+    for entry in std::fs::read_dir(data_dir)? {
+        let path = match entry {
+            Ok(e) => e.path(),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to read directory entry in {:?}: {:?}",
+                    data_dir,
+                    e
+                );
+                return Err(e);
+            }
+        };
+
+        if path.extension().is_some_and(|ext| ext == "provisioned") {
+            found = true;
+
+            match std::fs::remove_file(&path) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Successfully removed provisioning state at: {:?}",
+                        path
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::info!(
+                        "No provisioning marker found at: {:?}",
+                        path
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to clean provisioning marker {:?}: {:?}",
+                        path,
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    if !found {
+        tracing::info!(
+            "No provisioning marker files (*.provisioned) found in {:?}",
+            data_dir
+        );
+    }
+
+    Ok(())
+}
+
+/// Cleans the azure-init log file defined in the configuration.
+///
+/// This removes the log file at the path configured by `azure_init_log_path`,
+/// which defaults to `/var/log/azure-init.log`. If the file does not exist,
+/// a message is logged but no error is returned.
+#[instrument]
+fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
+    let log_path = &config.azure_init_log_path.path;
+
+    match std::fs::remove_file(log_path) {
+        Ok(_) => {
+            tracing::info!("Successfully removed log file at: {:?}", log_path);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!("No log file found at: {:?}", log_path);
+        }
+        Err(e) => {
+            tracing::error!("Failed to clean log file {:?}: {:?}", log_path, e);
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let tracer = initialize_tracing();
@@ -139,6 +244,18 @@ async fn main() -> ExitCode {
         "Final configuration: {:#?}",
         config
     );
+
+    if let Some(Command::Clean { provision, logs }) = opts.command {
+        if provision && clean_provisioning_status(&config).is_err() {
+            return ExitCode::FAILURE;
+        }
+
+        if logs && clean_log_file(&config).is_err() {
+            return ExitCode::FAILURE;
+        }
+
+        return ExitCode::SUCCESS;
+    }
 
     if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(
