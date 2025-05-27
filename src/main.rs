@@ -64,12 +64,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Clean up files created by azure-init
+    /// By default, this removes provisioning state data. Optional flags can be used
+    /// to clean logs or additional generated files.
     Clean {
-        /// Cleans the provisioning state for the current VM
-        #[arg(long, default_value_t = true)]
-        provision: bool,
-
         /// Cleans the log files as defined in the configuration file
         #[arg(long)]
         logs: bool,
@@ -210,7 +207,6 @@ async fn main() -> ExitCode {
     let tracer = initialize_tracing();
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
-
     let opts = Cli::parse();
 
     let temp_layer = tracing_subscriber::fmt::layer()
@@ -245,8 +241,8 @@ async fn main() -> ExitCode {
         config
     );
 
-    if let Some(Command::Clean { provision, logs }) = opts.command {
-        if provision && clean_provisioning_status(&config).is_err() {
+    if let Some(Command::Clean { logs }) = opts.command {
+        if clean_provisioning_status(&config).is_err() {
             return ExitCode::FAILURE;
         }
 
