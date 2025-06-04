@@ -11,6 +11,7 @@
 //!
 
 use std::{
+    collections::HashMap,
     fmt::{self as std_fmt, Write as std_write},
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
@@ -208,9 +209,11 @@ impl EmitKVPLayer {
 
     /// Processes and sends a health report event based on the provided `health_report` field.
     ///
-    /// This function extracts the `reason` field (if present)
-    /// and constructs a properly formatted health report key-value pair (KVP) using
-    /// [`build_health_kvp`]. The resulting KVP is then encoded and sent via `send_event()`.
+    /// This function extracts the `reason` field (if present) and constructs a properly
+    /// formatted health report key-value pair (KVP) using either
+    /// 'build_success_health_report' or 'build_failure_health_report', depending on
+    /// the value of `health_report`. The resulting KVP is then encoded using
+    /// 'encode_kvp_item' and sent via `send_event()`.
     ///
     /// This function is called exclusively from [`on_event`] when a `health_report`
     /// flag is detected, ensuring that health-related events are processed separately
@@ -220,6 +223,51 @@ impl EmitKVPLayer {
     /// - `event`: The original tracing event containing metadata.
     /// - `health_report`: The health report status as a string (e.g., `"Success"` or `"Failure"`).
     /// - `timestamp`: The event timestamp as a formatted string.
+    ///
+    /// # Supported Tracing Fields
+    ///
+    /// - `reason`: A human-readable failure message. Required for `"failure"` reports.
+    /// - `optional_key_value`: An optional single key=value pair to include in `"success"` reports.
+    /// - `extra`: Optional field containing additional key-value pairs for `"failure"` reports.
+    ///
+    /// # `optional_key_value` Format
+    ///
+    /// A single key=value string to be flattened into the final KVP report:
+    ///
+    /// ```rust
+    /// tracing::info!(
+    ///     health_report = "success",
+    ///     optional_key_value = "origin=imds",
+    ///     "Provisioning succeeded"
+    /// );
+    /// ```
+    ///
+    /// # `extra` Field Format
+    ///
+    /// The `extra` field can be provided in one of two formats:
+    /// 1. **Semicolon-delimited string** (easiest to write):
+    ///
+    /// ```rust
+    /// tracing::info!(
+    ///     health_report = "failure",
+    ///     reason = "SSH key write failed",
+    ///     extra = "step=write_authorized_keys;component=ssh",
+    ///     "Provisioning failed"
+    /// );
+    /// ```
+    ///
+    /// 2. **JSON-formatted string** (machine-friendly or more structured):
+    ///
+    /// ```rust
+    /// tracing::info!(
+    ///     health_report = "failure",
+    ///     reason = "Network timeout",
+    ///     extra = r#"{"step":"imds_query","region":"westus"}"#,
+    ///     "Provisioning failed"
+    /// );
+    /// ```
+    ///
+    /// Both formats will be parsed into key-value pairs and included in the final KVP report.
     fn handle_health_report(
         &self,
         event: &tracing::Event<'_>,
@@ -227,6 +275,9 @@ impl EmitKVPLayer {
         event_time: Duration,
     ) {
         let mut reason = None;
+        let mut optional_key_value: Option<(String, String)> = None;
+        let mut extra: HashMap<String, String> = HashMap::new();
+
         event.record(
             &mut |field: &tracing::field::Field,
                   value: &dyn std::fmt::Debug| {
@@ -235,6 +286,39 @@ impl EmitKVPLayer {
                         format!("{:?}", value).trim_matches('"').to_string(),
                     );
                 }
+
+                if field.name() == "optional_key_value" {
+                    let val =
+                        format!("{:?}", value).trim_matches('"').to_string();
+                    let mut parts = val.splitn(2, '=');
+                    if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                        optional_key_value =
+                            Some((k.trim().to_string(), v.trim().to_string()));
+                    }
+                }
+
+                if field.name() == "extra" {
+                    let val =
+                        format!("{:?}", value).trim_matches('"').to_string();
+
+                    if let Ok(parsed) =
+                        serde_json::from_str::<HashMap<String, String>>(&val)
+                    {
+                        extra.extend(parsed);
+                    } else {
+                        for pair in val.split(';') {
+                            let mut parts = pair.splitn(2, '=');
+                            if let (Some(k), Some(v)) =
+                                (parts.next(), parts.next())
+                            {
+                                extra.insert(
+                                    k.trim().to_string(),
+                                    v.trim().to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
             },
         );
         let timestamp = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
@@ -242,26 +326,36 @@ impl EmitKVPLayer {
             .to_string();
 
         let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-        let kvp_result: Result<(String, String), String> =
-            match health_report.as_str() {
-                "success" => Ok(build_success_health_report(
-                    &agent,
-                    Some("optional_value"),
-                    &self.vm_id,
-                    &timestamp,
-                )),
-                "failure" => Ok(build_failure_health_report(
+        let kvp_result: Result<(String, String), String> = match health_report
+            .as_str()
+        {
+            "success" => Ok(build_success_health_report(
+                &agent,
+                optional_key_value
+                    .as_ref()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+                &self.vm_id,
+                &timestamp,
+            )),
+            "failure" => {
+                let extra_opt =
+                    if extra.is_empty() { None } else { Some(&extra) };
+
+                Ok(build_failure_health_report(
                     &agent,
                     reason.as_deref().unwrap_or("No failure reason provided"),
-                    Some("stuff"),
+                    extra_opt,
                     &self.vm_id,
                     &timestamp,
-                )),
-                other => Err(format!("Invalid health report kind: {}", other)),
-            };
+                ))
+            }
+            other => Err(format!("Invalid health report kind: {}", other)),
+        };
 
-        let (key, value) =
-            kvp_result.expect("Failed to build health key-value pair");
+        let (key, value) = kvp_result.expect(
+            "Invalid health_report value: must be either 'success' or 'failure'. \
+            Ensure its value is a valid status.",
+        );
 
         self.send_event(encode_kvp_item(&key, &value).concat());
     }
@@ -575,11 +669,11 @@ fn get_uptime() -> Duration {
 /// Builds the success health KVP entry in the required format.
 ///
 /// The expected format is:
-///   result=success|agent=Azure-Init/<version>|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>[|optional_key=optional_value…]
+///   result=success|agent=Azure-Init/<version>|pps_type=None|vm_id=<vm_id>|timestamp=<timestamp>[|<optional_key>=<optional_value>…]
 ///
 /// # Parameters
 /// - `agent`: The agent version string.
-/// - `optional_key`: Optional additional key=value pairs.
+/// - `optional_key_value`: An optional single key-value pair to include in the success report (e.g., `origin=imds`).
 /// - `vm_id`: The VM ID.
 /// - `timestamp`: The precomputed timestamp in ISO 8601 format.
 ///
@@ -587,7 +681,7 @@ fn get_uptime() -> Duration {
 /// A tuple of (key, value) where key is fixed as "PROVISIONING_REPORT".
 fn build_success_health_report(
     agent: &str,
-    optional_key: Option<&str>,
+    optional_key_value: Option<(&str, &str)>,
     vm_id: &str,
     timestamp: &str,
 ) -> (String, String) {
@@ -596,8 +690,8 @@ fn build_success_health_report(
         agent, vm_id, timestamp
     );
 
-    if let Some(optional_val) = optional_key {
-        value.push_str(&format!("|optional_key={}", optional_val));
+    if let Some((k, v)) = optional_key_value {
+        value.push_str(&format!("|{}={}", k, v));
     }
 
     ("PROVISIONING_REPORT".to_string(), value)
@@ -620,13 +714,16 @@ fn build_success_health_report(
 fn build_failure_health_report(
     agent: &str,
     reason: &str,
-    extra: Option<&str>,
+    extra: Option<&HashMap<String, String>>,
     vm_id: &str,
     timestamp: &str,
 ) -> (String, String) {
     let mut value = format!("result=error|reason={}|agent={}|", reason, agent);
-    if let Some(extra_val) = extra {
-        value.push_str(&format!("extra={}|", extra_val));
+
+    if let Some(map) = extra {
+        for (k, v) in map {
+            value.push_str(&format!("{}={}|", k, v));
+        }
     }
 
     value.push_str(&format!(
@@ -683,6 +780,7 @@ mod tests {
         event!(
             Level::INFO,
             health_report = "success",
+            optional_key_value = "origin=mock_source",
             "Provisioning completed successfully"
         );
 
@@ -695,7 +793,8 @@ mod tests {
         event!(
             Level::ERROR,
             health_report = "failure",
-            reason = error_message
+            reason = error_message,
+            extra = "step=mock_stuff;source=unit_test"
         );
 
         sleep(Duration::from_millis(100)).await;
