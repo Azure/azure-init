@@ -170,7 +170,7 @@ async fn _report(
     headers
         .insert("content-type", HeaderValue::from_static("application/json"));
 
-    tracing::info!(?headers, "Prepared HTTP headers");
+    tracing::debug!(?headers, "Prepared HTTP headers");
 
     let connect_timeout = Duration::from_secs_f64(cfg.connection_timeout_secs);
     let read_timeout = Duration::from_secs_f64(cfg.read_timeout_secs);
@@ -220,6 +220,7 @@ async fn _report(
 
         if status == StatusCode::TOO_MANY_REQUESTS
             || status == StatusCode::SERVICE_UNAVAILABLE
+            || status == StatusCode::INTERNAL_SERVER_ERROR
         {
             tracing::warn!(
                 "Retryable HTTP status {} received. Will retry...",
