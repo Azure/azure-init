@@ -19,7 +19,8 @@ use libazureinit::{
     Provision,
 };
 use libazureinit::{
-    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+    get_vm_id, health::ProvisioningErrorKind, is_provisioning_complete,
+    mark_provisioning_complete,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -232,10 +233,15 @@ async fn main() -> ExitCode {
                 // Build temporary config to pass in wireserver defaults for report_failure
                 let cfg = Config::default();
 
-                if let Err(report_error) =
-                    report_failure("Invalid configuration schema", &cfg, &vm_id)
-                        .await
-                {
+                let report_result = report_failure(
+                    ProvisioningErrorKind::UnhandledException.as_reason(),
+                    &vm_id,
+                    None,
+                    &cfg,
+                )
+                .await;
+
+                if let Err(report_error) = report_result {
                     tracing::warn!(
                         "Failed to send provisioning failure report: {:?}",
                         report_error
@@ -243,8 +249,8 @@ async fn main() -> ExitCode {
                 }
 
                 tracing::error!(
-                        health_report = "failure",
-                        reason = %error,
+                    health_report = "failure",
+                    reason = %error,
                     "Invalid config during early startup"
                 );
                 return ExitCode::FAILURE;
@@ -283,9 +289,12 @@ async fn main() -> ExitCode {
     let clone_config = config.clone();
     match provision(config, &vm_id, opts).await {
         Ok(_) => {
-            if let Err(_report_err) = report_ready(&clone_config).await {
+            let report_result = report_ready(&clone_config, &vm_id, None).await;
+
+            if let Err(report_error) = report_result {
                 tracing::warn!(
-                    "Failed to report provisioning success to Wireserver"
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
                 );
             }
 
@@ -302,9 +311,13 @@ async fn main() -> ExitCode {
             eprintln!("{e:?}");
 
             let failure_description = format!("Provisioning error: {:?}", e);
-            if let Err(report_err) =
-                report_failure(&failure_description, &clone_config, &vm_id)
-                    .await
+            if let Err(report_err) = report_failure(
+                &failure_description,
+                &vm_id,
+                None,
+                &clone_config,
+            )
+            .await
             {
                 tracing::error!(
                     health_report = "failure",
