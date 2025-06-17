@@ -1,0 +1,599 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+use reqwest::{
+    header::{HeaderMap, HeaderValue, USER_AGENT},
+    Client,
+};
+use std::time::Duration;
+use tracing::instrument;
+
+use chrono::{DateTime, Utc};
+use reqwest::StatusCode;
+use serde::Serialize;
+use serde_json::json;
+use std::collections::HashMap;
+
+use crate::config::Config;
+use crate::error::Error;
+use crate::http;
+
+/// Provides  error categories for provisioning failures that match cloud-init.
+///
+/// Used to supply a standardized human-readable reason for provisioning errors.
+#[derive(Debug, Clone)]
+pub enum ProvisioningErrorKind {
+    DhcpInterfaceNotFound,
+    DhcpLeaseNotObtained,
+    PrimaryDhcpInterfaceNotFound,
+    ImdsConnectionTimeout,
+    ImdsReadTimeout,
+    OvfEnvMetadataParseError,
+    HostShutdownWaitError,
+    AzureProxyAgentNotFound,
+    AzureProxyAgentStatusFailure,
+    UnhandledException,
+}
+
+impl ProvisioningErrorKind {
+    pub fn as_reason(&self) -> &'static str {
+        match self {
+            ProvisioningErrorKind::DhcpInterfaceNotFound => {
+                "failure to find DHCP interface"
+            }
+            ProvisioningErrorKind::DhcpLeaseNotObtained => {
+                "failure to obtain DHCP lease"
+            }
+            ProvisioningErrorKind::PrimaryDhcpInterfaceNotFound => {
+                "failure to find primary DHCP interface"
+            }
+            ProvisioningErrorKind::ImdsConnectionTimeout => {
+                "connection timeout querying IMDS"
+            }
+            ProvisioningErrorKind::ImdsReadTimeout => {
+                "read timeout querying IMDS"
+            }
+            ProvisioningErrorKind::OvfEnvMetadataParseError => {
+                "unexpected metadata parsing ovf-env.xml"
+            }
+            ProvisioningErrorKind::HostShutdownWaitError => {
+                "error waiting for host shutdown"
+            }
+            ProvisioningErrorKind::AzureProxyAgentNotFound => {
+                "azure-proxy-agent not found"
+            }
+            ProvisioningErrorKind::AzureProxyAgentStatusFailure => {
+                "azure-proxy-agent status failure"
+            }
+            ProvisioningErrorKind::UnhandledException => "unhandled exception",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ProvisioningState {
+    Ready,
+    NotReady,
+    InProgress,
+}
+
+#[derive(Debug)]
+enum ProvisioningSubStatus {
+    ProvisioningFailed,
+    ProvisioningInProgress,
+}
+
+impl std::fmt::Display for ProvisioningState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ProvisioningState::Ready => "Ready",
+            ProvisioningState::NotReady => "NotReady",
+            ProvisioningState::InProgress => "InProgress",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl std::fmt::Display for ProvisioningSubStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ProvisioningSubStatus::ProvisioningFailed => "ProvisioningFailed",
+            ProvisioningSubStatus::ProvisioningInProgress => {
+                "ProvisioningInProgress"
+            }
+        };
+        write!(f, "{}", s)
+    }
+}
+
+#[derive(Serialize)]
+pub struct ReportableError {
+    result: &'static str,
+    reason: String,
+    agent: String,
+    documentation_url: &'static str,
+    vm_id: String,
+    timestamp: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pps_type: Option<String>,
+    #[serde(flatten)]
+    supporting_data: HashMap<String, String>,
+}
+
+impl ReportableError {
+    pub fn new(reason: impl Into<String>, vm_id: impl Into<String>) -> Self {
+        ReportableError {
+            result: "error",
+            reason: reason.into(),
+            agent: format!("Azure-Init/{}", env!("CARGO_PKG_VERSION")),
+            documentation_url: "https://aka.ms/linuxprovisioningerror",
+            vm_id: vm_id.into(),
+            timestamp: Utc::now(),
+            pps_type: Some("None".to_string()),
+            supporting_data: HashMap::new(),
+        }
+    }
+
+    /// Adds a key-value pair to the supporting data for the report.
+    pub fn with_supporting_data(mut self, key: &str, value: &str) -> Self {
+        self.supporting_data
+            .insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Serializes the reportable error as a pipe-delimited KVP entry.
+    pub fn as_encoded_report(&self) -> String {
+        let mut data = vec![
+            "result=error".to_string(),
+            format!("reason={}", self.reason),
+            format!("agent={}", self.agent),
+        ];
+        for (k, v) in &self.supporting_data {
+            data.push(format!("{}={}", k, v));
+        }
+        data.push("pps_type=None".to_string());
+        data.push(format!("vm_id={}", self.vm_id));
+        data.push(format!("timestamp={}", self.timestamp.to_rfc3339()));
+        data.push(format!("documentation_url={}", self.documentation_url));
+        encode_report(&data)
+    }
+}
+
+/// Constructs a KVP entry representing a successful provisioning event.
+pub fn encoded_success_report(
+    vm_id: &str,
+    optional_key_value: Option<(&str, &str)>,
+) -> String {
+    let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+    let timestamp = Utc::now().to_rfc3339();
+
+    let mut data = vec![
+        "result=success".to_string(),
+        format!("agent={}", agent),
+        "pps_type=None".to_string(),
+        format!("vm_id={}", vm_id),
+        format!("timestamp={}", timestamp),
+    ];
+    if let Some((k, v)) = optional_key_value {
+        data.push(format!("{}={}", k, v));
+    }
+    encode_report(&data)
+}
+
+/// Serializes a slice of key-value strings as a single pipe-delimited entry.
+fn encode_report(data: &[String]) -> String {
+    let mut wtr = csv::WriterBuilder::new()
+        .delimiter(b'|')
+        .quote_style(csv::QuoteStyle::Necessary)
+        .from_writer(vec![]);
+    wtr.write_record(data).expect("CSV write failed");
+    let mut bytes = wtr.into_inner().unwrap();
+    if let Some(b'\n') = bytes.last() {
+        bytes.pop();
+    }
+    if let Some(b'\r') = bytes.last() {
+        bytes.pop();
+    }
+    String::from_utf8(bytes).expect("CSV was not utf-8")
+}
+
+/// Reports provisioning as successfully completed to the wireserver and/or KVP.
+pub async fn report_ready(
+    config: &Config,
+    vm_id: &str,
+    optional_key_value: Option<(&str, &str)>,
+) -> Result<(), Error> {
+    tracing::info!("Reporting provisioning complete");
+    let desc = encoded_success_report(vm_id, optional_key_value);
+    _report(ProvisioningState::Ready, None, Some(desc), config).await
+}
+
+/// Reports provisioning failure to the wireserver and/or KVP.
+pub async fn report_failure(
+    reason: &str,
+    vm_id: &str,
+    supporting_data: Option<HashMap<&str, &str>>,
+    config: &Config,
+) -> Result<(), Error> {
+    let mut err = ReportableError::new(reason, vm_id);
+    if let Some(map) = supporting_data {
+        for (k, v) in map {
+            err = err.with_supporting_data(k, v);
+        }
+    }
+    let report_str = err.as_encoded_report();
+
+    _report(
+        ProvisioningState::NotReady,
+        Some(ProvisioningSubStatus::ProvisioningFailed),
+        Some(report_str),
+        config,
+    )
+    .await
+}
+
+/// Reports provisioning as still in progress to the wireserver and/or KVP.
+pub async fn report_in_progress(
+    config: &Config,
+    vm_id: &str,
+) -> Result<(), Error> {
+    let desc =
+        format!("Provisioning is still in progress for vm_id={}.", vm_id);
+    _report(
+        ProvisioningState::InProgress,
+        Some(ProvisioningSubStatus::ProvisioningInProgress),
+        Some(desc),
+        config,
+    )
+    .await
+}
+
+/// Internal helper that handles all HTTP details for health reporting to the wireserver.
+///
+/// Builds the JSON payload, sets required headers, and performs retries as needed.
+#[instrument(err, skip_all)]
+async fn _report(
+    state: ProvisioningState,
+    substatus: Option<ProvisioningSubStatus>,
+    description: Option<String>,
+    config: &Config,
+) -> Result<(), Error> {
+    let body = if let Some(sub) = substatus {
+        json!({
+            "state": state.to_string(),
+            "details": {
+                "subStatus": sub.to_string(),
+                "description": description.unwrap_or_default(),
+            }
+        })
+        .to_string()
+    } else {
+        json!({ "state": state.to_string() }).to_string()
+    };
+
+    tracing::debug!(body=%body, "Built provisioning-health JSON");
+
+    let version = env!("CARGO_PKG_VERSION");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(&format!("azure-init v{}", version)).unwrap(),
+    );
+    headers.insert(
+        "x-ms-guest-agent-name",
+        HeaderValue::from_str(&format!("azure-init/{}", version)).unwrap(),
+    );
+    headers
+        .insert("content-type", HeaderValue::from_static("application/json"));
+
+    tracing::debug!(?headers, "Prepared HTTP headers");
+
+    let connect_timeout =
+        Duration::from_secs_f64(config.wireserver.connection_timeout_secs);
+    let read_timeout =
+        Duration::from_secs_f64(config.wireserver.read_timeout_secs);
+    let retry_for =
+        Duration::from_secs_f64(config.wireserver.total_retry_timeout_secs);
+
+    let client = Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(read_timeout)
+        .build()?;
+
+    let mut remaining = retry_for;
+    while !remaining.is_zero() {
+        let (resp, new_remaining) = http::post(
+            &client,
+            headers.clone(),
+            body.clone(),
+            read_timeout,
+            connect_timeout,
+            remaining,
+            &config.wireserver.health_endpoint,
+        )
+        .await?;
+
+        let status = resp.status();
+        for (key, value) in resp.headers().iter() {
+            tracing::info!(
+                target: "libazureinit::health::status",
+                header = %key,
+                value = ?value,
+                "Wireserver response header"
+            );
+        }
+        tracing::info!(
+            target: "libazureinit::health::status",
+            "Wireserver replied with status {}",
+            status
+        );
+
+        if status.is_success() {
+            tracing::info!(
+                target: "libazureinit::health::status",
+                "Report '{}' succeeded",
+                state
+            );
+            return Ok(());
+        }
+
+        if status == StatusCode::TOO_MANY_REQUESTS
+            || status == StatusCode::SERVICE_UNAVAILABLE
+            || status == StatusCode::INTERNAL_SERVER_ERROR
+        {
+            tracing::warn!(
+                "Retryable HTTP status {} received. Will retry...",
+                status
+            );
+        } else {
+            tracing::error!(
+                "Non-retryable HTTP status {}, bailing out",
+                status
+            );
+            return Err(Error::HttpStatus {
+                endpoint: config.wireserver.health_endpoint.clone(),
+                status,
+            });
+        }
+
+        remaining = new_remaining;
+    }
+
+    tracing::warn!("Report '{}' timed out", state);
+    Err(Error::Timeout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Wireserver};
+    use crate::unittest::{get_http_response_payload, serve_requests};
+    use reqwest::StatusCode;
+    use serde_json::Value;
+    use tokio::net::TcpListener;
+    use tokio_util::sync::CancellationToken;
+
+    fn fast_config(mock_url: Option<String>) -> Config {
+        let mut cfg = Config::default();
+        cfg.wireserver = Wireserver {
+            connection_timeout_secs: 0.01,
+            read_timeout_secs: 0.01,
+            total_retry_timeout_secs: 0.05,
+            health_endpoint: mock_url.unwrap_or(cfg.wireserver.health_endpoint),
+        };
+        cfg
+    }
+
+    /// Verifies that `_report` times out after multiple attempts
+    /// when the server consistently responds with a retryable error (HTTP 503).
+    #[tokio::test]
+    async fn test_report_all_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
+        let payload =
+            get_http_response_payload(&StatusCode::SERVICE_UNAVAILABLE, "");
+        let cancel = CancellationToken::new();
+        let _server = tokio::spawn(serve_requests(
+            listener,
+            payload.clone(),
+            cancel.clone(),
+        ));
+
+        let cfg = fast_config(Some(mock_url));
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        let result = report_failure("oops", test_vm_id, None, &cfg).await;
+        assert!(result.is_err(), "should have timed out after retrying");
+        cancel.cancel();
+    }
+
+    /// Verifies that `_report` succeeds immediately
+    /// when the server responds with HTTP 201 Created on the first attempt.
+    #[tokio::test]
+    async fn test_report_immediate_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
+        let payload = get_http_response_payload(&StatusCode::CREATED, "");
+        let cancel = CancellationToken::new();
+        let _server = tokio::spawn(serve_requests(
+            listener,
+            payload.clone(),
+            cancel.clone(),
+        ));
+
+        let cfg = fast_config(Some(mock_url));
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        let result = report_ready(&cfg, test_vm_id, None).await;
+        assert!(result.is_ok(), "201 Created should be accepted as success");
+
+        cancel.cancel();
+    }
+
+    /// Verifies that `_report` fails immediately
+    /// when the server responds with a non-retryable error (e.g. HTTP 400).
+    #[tokio::test]
+    async fn test_report_unexpected_code() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
+        let payload = get_http_response_payload(&StatusCode::BAD_REQUEST, "");
+        let cancel = CancellationToken::new();
+        let _server = tokio::spawn(serve_requests(
+            listener,
+            payload.clone(),
+            cancel.clone(),
+        ));
+
+        let cfg = fast_config(Some(mock_url));
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        let result = report_failure("err", test_vm_id, None, &cfg).await;
+        assert!(result.is_err(), "400 Bad Request should fail immediately");
+        cancel.cancel();
+    }
+
+    /// “InProgress” should be treated as success on 200 or 201 immediately.
+    #[tokio::test]
+    async fn test_report_in_progress_immediate_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{}", addr);
+        let payload = get_http_response_payload(&StatusCode::CREATED, "");
+        let cancel = CancellationToken::new();
+        let _server =
+            tokio::spawn(serve_requests(listener, payload, cancel.clone()));
+
+        let cfg = fast_config(Some(mock_url));
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        let res = report_in_progress(&cfg, test_vm_id).await;
+        assert!(
+            res.is_ok(),
+            "201 Created (or 200 OK) should be accepted as success"
+        );
+
+        cancel.cancel();
+    }
+
+    /// The public wrappers at least compile and call into `_report`.
+    /// Here we point at a “dead” endpoint (no test server), and with tiny timeouts
+    /// we expect both `report_ready` and `report_failure` to error out fast.
+    #[tokio::test]
+    async fn test_public_wrappers_error_on_dead_endpoint() {
+        let mut cfg = fast_config(None);
+        // Shrink the wireserver timeouts so we fail immediately
+        cfg.wireserver = crate::config::Wireserver {
+            connection_timeout_secs: 0.01,
+            read_timeout_secs: 0.01,
+            total_retry_timeout_secs: 0.01,
+            ..Default::default()
+        };
+
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        // no override == real health_endpoint, which we can't reach in tests
+        let r1 = report_ready(&cfg, test_vm_id, None).await;
+        let r2 = report_failure("no config", test_vm_id, None, &cfg).await;
+        assert!(
+            r1.is_err(),
+            "report_ready should fail against a dead server"
+        );
+        assert!(r2.is_err(), "report_failure should also fail");
+    }
+
+    // Ensures that ReportableError serializes correctly to JSON
+    // and all expected fields are present with the correct values.
+    #[test]
+    fn test_reportable_error_formatting() {
+        let vm_id = "00000000-0000-0000-0000-000000000000";
+        let reason = "Test failure";
+        let err = ReportableError::new(reason, vm_id)
+            .with_supporting_data("debug_info", "42");
+
+        let json = serde_json::to_string_pretty(&err)
+            .expect("should serialize to JSON");
+        let parsed: Value =
+            serde_json::from_str(&json).expect("should parse JSON");
+
+        assert_eq!(parsed["result"], "error");
+        assert_eq!(parsed["reason"], reason);
+        assert!(parsed["agent"].as_str().unwrap().starts_with("Azure-Init/"));
+        assert_eq!(
+            parsed["documentation_url"],
+            "https://aka.ms/linuxprovisioningerror"
+        );
+        assert_eq!(parsed["vm_id"], vm_id);
+        assert_eq!(parsed["pps_type"], "None");
+        assert_eq!(parsed["debug_info"], "42");
+
+        let timestamp: DateTime<Utc> = parsed["timestamp"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .expect("timestamp should parse");
+        assert!(timestamp <= Utc::now());
+    }
+
+    // Verifies that as_encoded_report produces a pipe-separated,
+    // KVP string with all expected key-value pairs.
+    #[test]
+    fn test_reportable_error_as_encoded_report() {
+        let vm_id = "00000000-0000-0000-0000-000000000000";
+        let reason = "testing";
+        let mut err = ReportableError::new(reason, vm_id);
+        err = err.with_supporting_data("extra1", "val1");
+        err = err.with_supporting_data("extra2", "val2");
+        let encoded = err.as_encoded_report();
+
+        assert!(
+            encoded.starts_with("result=error|"),
+            "Encoded should start with result=error"
+        );
+        assert!(
+            encoded.contains(&format!("reason={}", reason)),
+            "Encoded should contain failure reason"
+        );
+        assert!(
+            encoded.contains("agent=Azure-Init/"),
+            "Should contain agent"
+        );
+        assert!(
+            encoded.contains("extra1=val1"),
+            "Should contain supporting data 1"
+        );
+        assert!(
+            encoded.contains("extra2=val2"),
+            "Should contain supporting data 2"
+        );
+        assert!(
+            encoded.contains("vm_id=00000000-0000-0000-0000-000000000000"),
+            "Should contain vm_id"
+        );
+        assert!(encoded.contains(
+            "documentation_url=https://aka.ms/linuxprovisioningerror"
+        ));
+        assert!(encoded.contains("pps_type=None"));
+        assert!(encoded.contains("timestamp="));
+        assert!(encoded.contains("|"));
+        assert!(
+            !encoded.contains(","),
+            "Should not contain comma separators"
+        );
+    }
+
+    // Verifies encoded_success_report() creates the correct
+    // success KVP string format, including optional custom key-value pairs.
+    #[test]
+    fn test_encoded_success_report_format() {
+        let vm_id = "00000000-0000-0000-0000-000000000abc";
+        let encoded =
+            encoded_success_report(vm_id, Some(("build", "test-123")));
+
+        assert!(encoded.contains("result=success"));
+        assert!(encoded.contains("agent=Azure-Init/"));
+        assert!(encoded.contains("vm_id=00000000-0000-0000-0000-000000000abc"));
+        assert!(encoded.contains("build=test-123"));
+        assert!(encoded.contains("pps_type=None"));
+        assert!(encoded.contains("timestamp="));
+        assert!(encoded.contains("|"));
+        assert!(!encoded.contains(","));
+    }
+}
