@@ -186,6 +186,8 @@ impl Default for AzureProxyAgent {
 pub const DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS: f64 = 1200.0;
 pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_WIRESERVER_READ_TIMEOUT_SECS: f64 = 60.0;
+pub const DEFAULT_WIRESERVER_HEALTH_ENDPOINT: &str =
+    "http://168.63.129.16/provisioning/health";
 /// Wire server configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Azure wire server.
@@ -212,8 +214,7 @@ impl Default for Wireserver {
             read_timeout_secs: DEFAULT_WIRESERVER_READ_TIMEOUT_SECS,
             total_retry_timeout_secs:
                 DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS,
-            health_endpoint: "http://168.63.129.16/provisioning/health"
-                .to_string(),
+            health_endpoint: DEFAULT_WIRESERVER_HEALTH_ENDPOINT.to_string(),
         }
     }
 }

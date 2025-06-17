@@ -34,7 +34,8 @@ async fn main() {
     println!();
 
     println!("Reporting VM Health to wireserver");
-    match report_ready(&config).await {
+    let vm_id = "00000000-0000-0000-0000-000000000000";
+    match report_ready(&config, vm_id, None).await {
         Ok(()) => println!("VM Health successfully reported"),
         Err(err) => {
             println!("Failed to report health: {:?}", err);
