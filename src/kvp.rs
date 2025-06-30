@@ -676,13 +676,15 @@ mod tests {
 
             println!("Slice {i}: Key: {decoded_key}");
             println!(
-                "Slice {i}: Value (length {decoded_value.len()}): {decoded_value}",
+                "Slice {i}: Value (length {}): {decoded_value}",
+                decoded_value.len()
             );
 
             assert_eq!(decoded_key, key, "Key mismatch in slice {i}");
             assert!(
                 decoded_value.len() <= HV_KVP_AZURE_MAX_VALUE_SIZE,
-                "Value length exceeds limit in slice {i}: {decoded_value.len()} > {HV_KVP_AZURE_MAX_VALUE_SIZE}"
+                "Value length exceeds limit in slice {i}: {} > {HV_KVP_AZURE_MAX_VALUE_SIZE}",
+                decoded_value.len()
             );
         }
 
