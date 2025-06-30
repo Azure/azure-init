@@ -611,14 +611,12 @@ mod tests {
 
             assert!(
                 key_section.iter().any(|&b| b != 0),
-                "Key section in slice {} should contain non-zero bytes",
-                i
+                "Key section in slice {i} should contain non-zero bytes"
             );
 
             assert!(
                 value_section.iter().any(|&b| b != 0),
-                "Value section in slice {} should contain non-zero bytes",
-                i
+                "Value section in slice {i} should contain non-zero bytes"
             );
         }
     }
@@ -636,8 +634,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "truncate_guest_pool_file returned an error: {:?}",
-            result
+            "truncate_guest_pool_file returned an error: {result:?}",
         );
 
         if let Ok(contents) = std::fs::read_to_string(&temp_path) {
@@ -667,8 +664,7 @@ mod tests {
             assert_eq!(
                 slice.len(),
                 HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE,
-                "Slice {} length is incorrect",
-                i
+                "Slice {i} length is incorrect",
             );
 
             let (decoded_key, decoded_value) =
@@ -733,8 +729,7 @@ mod tests {
 
         assert!(
             contents.is_empty(),
-            "KVP file should be empty because kvp_diagnostics is disabled, but found data: {:?}",
-            contents
+            "KVP file should be empty because kvp_diagnostics is disabled, but found data: {contents:?}",
         );
 
         println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
