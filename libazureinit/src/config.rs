@@ -380,7 +380,7 @@ impl Config {
                 tracing::error!("Failed to extract configuration: {:?}", e);
                 Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("Configuration error: {:?}", e),
+                    format!("Configuration error: {e:?}"),
                 ))
             })
     }
