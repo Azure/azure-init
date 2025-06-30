@@ -350,9 +350,7 @@ fn generate_event_key(
     event_name: &str,
     span_id: &str,
 ) -> String {
-    format!(
-        "{EVENT_PREFIX}|{vm_id}|{event_level}|{event_name}|{span_id}"
-    )
+    format!("{EVENT_PREFIX}|{vm_id}|{event_level}|{event_name}|{span_id}")
 }
 
 /// Encodes a key-value pair (KVP) into one or more byte slices. If the value
