@@ -172,10 +172,10 @@ impl EmitKVPLayer {
     ) -> io::Result<()> {
         while let Some(encoded_kvp) = events.recv().await {
             if let Err(e) = file.write_all(&encoded_kvp) {
-                eprintln!("Failed to write to log file: {}", e);
+                eprintln!("Failed to write to log file: {e}");
             }
             if let Err(e) = file.flush() {
-                eprintln!("Failed to flush the log file: {}", e);
+                eprintln!("Failed to flush the log file: {e}");
             }
         }
         Ok(())
@@ -263,7 +263,7 @@ where
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
             let event_value =
-                format!("Time: {} | Event: {}", event_time_dt, event_message);
+                format!("Time: {event_time_dt} | Event: {event_message}");
 
             self.handle_kvp_operation(
                 event.metadata().level().as_str(),
@@ -324,8 +324,7 @@ where
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
                 let event_value = format!(
-                    "Start: {} | End: {} | Status: {}",
-                    start_time_dt, end_time_dt, span_status
+                    "Start: {start_time_dt} | End: {end_time_dt} | Status: {span_status}"
                 );
 
                 self.handle_kvp_operation(
@@ -352,8 +351,7 @@ fn generate_event_key(
     span_id: &str,
 ) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
-        EVENT_PREFIX, vm_id, event_level, event_name, span_id
+        "{EVENT_PREFIX}|{vm_id}|{event_level}|{event_name}|{span_id}"
     )
 }
 
@@ -470,7 +468,7 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
             }
         }
         Err(ref e) if e.kind() == ErrorKind::NotFound => {
-            println!("File not found: {:?}", kvp_file);
+            println!("File not found: {kvp_file:?}");
             return Ok(());
         }
         Err(e) => {
