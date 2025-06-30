@@ -572,7 +572,7 @@ mod tests {
 
         let contents =
             std::fs::read(temp_path).expect("Failed to read temp file");
-        println!("Contents of the file (in bytes):\n{:?}", contents);
+        println!("Contents of the file (in bytes):\n{contents:?}");
 
         let slice_size =
             HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE;
@@ -593,7 +593,7 @@ mod tests {
             let end = start + slice_size;
             let slice = &contents[start..end];
 
-            println!("Processing slice {}: start={}, end={}", i, start, end);
+            println!("Processing slice {i}: start={start}, end={end}");
             println!("Slice length: {}", slice.len());
 
             let key_section = &slice[..HV_KVP_EXCHANGE_MAX_KEY_SIZE];
@@ -601,11 +601,11 @@ mod tests {
 
             match decode_kvp_item(slice) {
                 Ok((key, value)) => {
-                    println!("Decoded KVP - Key: {}", key);
-                    println!("Decoded KVP - Value: {}\n", value);
+                    println!("Decoded KVP - Key: {key}");
+                    println!("Decoded KVP - Value: {value}\n");
                 }
                 Err(e) => {
-                    panic!("Failed to decode KVP: {}", e);
+                    panic!("Failed to decode KVP: {e}");
                 }
             }
 
@@ -674,21 +674,15 @@ mod tests {
             let (decoded_key, decoded_value) =
                 decode_kvp_item(slice).expect("Failed to decode slice");
 
-            println!("Slice {}: Key: {}", i, decoded_key);
+            println!("Slice {i}: Key: {decoded_key}");
             println!(
-                "Slice {}: Value (length {}): {}",
-                i,
-                decoded_value.len(),
-                decoded_value
+                "Slice {i}: Value (length {decoded_value.len()}): {decoded_value}",
             );
 
-            assert_eq!(decoded_key, key, "Key mismatch in slice {}", i);
+            assert_eq!(decoded_key, key, "Key mismatch in slice {i}");
             assert!(
                 decoded_value.len() <= HV_KVP_AZURE_MAX_VALUE_SIZE,
-                "Value length exceeds limit in slice {}: {} > {}",
-                i,
-                decoded_value.len(),
-                HV_KVP_AZURE_MAX_VALUE_SIZE
+                "Value length exceeds limit in slice {i}: {decoded_value.len()} > {HV_KVP_AZURE_MAX_VALUE_SIZE}"
             );
         }
 
