@@ -20,18 +20,10 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Helper function to create a test log and provision file from multiple tests
-fn create_test_log_and_provision_files(
-    temp_dir: &tempfile::TempDir,
-) -> Result<
-    (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::path::PathBuf,
-    ),
-    Box<dyn std::error::Error>,
-> {
+#[test]
+fn clean_removes_only_provision_files_without_log_arg(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
     let data_dir = temp_dir.path().join("data");
     let log_file = temp_dir.path().join("azure-init.log");
     fs::create_dir_all(&data_dir)?;
@@ -56,31 +48,63 @@ fn create_test_log_and_provision_files(
     let config_path = temp_dir.path().join("azure-init-config.toml");
     fs::write(&config_path, config_contents)?;
 
-    Ok((data_dir, log_file, provisioned_file, config_path))
-}
+    assert!(
+        provisioned_file.exists(),
+        ".provisioned file should exist before cleaning"
+    );
+    assert!(log_file.exists(), "log file should exist before cleaning");
 
-#[test]
-fn provision_and_log_files_are_created(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempdir()?;
-    let (_data_dir, log_file, provisioned_file, _config_path) =
-        create_test_log_and_provision_files(&temp_dir)?;
+    let mut cmd = Command::cargo_bin("azure-init")?;
+    cmd.args(["--config", config_path.to_str().unwrap(), "clean"]);
 
-    assert!(provisioned_file.exists(), ".provisioned file should exist");
-    assert!(log_file.exists(), "log file should exist");
+    cmd.assert().success();
+
+    assert!(
+        !provisioned_file.exists(),
+        "Expected .provisioned file to be deleted"
+    );
+    assert!(log_file.exists(), "log file should exist after cleaning");
 
     Ok(())
 }
 
 #[test]
-fn clean_removes_provision_and_log_files(
+fn clean_removes_provision_and_log_files_with_log_arg(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
-    let (_data_dir, log_file, provisioned_file, config_path) =
-        create_test_log_and_provision_files(&temp_dir)?;
+    let data_dir = temp_dir.path().join("data");
+    let log_file = temp_dir.path().join("azure-init.log");
+    fs::create_dir_all(&data_dir)?;
+
+    let provisioned_file = data_dir.join("vm-id.provisioned");
+    File::create(&provisioned_file)?;
+
+    let mut log = File::create(&log_file)?;
+    writeln!(log, "fake log line")?;
+
+    let config_contents = format!(
+        r#"
+        [azure_init_data_dir]
+        path = "{}"
+
+        [azure_init_log_path]
+        path = "{}"
+        "#,
+        data_dir.display(),
+        log_file.display()
+    );
+    let config_path = temp_dir.path().join("azure-init-config.toml");
+    fs::write(&config_path, config_contents)?;
+
+    assert!(
+        provisioned_file.exists(),
+        ".provisioned file should exist before cleaning"
+    );
+    assert!(log_file.exists(), "log file should exist before cleaning");
 
     let mut cmd = Command::cargo_bin("azure-init")?;
     cmd.args(["--config", config_path.to_str().unwrap(), "clean", "--logs"]);
+
     cmd.assert().success();
 
     assert!(
