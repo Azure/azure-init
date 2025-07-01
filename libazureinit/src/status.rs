@@ -197,7 +197,7 @@ fn private_get_vm_id(
 /// - `false` if provisioning has not been completed (i.e., no provisioning file exists).
 pub fn is_provisioning_complete(config: Option<&Config>, vm_id: &str) -> bool {
     let file_path =
-        get_provisioning_dir(config).join(format!("{}.provisioned", vm_id));
+        get_provisioning_dir(config).join(format!("{vm_id}.provisioned"));
 
     if std::path::Path::new(&file_path).exists() {
         tracing::info!("Provisioning already complete. Skipping...");
@@ -225,7 +225,7 @@ pub fn mark_provisioning_complete(
 ) -> Result<(), Error> {
     check_provision_dir(config)?;
     let file_path =
-        get_provisioning_dir(config).join(format!("{}.provisioned", vm_id));
+        get_provisioning_dir(config).join(format!("{vm_id}.provisioned"));
 
     match OpenOptions::new()
         .create(true)
