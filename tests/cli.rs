@@ -36,7 +36,7 @@ fn setup_clean_test() -> Result<
     fs::create_dir_all(&data_dir)?;
 
     let provisioned_file = data_dir.join("vm-id.provisioned");
-    File::create(&provisioned_file)?;
+    File::create(provisioned_file)?;
 
     let mut log = File::create(&log_file)?;
     writeln!(log, "fake log line")?;
