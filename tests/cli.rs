@@ -23,7 +23,15 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
 // Helper function to create a test log and provision file from multiple tests
 fn create_test_log_and_provision_files(
     temp_dir: &tempfile::TempDir,
-) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let data_dir = temp_dir.path().join("data");
     let log_file = temp_dir.path().join("azure-init.log");
     fs::create_dir_all(&data_dir)?;
@@ -52,23 +60,24 @@ fn create_test_log_and_provision_files(
 }
 
 #[test]
-fn provision_and_log_files_are_created() -> Result<(), Box<dyn std::error::Error>> {
+fn provision_and_log_files_are_created(
+) -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
-    let (_data_dir, log_file, provisioned_file, _config_path) = create_test_log_and_provision_files(&temp_dir)?;
+    let (_data_dir, log_file, provisioned_file, _config_path) =
+        create_test_log_and_provision_files(&temp_dir)?;
 
-    assert!(
-        provisioned_file.exists(),
-        ".provisioned file should exist"
-    );
+    assert!(provisioned_file.exists(), ".provisioned file should exist");
     assert!(log_file.exists(), "log file should exist");
 
     Ok(())
 }
 
 #[test]
-fn clean_removes_provision_and_log_files() -> Result<(), Box<dyn std::error::Error>> {
+fn clean_removes_provision_and_log_files(
+) -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
-    let (_data_dir, log_file, provisioned_file, config_path) = create_test_log_and_provision_files(&temp_dir)?;
+    let (_data_dir, log_file, provisioned_file, config_path) =
+        create_test_log_and_provision_files(&temp_dir)?;
 
     let mut cmd = Command::cargo_bin("azure-init")?;
     cmd.args(["--config", config_path.to_str().unwrap(), "clean", "--logs"]);
