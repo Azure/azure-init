@@ -25,6 +25,7 @@ pub struct Provision {
     hostname: String,
     user: User,
     config: Config,
+    disable_password_authentication: bool,
 }
 
 impl Provision {
@@ -32,11 +33,13 @@ impl Provision {
         hostname: impl Into<String>,
         user: User,
         config: Config,
+        disable_password_authentication: bool,
     ) -> Self {
         Self {
             hostname: hostname.into(),
             user,
             config,
+            disable_password_authentication,
         }
     }
 
@@ -77,9 +80,9 @@ impl Provision {
             .backends
             .iter()
             .find_map(|backend| match backend {
-                PasswordProvisioner::Passwd => {
-                    PasswordProvisioner::Passwd.set(&self.user).ok()
-                }
+                PasswordProvisioner::Passwd => PasswordProvisioner::Passwd
+                    .set(&self.user, self.disable_password_authentication)
+                    .ok(),
                 #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
             })
@@ -131,11 +134,11 @@ mod tests {
             },
             ..Config::default()
         };
-
         let _p = Provision::new(
             "my-hostname".to_string(),
             User::new("azureuser", vec![]),
             mock_config,
+            true,
         )
         .provision()
         .unwrap();
