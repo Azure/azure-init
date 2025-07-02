@@ -104,6 +104,7 @@ async fn main() {
         "my-hostname".to_string(),
         User::new(username, keys),
         config,
+        false,
     )
     .provision()
     .expect("Failed to provision host");

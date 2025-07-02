@@ -14,9 +14,13 @@ use super::ssh::update_sshd_config;
 use crate::provision::PasswordProvisioner;
 
 impl PasswordProvisioner {
-    pub(crate) fn set(&self, user: &User) -> Result<(), Error> {
+    pub(crate) fn set(
+        &self,
+        user: &User,
+        disable_password_authentication: bool,
+    ) -> Result<(), Error> {
         match self {
-            Self::Passwd => passwd(user),
+            Self::Passwd => passwd(user, disable_password_authentication),
             #[cfg(test)]
             Self::FakePasswd => Ok(()),
         }
@@ -35,10 +39,15 @@ fn get_sshd_config_path() -> &'static str {
 }
 
 #[instrument(skip_all)]
-fn passwd(user: &User) -> Result<(), Error> {
+fn passwd(
+    user: &User,
+    disable_password_authentication: bool,
+) -> Result<(), Error> {
     // Update the sshd configuration to allow password authentication.
     let sshd_config_path = get_sshd_config_path();
-    if let Err(error) = update_sshd_config(sshd_config_path) {
+    if let Err(error) =
+        update_sshd_config(sshd_config_path, disable_password_authentication)
+    {
         tracing::error!(
             ?error,
             sshd_config_path,
