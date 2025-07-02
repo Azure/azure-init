@@ -87,7 +87,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
     }
 
     environment.ok_or_else(|| {
-        tracing::error!("Unable to get list of block devices");
+        tracing::warn!("Failed to find valid OVF provisioning data on any block device. Falling back to IMDS.");
         anyhow::anyhow!("Unable to get list of block devices")
     })
 }
