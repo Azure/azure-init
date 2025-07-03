@@ -80,13 +80,36 @@ impl Provision {
             .backends
             .iter()
             .find_map(|backend| match backend {
-                PasswordProvisioner::Passwd => PasswordProvisioner::Passwd
-                    .set(&self.user, self.disable_password_authentication)
-                    .ok(),
+                PasswordProvisioner::Passwd => {
+                    PasswordProvisioner::Passwd.set(&self.user).ok()
+                }
                 #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
             })
             .ok_or(Error::NoPasswordProvisioner)?;
+
+        // update sshd_config based on IMDS disablePasswordAuthentication value.
+        let ssh_config_update_required = self
+            .config
+            .password_provisioners
+            .backends
+            .first()
+            .is_some_and(|b| matches!(b, PasswordProvisioner::Passwd));
+
+        if ssh_config_update_required {
+            let sshd_config_path = password::get_sshd_config_path();
+            if let Err(error) = ssh::update_sshd_config(
+                sshd_config_path,
+                self.disable_password_authentication,
+            ) {
+                tracing::error!(
+                    ?error,
+                    sshd_config_path,
+                    "Failed to update sshd configuration for password authentication"
+                );
+                return Err(Error::UpdateSshdConfig);
+            }
+        }
 
         if !self.user.ssh_keys.is_empty() {
             let authorized_keys_path = self.config.ssh.authorized_keys_path;
