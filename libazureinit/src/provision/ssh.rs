@@ -220,13 +220,23 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 /// This function will return an error if it fails to read, write, or create the `sshd_config` file.
 pub(crate) fn update_sshd_config(
     sshd_config_path: &str,
+    disable_password_authentication: bool,
 ) -> Result<(), io::Error> {
+    let password_auth_setting = if disable_password_authentication {
+        "no"
+    } else {
+        "yes"
+    };
+
     // Check if the path exists otherwise create it
     let sshd_config_path = PathBuf::from(sshd_config_path);
     if !sshd_config_path.exists() {
         let mut file = std::fs::File::create(&sshd_config_path)?;
         file.set_permissions(Permissions::from_mode(0o600))?;
-        file.write_all(b"PasswordAuthentication yes\n")?;
+        file.write_all(
+            format!("PasswordAuthentication {password_auth_setting}\n")
+                .as_bytes(),
+        )?;
         tracing::info!(
             ?sshd_config_path,
             "Created new sshd drop-in configuration file"
@@ -244,7 +254,9 @@ pub(crate) fn update_sshd_config(
     if re.is_match(&file_content) {
         let modified_content = re.replace_all(
             &file_content,
-            "PasswordAuthentication yes # modified by azure-init\n",
+            &format!(
+                "PasswordAuthentication {password_auth_setting} # modified by azure-init\n"
+            ),
         );
 
         let mut sshd_config = OpenOptions::new()
@@ -260,7 +272,12 @@ pub(crate) fn update_sshd_config(
     } else {
         let mut file =
             OpenOptions::new().append(true).open(&sshd_config_path)?;
-        file.write_all(b"PasswordAuthentication yes # added by azure-init\n")?;
+        file.write_all(
+            format!(
+                "PasswordAuthentication {password_auth_setting} # added by azure-init\n"
+            )
+            .as_bytes(),
+        )?;
 
         tracing::info!(
             ?sshd_config_path,
@@ -269,6 +286,17 @@ pub(crate) fn update_sshd_config(
     }
 
     Ok(())
+}
+
+// Determines the appropriate SSH configuration file path based on the filesystem.
+// If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
+// Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
+pub(crate) fn get_sshd_config_path() -> &'static str {
+    if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
+        "/etc/ssh/sshd_config.d/50-azure-init.conf"
+    } else {
+        "/etc/ssh/sshd_config"
+    }
 }
 
 #[cfg(test)]
@@ -523,8 +551,11 @@ mod tests {
     fn test_update_sshd_config_create_new() -> io::Result<()> {
         let temp_dir = TempDir::new().unwrap();
         let sshd_config_path = temp_dir.path().join("sshd_config");
-        let ret: Result<(), io::Error> =
-            update_sshd_config(sshd_config_path.to_str().unwrap());
+        let disable_password_auth = false;
+        let ret: Result<(), io::Error> = update_sshd_config(
+            sshd_config_path.to_str().unwrap(),
+            disable_password_auth,
+        );
         assert!(ret.is_ok());
 
         let mut updated_content = String::new();
@@ -543,8 +574,11 @@ mod tests {
             writeln!(file, "PasswordAuthentication no")?;
         }
 
-        let ret: Result<(), io::Error> =
-            update_sshd_config(sshd_config_path.to_str().unwrap());
+        let disable_password_auth = false;
+        let ret: Result<(), io::Error> = update_sshd_config(
+            sshd_config_path.to_str().unwrap(),
+            disable_password_auth,
+        );
         assert!(ret.is_ok());
         let mut updated_content = String::new();
         {
@@ -565,8 +599,12 @@ mod tests {
             let mut file = File::create(&sshd_config_path)?;
             writeln!(file, "PasswordAuthentication yes")?;
         }
-        let ret: Result<(), io::Error> =
-            update_sshd_config(sshd_config_path.to_str().unwrap());
+
+        let disable_password_auth = false;
+        let ret: Result<(), io::Error> = update_sshd_config(
+            sshd_config_path.to_str().unwrap(),
+            disable_password_auth,
+        );
         assert!(ret.is_ok());
         let mut updated_content = String::new();
         {
@@ -575,6 +613,26 @@ mod tests {
         }
         assert!(updated_content.contains("PasswordAuthentication yes"));
         assert!(!updated_content.contains("PasswordAuthentication no"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_sshd_config_disables_password_auth() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let sshd_config_path = temp_dir.path().join("sshd_config");
+
+        let disable_password_auth = true;
+        let result = update_sshd_config(
+            sshd_config_path.to_str().unwrap(),
+            disable_password_auth,
+        );
+        assert!(result.is_ok());
+
+        let mut contents = String::new();
+        File::open(&sshd_config_path)?.read_to_string(&mut contents)?;
+        assert!(contents.contains("PasswordAuthentication no"));
+        assert!(!contents.contains("PasswordAuthentication yes"));
 
         Ok(())
     }
