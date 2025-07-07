@@ -3,8 +3,6 @@
 
 use std::process::Command;
 
-use std::path::PathBuf;
-
 use tracing::instrument;
 
 use crate::{error::Error, User};
@@ -18,17 +16,6 @@ impl PasswordProvisioner {
             #[cfg(test)]
             Self::FakePasswd => Ok(()),
         }
-    }
-}
-
-// Determines the appropriate SSH configuration file path based on the filesystem.
-// If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
-// Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
-pub(crate) fn get_sshd_config_path() -> &'static str {
-    if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
-        "/etc/ssh/sshd_config.d/50-azure-init.conf"
-    } else {
-        "/etc/ssh/sshd_config"
     }
 }
 

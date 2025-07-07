@@ -97,7 +97,7 @@ impl Provision {
             .is_some_and(|b| matches!(b, PasswordProvisioner::Passwd));
 
         if ssh_config_update_required {
-            let sshd_config_path = password::get_sshd_config_path();
+            let sshd_config_path = ssh::get_sshd_config_path();
             if let Err(error) = ssh::update_sshd_config(
                 sshd_config_path,
                 self.disable_password_authentication,
