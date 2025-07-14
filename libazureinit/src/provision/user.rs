@@ -181,7 +181,7 @@ fn add_user_for_passwordless_sudo(
         .mode(0o600)
         .open(path)?;
 
-    writeln!(sudoers_file, "{} ALL=(ALL) NOPASSWD: ALL", username)?;
+    writeln!(sudoers_file, "{username} ALL=(ALL) NOPASSWD: ALL")?;
     sudoers_file.flush()?;
     Ok(())
 }

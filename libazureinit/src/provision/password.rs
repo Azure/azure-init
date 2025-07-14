@@ -50,7 +50,7 @@ fn passwd(user: &User) -> Result<(), Error> {
 
     if user.password.is_none() {
         let mut command = Command::new(path_passwd);
-        command.arg("-d").arg(&user.name);
+        command.arg("-l").arg(&user.name);
         crate::run(command)?;
     } else {
         // creating user with a non-empty password is not allowed.

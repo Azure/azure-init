@@ -56,7 +56,7 @@ pub(crate) fn run(
             program
         );
         return Err(error::Error::SubprocessFailed {
-            command: format!("{:?}", command),
+            command: format!("{command:?}"),
             status,
         });
     }
