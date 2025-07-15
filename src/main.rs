@@ -19,7 +19,7 @@ use libazureinit::{
     Provision,
 };
 use libazureinit::{
-    get_vm_id, health::ProvisioningErrorKind, is_provisioning_complete,
+    get_vm_id, health::ReportableError, is_provisioning_complete,
     mark_provisioning_complete,
 };
 use std::process::ExitCode;
@@ -234,7 +234,7 @@ async fn main() -> ExitCode {
                 let cfg = Config::default();
 
                 let report_result = report_failure(
-                    ProvisioningErrorKind::UnhandledException.as_reason(),
+                    &ReportableError::unhandled_exception().to_string(),
                     &vm_id,
                     None,
                     &cfg,
@@ -293,7 +293,7 @@ async fn main() -> ExitCode {
 
             if let Err(report_error) = report_result {
                 tracing::warn!(
-                    "Failed to send provisioning failure report: {:?}",
+                    "Failed to send provisioning success report: {:?}",
                     report_error
                 );
             }
@@ -310,7 +310,7 @@ async fn main() -> ExitCode {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
 
-            let failure_description = format!("Provisioning error: {:?}", e);
+            let failure_description = format!("Provisioning error: {e:?}");
             if let Err(report_err) = report_failure(
                 &failure_description,
                 &vm_id,

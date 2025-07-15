@@ -18,58 +18,6 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::http;
 
-/// Provides  error categories for provisioning failures that match cloud-init.
-///
-/// Used to supply a standardized human-readable reason for provisioning errors.
-#[derive(Debug, Clone)]
-pub enum ProvisioningErrorKind {
-    DhcpInterfaceNotFound,
-    DhcpLeaseNotObtained,
-    PrimaryDhcpInterfaceNotFound,
-    ImdsConnectionTimeout,
-    ImdsReadTimeout,
-    OvfEnvMetadataParseError,
-    HostShutdownWaitError,
-    AzureProxyAgentNotFound,
-    AzureProxyAgentStatusFailure,
-    UnhandledException,
-}
-
-impl ProvisioningErrorKind {
-    pub fn as_reason(&self) -> &'static str {
-        match self {
-            ProvisioningErrorKind::DhcpInterfaceNotFound => {
-                "failure to find DHCP interface"
-            }
-            ProvisioningErrorKind::DhcpLeaseNotObtained => {
-                "failure to obtain DHCP lease"
-            }
-            ProvisioningErrorKind::PrimaryDhcpInterfaceNotFound => {
-                "failure to find primary DHCP interface"
-            }
-            ProvisioningErrorKind::ImdsConnectionTimeout => {
-                "connection timeout querying IMDS"
-            }
-            ProvisioningErrorKind::ImdsReadTimeout => {
-                "read timeout querying IMDS"
-            }
-            ProvisioningErrorKind::OvfEnvMetadataParseError => {
-                "unexpected metadata parsing ovf-env.xml"
-            }
-            ProvisioningErrorKind::HostShutdownWaitError => {
-                "error waiting for host shutdown"
-            }
-            ProvisioningErrorKind::AzureProxyAgentNotFound => {
-                "azure-proxy-agent not found"
-            }
-            ProvisioningErrorKind::AzureProxyAgentStatusFailure => {
-                "azure-proxy-agent status failure"
-            }
-            ProvisioningErrorKind::UnhandledException => "unhandled exception",
-        }
-    }
-}
-
 #[derive(Debug)]
 enum ProvisioningState {
     Ready,
@@ -90,7 +38,7 @@ impl std::fmt::Display for ProvisioningState {
             ProvisioningState::NotReady => "NotReady",
             ProvisioningState::InProgress => "InProgress",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -102,7 +50,7 @@ impl std::fmt::Display for ProvisioningSubStatus {
                 "ProvisioningInProgress"
             }
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -110,26 +58,23 @@ impl std::fmt::Display for ProvisioningSubStatus {
 pub struct ReportableError {
     result: &'static str,
     reason: String,
-    agent: String,
     documentation_url: &'static str,
-    vm_id: String,
-    timestamp: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pps_type: Option<String>,
     #[serde(flatten)]
     supporting_data: HashMap<String, String>,
 }
 
+impl std::fmt::Display for ReportableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
 impl ReportableError {
-    pub fn new(reason: impl Into<String>, vm_id: impl Into<String>) -> Self {
+    pub fn new(reason: impl Into<String>) -> Self {
         ReportableError {
             result: "error",
             reason: reason.into(),
-            agent: format!("Azure-Init/{}", env!("CARGO_PKG_VERSION")),
             documentation_url: "https://aka.ms/linuxprovisioningerror",
-            vm_id: vm_id.into(),
-            timestamp: Utc::now(),
-            pps_type: Some("None".to_string()),
             supporting_data: HashMap::new(),
         }
     }
@@ -142,20 +87,50 @@ impl ReportableError {
     }
 
     /// Serializes the reportable error as a pipe-delimited KVP entry.
-    pub fn as_encoded_report(&self) -> String {
+    pub fn as_encoded_report(
+        &self,
+        vm_id: &str,
+        agent: &str,
+        timestamp: &DateTime<Utc>,
+        _pps_type: &str,
+    ) -> String {
         let mut data = vec![
             "result=error".to_string(),
             format!("reason={}", self.reason),
-            format!("agent={}", self.agent),
+            format!("agent={}", agent),
         ];
         for (k, v) in &self.supporting_data {
-            data.push(format!("{}={}", k, v));
+            data.push(format!("{k}={v}"));
         }
         data.push("pps_type=None".to_string());
-        data.push(format!("vm_id={}", self.vm_id));
-        data.push(format!("timestamp={}", self.timestamp.to_rfc3339()));
+        data.push(format!("vm_id={vm_id}"));
+        data.push(format!("timestamp={}", timestamp.to_rfc3339()));
         data.push(format!("documentation_url={}", self.documentation_url));
         encode_report(&data)
+    }
+
+    /// Constructor for “failure to find DHCP interface”.
+    pub fn dhcp_interface_not_found(duration_secs: f64) -> Self {
+        let mut err = ReportableError::new("failure to find DHCP interface");
+        err = err.with_supporting_data("duration", &duration_secs.to_string());
+        err
+    }
+
+    /// Constructor for “failure to obtain DHCP lease”.
+    pub fn dhcp_lease_not_obtained(
+        duration_secs: f64,
+        interface: Option<String>,
+    ) -> Self {
+        let mut err = ReportableError::new("failure to obtain DHCP lease");
+        err = err.with_supporting_data("duration", &duration_secs.to_string());
+        err = err
+            .with_supporting_data("interface", &interface.unwrap_or_default());
+        err
+    }
+
+    /// Constructor for “unhandled exception”.
+    pub fn unhandled_exception() -> Self {
+        ReportableError::new("unhandled exception")
     }
 }
 
@@ -175,7 +150,7 @@ pub fn encoded_success_report(
         format!("timestamp={}", timestamp),
     ];
     if let Some((k, v)) = optional_key_value {
-        data.push(format!("{}={}", k, v));
+        data.push(format!("{k}={v}"));
     }
     encode_report(&data)
 }
@@ -215,13 +190,15 @@ pub async fn report_failure(
     supporting_data: Option<HashMap<&str, &str>>,
     config: &Config,
 ) -> Result<(), Error> {
-    let mut err = ReportableError::new(reason, vm_id);
+    let mut err = ReportableError::new(reason);
     if let Some(map) = supporting_data {
         for (k, v) in map {
             err = err.with_supporting_data(k, v);
         }
     }
-    let report_str = err.as_encoded_report();
+    let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+    let now = Utc::now();
+    let report_str = err.as_encoded_report(vm_id, &agent, &now, "None");
 
     _report(
         ProvisioningState::NotReady,
@@ -237,8 +214,7 @@ pub async fn report_in_progress(
     config: &Config,
     vm_id: &str,
 ) -> Result<(), Error> {
-    let desc =
-        format!("Provisioning is still in progress for vm_id={}.", vm_id);
+    let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
     _report(
         ProvisioningState::InProgress,
         Some(ProvisioningSubStatus::ProvisioningInProgress),
@@ -277,11 +253,11 @@ async fn _report(
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_str(&format!("azure-init v{}", version)).unwrap(),
+        HeaderValue::from_str(&format!("azure-init v{version}")).unwrap(),
     );
     headers.insert(
         "x-ms-guest-agent-name",
-        HeaderValue::from_str(&format!("azure-init/{}", version)).unwrap(),
+        HeaderValue::from_str(&format!("azure-init v{version}")).unwrap(),
     );
     headers
         .insert("content-type", HeaderValue::from_static("application/json"));
@@ -503,9 +479,8 @@ mod tests {
     // and all expected fields are present with the correct values.
     #[test]
     fn test_reportable_error_formatting() {
-        let vm_id = "00000000-0000-0000-0000-000000000000";
         let reason = "Test failure";
-        let err = ReportableError::new(reason, vm_id)
+        let err = ReportableError::new(reason)
             .with_supporting_data("debug_info", "42");
 
         let json = serde_json::to_string_pretty(&err)
@@ -515,21 +490,11 @@ mod tests {
 
         assert_eq!(parsed["result"], "error");
         assert_eq!(parsed["reason"], reason);
-        assert!(parsed["agent"].as_str().unwrap().starts_with("Azure-Init/"));
         assert_eq!(
             parsed["documentation_url"],
             "https://aka.ms/linuxprovisioningerror"
         );
-        assert_eq!(parsed["vm_id"], vm_id);
-        assert_eq!(parsed["pps_type"], "None");
         assert_eq!(parsed["debug_info"], "42");
-
-        let timestamp: DateTime<Utc> = parsed["timestamp"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .expect("timestamp should parse");
-        assert!(timestamp <= Utc::now());
     }
 
     // Verifies that as_encoded_report produces a pipe-separated,
@@ -538,10 +503,16 @@ mod tests {
     fn test_reportable_error_as_encoded_report() {
         let vm_id = "00000000-0000-0000-0000-000000000000";
         let reason = "testing";
-        let mut err = ReportableError::new(reason, vm_id);
+        let mut err = ReportableError::new(reason);
         err = err.with_supporting_data("extra1", "val1");
         err = err.with_supporting_data("extra2", "val2");
-        let encoded = err.as_encoded_report();
+
+        let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+        let timestamp = Utc::now();
+        let pps_type = "None";
+
+        let encoded =
+            err.as_encoded_report(vm_id, &agent, &timestamp, pps_type);
 
         assert!(
             encoded.starts_with("result=error|"),
