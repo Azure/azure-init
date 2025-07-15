@@ -224,13 +224,11 @@ impl EmitKVPLayer {
                 match field.name() {
                     "reason" => {
                         reason = Some(
-                            format!("{:?}", value)
-                                .trim_matches('"')
-                                .to_string(),
+                            format!("{value:?}").trim_matches('"').to_string(),
                         );
                     }
                     "supporting_data" => {
-                        let raw = format!("{:?}", value);
+                        let raw = format!("{value:?}");
                         let mut map = HashMap::new();
                         let entries = raw
                             .trim_matches(|c| c == '{' || c == '}')
@@ -252,9 +250,8 @@ impl EmitKVPLayer {
                         }
                     }
                     "optional_key_value" => {
-                        let raw = format!("{:?}", value)
-                            .trim_matches('"')
-                            .to_string();
+                        let raw =
+                            format!("{value:?}").trim_matches('"').to_string();
                         if let Some((k, v)) = raw.split_once('=') {
                             optional_key_value = Some((
                                 k.trim().to_string(),
@@ -276,13 +273,20 @@ impl EmitKVPLayer {
             }
             "failure" => {
                 let reason_str = reason.as_deref().unwrap_or("Unknown failure");
-                let mut report = ReportableError::new(reason_str, &self.vm_id);
+                let mut report = ReportableError::new(reason_str);
                 if let Some(kvs) = supporting_data.as_ref() {
                     for (k, v) in kvs {
                         report = report.with_supporting_data(k, v);
                     }
                 }
-                Some(report.as_encoded_report())
+                let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+                let now = Utc::now();
+                Some(report.as_encoded_report(
+                    &self.vm_id,
+                    &agent,
+                    &now,
+                    "None",
+                ))
             }
             "in progress" => {
                 let desc = format!(
@@ -369,9 +373,7 @@ where
                       value: &dyn std::fmt::Debug| {
                     if field.name() == "health_report" {
                         health_report = Some(
-                            format!("{:?}", value)
-                                .trim_matches('"')
-                                .to_string(),
+                            format!("{value:?}").trim_matches('"').to_string(),
                         );
                     }
                 },

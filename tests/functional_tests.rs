@@ -38,7 +38,7 @@ async fn main() {
     match report_ready(&config, vm_id, None).await {
         Ok(()) => println!("VM Health successfully reported"),
         Err(err) => {
-            println!("Failed to report health: {:?}", err);
+            println!("Failed to report health: {err:?}");
             return;
         }
     }
