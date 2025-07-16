@@ -11,6 +11,7 @@
 //!
 
 use std::{
+    collections::HashMap,
     fmt::{self as std_fmt, Write as std_write},
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
@@ -34,6 +35,7 @@ use sysinfo::System;
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
 
 use chrono::{DateTime, Utc};
+use libazureinit::health::{encoded_success_report, ReportableError};
 use std::fmt;
 use uuid::Uuid;
 
@@ -205,6 +207,106 @@ impl EmitKVPLayer {
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
     }
+
+    /// Emit a health KVP report for success, failure, or in-progress.
+    pub fn handle_health_report(
+        &self,
+        event: &tracing::Event<'_>,
+        status: &str,
+    ) {
+        let mut reason: Option<String> = None;
+        let mut supporting_data: Option<HashMap<String, String>> = None;
+        let mut optional_key_value: Option<(String, String)> = None;
+
+        event.record(
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
+                match field.name() {
+                    "reason" => {
+                        reason = Some(
+                            format!("{value:?}").trim_matches('"').to_string(),
+                        );
+                    }
+                    "supporting_data" => {
+                        let raw = format!("{value:?}");
+                        let mut map = HashMap::new();
+                        let entries = raw
+                            .trim_matches(|c| c == '{' || c == '}')
+                            .split(',');
+                        for entry in entries {
+                            let parts: Vec<&str> = entry
+                                .split(':')
+                                .map(|s| s.trim().trim_matches('"'))
+                                .collect();
+                            if parts.len() == 2 {
+                                map.insert(
+                                    parts[0].to_string(),
+                                    parts[1].to_string(),
+                                );
+                            }
+                        }
+                        if !map.is_empty() {
+                            supporting_data = Some(map);
+                        }
+                    }
+                    "optional_key_value" => {
+                        let raw =
+                            format!("{value:?}").trim_matches('"').to_string();
+                        if let Some((k, v)) = raw.split_once('=') {
+                            optional_key_value = Some((
+                                k.trim().to_string(),
+                                v.trim().to_string(),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        );
+
+        let provisioning_status: Option<String> = match status {
+            "success" => {
+                let okv = optional_key_value
+                    .as_ref()
+                    .map(|(k, v)| (k.as_str(), v.as_str()));
+                Some(encoded_success_report(&self.vm_id, okv))
+            }
+            "failure" => {
+                let reason_str = reason.as_deref().unwrap_or("Unknown failure");
+                let mut report = ReportableError::new(reason_str);
+                if let Some(kvs) = supporting_data.as_ref() {
+                    for (k, v) in kvs {
+                        report = report.with_supporting_data(k, v);
+                    }
+                }
+                let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
+                let now = Utc::now();
+                Some(report.as_encoded_report(
+                    &self.vm_id,
+                    &agent,
+                    &now,
+                    "None",
+                ))
+            }
+            "in progress" => {
+                let desc = format!(
+                    "Provisioning is still in progress for vm_id={}.",
+                    self.vm_id
+                );
+                Some(desc)
+            }
+            _ => {
+                tracing::warn!(%status, "Invalid health report type");
+                None
+            }
+        };
+
+        if let Some(report_str) = provisioning_status {
+            let msg =
+                encode_kvp_item("PROVISIONING_REPORT", &report_str).concat();
+            self.send_event(msg);
+        }
+    }
 }
 
 impl<S> Layer<S> for EmitKVPLayer
@@ -220,6 +322,9 @@ where
     ///
     /// If an `ERROR` level event is encountered, it marks the span's status as a failure,
     /// which will be reflected in the span's data upon closure.
+    ///
+    /// Additionally, this function checks if the event contains a `health_report` field.
+    /// If present, the event is delegated to [`handle_health_report`] to be uniquely formatted.
     ///
     /// # Arguments
     /// * `event` - The tracing event instance containing the message and metadata.
@@ -261,6 +366,23 @@ where
 
             let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+            let mut health_report = None;
+            event.record(
+                &mut |field: &tracing::field::Field,
+                      value: &dyn std::fmt::Debug| {
+                    if field.name() == "health_report" {
+                        health_report = Some(
+                            format!("{value:?}").trim_matches('"').to_string(),
+                        );
+                    }
+                },
+            );
+
+            if let Some(health_str) = health_report {
+                self.handle_health_report(event, &health_str);
+                return;
+            }
 
             let event_value =
                 format!("Time: {event_time_dt} | Event: {event_message}");
@@ -533,8 +655,12 @@ mod tests {
 
         mock_child_function(0).await;
         sleep(Duration::from_millis(300)).await;
-
-        event!(Level::INFO, msg = "Provisioning completed");
+        event!(
+            Level::INFO,
+            health_report = "success",
+            optional_key_value = "origin=mock_source",
+            "Provisioning completed successfully"
+        );
 
         Ok(())
     }
@@ -542,10 +668,18 @@ mod tests {
     #[instrument]
     async fn mock_failure_function() -> Result<(), anyhow::Error> {
         let error_message = "Simulated failure during processing";
-        event!(Level::ERROR, msg = %error_message);
+        let mut supporting = HashMap::new();
+        supporting.insert("step", "mock_stuff");
+        supporting.insert("source", "unit_test");
+        event!(
+            Level::ERROR,
+            health_report = "failure",
+            reason = "Simulated failure during processing",
+            supporting_data = ?supporting,
+            "Provisioning failed"
+        );
 
         sleep(Duration::from_millis(100)).await;
-
         Err(anyhow::anyhow!(error_message))
     }
 
@@ -588,6 +722,9 @@ mod tests {
             contents.len()
         );
 
+        let mut found_success = false;
+        let mut found_failure = false;
+
         for i in 0..num_slices {
             let start = i * slice_size;
             let end = start + slice_size;
@@ -603,6 +740,19 @@ mod tests {
                 Ok((key, value)) => {
                     println!("Decoded KVP - Key: {key}");
                     println!("Decoded KVP - Value: {value}\n");
+
+                    // Check for success or failure reports
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=success")
+                    {
+                        found_success = true;
+                    }
+
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=error")
+                    {
+                        found_failure = true;
+                    }
                 }
                 Err(e) => {
                     panic!("Failed to decode KVP: {e}");
@@ -619,6 +769,15 @@ mod tests {
                 "Value section in slice {i} should contain non-zero bytes"
             );
         }
+
+        assert!(
+            found_success,
+            "Expected to find a 'result=success' entry but did not."
+        );
+        assert!(
+            found_failure,
+            "Expected to find a 'result=error' entry but did not."
+        );
     }
 
     #[tokio::test]
