@@ -343,8 +343,13 @@ async fn provision(
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
-    Provision::new(im.compute.os_profile.computer_name, user, config)
-        .provision()?;
+    Provision::new(
+        im.compute.os_profile.computer_name,
+        user,
+        config,
+        im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
+    )
+    .provision()?;
 
     let vm_goalstate = goalstate::get_goalstate(
         &client,
