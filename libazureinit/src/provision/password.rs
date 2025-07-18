@@ -14,6 +14,8 @@ impl PasswordProvisioner {
         match self {
             Self::Passwd => passwd(user),
             #[cfg(test)]
+            Self::MockPasswd => mock_passwd(user),
+            #[cfg(test)]
             Self::FakePasswd => Ok(()),
         }
     }
@@ -33,4 +35,81 @@ fn passwd(user: &User) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[instrument(skip_all)]
+#[cfg(test)]
+fn mock_passwd(user: &User) -> Result<(), Error> {
+    if user.password.is_none() {
+        Ok(())
+    } else {
+        // creating user with a non-empty password is not allowed.
+        return Err(Error::NonEmptyPassword);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::User;
+
+    #[test]
+    fn test_passwd_with_no_password_succeeds() {
+        // Test that passwd function succeeds when user has no password
+        let user = User::new("azureuser", []);
+        assert!(user.password.is_none());
+        
+        let result = mock_passwd(&user);
+        
+        // The function should complete without error when user has no password
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_passwd_with_password_returns_error() {
+        // Test that passwd function returns Error::NonEmptyPassword error when user has a password
+        let user = User::new("azureuser", []).with_password("somepassword");
+        assert!(user.password.is_some());
+        
+        let result = mock_passwd(&user);
+        
+        // Should return NonEmptyPassword error
+        assert!(matches!(result, Err(Error::NonEmptyPassword)));
+    }
+
+    #[test]
+    fn test_passwd_provisioner_set_with_no_password() {
+        // Test the PasswordProvisioner::set method with no password
+        let provisioner = PasswordProvisioner::MockPasswd;
+        let user = User::new("azureuser", []);
+        
+        let result = provisioner.set(&user);
+        
+        // Should succeed without calling real passwd command
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_passwd_provisioner_set_with_password() {
+        // Test the PasswordProvisioner::set method with a password
+        let provisioner = PasswordProvisioner::MockPasswd;
+        let user = User::new("azureuser", []).with_password("somepassword");
+        
+        let result = provisioner.set(&user);
+        
+        // Should return NonEmptyPassword error
+        assert!(matches!(result, Err(Error::NonEmptyPassword)));
+    }
+
+    #[test]
+    fn test_fake_passwd_provisioner_always_succeeds() {
+        // Test the FakePasswd provisioner used in tests
+        let provisioner = PasswordProvisioner::FakePasswd;
+        let user_with_password = User::new("azureuser", []).with_password("somepassword");
+        let user_without_password = User::new("azureuser", []);
+        
+        // FakePasswd should always succeed regardless of password state
+        assert!(provisioner.set(&user_with_password).is_ok());
+        assert!(provisioner.set(&user_without_password).is_ok());
+    }
 }
