@@ -84,8 +84,6 @@ impl Provision {
                     PasswordProvisioner::Passwd.set(&self.user).ok()
                 }
                 #[cfg(test)]
-                PasswordProvisioner::MockPasswd => Some(()),
-                #[cfg(test)]
                 PasswordProvisioner::FakePasswd => Some(()),
             })
             .ok_or(Error::NoPasswordProvisioner)?;

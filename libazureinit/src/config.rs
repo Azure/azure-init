@@ -45,8 +45,6 @@ pub enum PasswordProvisioner {
     #[default]
     Passwd,
     #[cfg(test)]
-    MockPasswd,
-    #[cfg(test)]
     FakePasswd,
 }
 
