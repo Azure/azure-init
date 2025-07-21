@@ -56,9 +56,9 @@ mod tests {
         // Test that passwd function succeeds when user has no password
         let user = User::new("azureuser", []);
         assert!(user.password.is_none());
-        
+
         let result = mock_passwd(&user);
-        
+
         // The function should complete without error when user has no password
         assert!(result.is_ok());
     }
@@ -68,9 +68,9 @@ mod tests {
         // Test that passwd function returns Error::NonEmptyPassword error when user has a password
         let user = User::new("azureuser", []).with_password("somepassword");
         assert!(user.password.is_some());
-        
+
         let result = mock_passwd(&user);
-        
+
         // Should return NonEmptyPassword error
         assert!(matches!(result, Err(Error::NonEmptyPassword)));
     }
@@ -80,9 +80,9 @@ mod tests {
         // Test the PasswordProvisioner::set method with no password
         let provisioner = PasswordProvisioner::FakePasswd;
         let user = User::new("azureuser", []);
-        
+
         let result = provisioner.set(&user);
-        
+
         // Should succeed without calling real passwd command
         assert!(result.is_ok());
     }
@@ -92,9 +92,9 @@ mod tests {
         // Test the PasswordProvisioner::set method with a password
         let provisioner = PasswordProvisioner::FakePasswd;
         let user = User::new("azureuser", []).with_password("somepassword");
-        
+
         let result = provisioner.set(&user);
-        
+
         // Should return NonEmptyPassword error
         assert!(matches!(result, Err(Error::NonEmptyPassword)));
     }
