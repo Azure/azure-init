@@ -493,7 +493,7 @@ fn get_uptime() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libazureinit::config::{Config, Telemetry};
+    use crate::config::{Config, Telemetry};
     use tempfile::NamedTempFile;
     use tokio::time::{sleep, Duration};
     use tracing::instrument;

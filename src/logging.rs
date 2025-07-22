@@ -12,8 +12,8 @@ use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
-use crate::kvp::EmitKVPLayer;
 use libazureinit::config::Config;
+use libazureinit::EmitKVPLayer;
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()

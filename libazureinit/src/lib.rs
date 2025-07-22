@@ -6,7 +6,9 @@ pub mod error;
 pub mod goalstate;
 pub(crate) mod http;
 pub mod imds;
+mod kvp;
 pub mod media;
+pub use kvp::EmitKVPLayer;
 
 mod provision;
 pub use provision::{user::User, Provision};
