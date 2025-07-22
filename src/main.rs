@@ -234,9 +234,8 @@ async fn main() -> ExitCode {
                 let cfg = Config::default();
 
                 let report_result = report_failure(
-                    &ReportableError::unhandled_exception().to_string(),
+                    ReportableError::failed_to_load_config(&error),
                     &vm_id,
-                    None,
                     &cfg,
                 )
                 .await;
@@ -310,11 +309,9 @@ async fn main() -> ExitCode {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
 
-            let failure_description = format!("Provisioning error: {e:?}");
             if let Err(report_err) = report_failure(
-                &failure_description,
+                ReportableError::provisioning_error(&e),
                 &vm_id,
-                None,
                 &clone_config,
             )
             .await

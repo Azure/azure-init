@@ -132,6 +132,18 @@ impl ReportableError {
     pub fn unhandled_exception() -> Self {
         ReportableError::new("unhandled exception")
     }
+
+    /// Constructor for “failure to load configuration”.
+    pub fn failed_to_load_config(error: &impl std::fmt::Debug) -> Self {
+        ReportableError::new("failure to load configuration")
+            .with_supporting_data("details", &format!("{error:?}"))
+    }
+
+    /// Constructor for “provisioning error”.
+    pub fn provisioning_error(error: &impl std::fmt::Debug) -> Self {
+        ReportableError::new("provisioning error")
+            .with_supporting_data("details", &format!("{error:?}"))
+    }
 }
 
 /// Constructs a KVP entry representing a successful provisioning event.
@@ -185,20 +197,13 @@ pub async fn report_ready(
 
 /// Reports provisioning failure to the wireserver and/or KVP.
 pub async fn report_failure(
-    reason: &str,
+    error: ReportableError,
     vm_id: &str,
-    supporting_data: Option<HashMap<&str, &str>>,
     config: &Config,
 ) -> Result<(), Error> {
-    let mut err = ReportableError::new(reason);
-    if let Some(map) = supporting_data {
-        for (k, v) in map {
-            err = err.with_supporting_data(k, v);
-        }
-    }
     let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
     let now = Utc::now();
-    let report_str = err.as_encoded_report(vm_id, &agent, &now, "None");
+    let report_str = error.as_encoded_report(vm_id, &agent, &now, "None");
 
     _report(
         ProvisioningState::NotReady,
@@ -378,7 +383,8 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let result = report_failure("oops", test_vm_id, None, &cfg).await;
+        let err = ReportableError::new("test_failure_retryable");
+        let result = report_failure(err, test_vm_id, &cfg).await;
         assert!(result.is_err(), "should have timed out after retrying");
         cancel.cancel();
     }
@@ -423,7 +429,8 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let result = report_failure("err", test_vm_id, None, &cfg).await;
+        let err = ReportableError::new("err");
+        let result = report_failure(err, test_vm_id, &cfg).await;
         assert!(result.is_err(), "400 Bad Request should fail immediately");
         cancel.cancel();
     }
@@ -467,7 +474,8 @@ mod tests {
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         // no override == real health_endpoint, which we can't reach in tests
         let r1 = report_ready(&cfg, test_vm_id, None).await;
-        let r2 = report_failure("no config", test_vm_id, None, &cfg).await;
+        let err = ReportableError::new("no config");
+        let r2 = report_failure(err, test_vm_id, &cfg).await;
         assert!(
             r1.is_err(),
             "report_ready should fail against a dead server"
