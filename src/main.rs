@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use std::path::PathBuf;
-mod kvp;
 mod logging;
 pub use logging::{initialize_tracing, setup_layers};
 

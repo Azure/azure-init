@@ -21,8 +21,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 opentelemetry = "0.30"
 opentelemetry_sdk = "0.30"
 tracing-opentelemetry = "0.31"
-uuid = { version = "1.2", features = ["v4"] }
-chrono = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
