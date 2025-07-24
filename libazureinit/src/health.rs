@@ -8,11 +8,11 @@ use reqwest::{
 use std::time::Duration;
 use tracing::instrument;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use reqwest::StatusCode;
-use serde::Serialize;
+// use serde::Serialize;
 use serde_json::json;
-use std::collections::HashMap;
+// use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::error::Error;
@@ -54,98 +54,6 @@ impl std::fmt::Display for ProvisioningSubStatus {
     }
 }
 
-#[derive(Serialize)]
-pub struct ReportableError {
-    result: &'static str,
-    reason: String,
-    documentation_url: &'static str,
-    #[serde(flatten)]
-    supporting_data: HashMap<String, String>,
-}
-
-impl std::fmt::Display for ReportableError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.reason)
-    }
-}
-
-impl ReportableError {
-    pub fn new(reason: impl Into<String>) -> Self {
-        ReportableError {
-            result: "error",
-            reason: reason.into(),
-            documentation_url: "https://aka.ms/linuxprovisioningerror",
-            supporting_data: HashMap::new(),
-        }
-    }
-
-    /// Adds a key-value pair to the supporting data for the report.
-    pub fn with_supporting_data(mut self, key: &str, value: &str) -> Self {
-        self.supporting_data
-            .insert(key.to_string(), value.to_string());
-        self
-    }
-
-    /// Serializes the reportable error as a pipe-delimited KVP entry.
-    pub fn as_encoded_report(
-        &self,
-        vm_id: &str,
-        agent: &str,
-        timestamp: &DateTime<Utc>,
-        _pps_type: &str,
-    ) -> String {
-        let mut data = vec![
-            "result=error".to_string(),
-            format!("reason={}", self.reason),
-            format!("agent={}", agent),
-        ];
-        for (k, v) in &self.supporting_data {
-            data.push(format!("{k}={v}"));
-        }
-        data.push("pps_type=None".to_string());
-        data.push(format!("vm_id={vm_id}"));
-        data.push(format!("timestamp={}", timestamp.to_rfc3339()));
-        data.push(format!("documentation_url={}", self.documentation_url));
-        encode_report(&data)
-    }
-
-    /// Constructor for “failure to find DHCP interface”.
-    pub fn dhcp_interface_not_found(duration_secs: f64) -> Self {
-        let mut err = ReportableError::new("failure to find DHCP interface");
-        err = err.with_supporting_data("duration", &duration_secs.to_string());
-        err
-    }
-
-    /// Constructor for “failure to obtain DHCP lease”.
-    pub fn dhcp_lease_not_obtained(
-        duration_secs: f64,
-        interface: Option<String>,
-    ) -> Self {
-        let mut err = ReportableError::new("failure to obtain DHCP lease");
-        err = err.with_supporting_data("duration", &duration_secs.to_string());
-        err = err
-            .with_supporting_data("interface", &interface.unwrap_or_default());
-        err
-    }
-
-    /// Constructor for “unhandled exception”.
-    pub fn unhandled_exception() -> Self {
-        ReportableError::new("unhandled exception")
-    }
-
-    /// Constructor for “failure to load configuration”.
-    pub fn failed_to_load_config(error: &impl std::fmt::Debug) -> Self {
-        ReportableError::new("failure to load configuration")
-            .with_supporting_data("details", &format!("{error:?}"))
-    }
-
-    /// Constructor for “provisioning error”.
-    pub fn provisioning_error(error: &impl std::fmt::Debug) -> Self {
-        ReportableError::new("provisioning error")
-            .with_supporting_data("details", &format!("{error:?}"))
-    }
-}
-
 /// Constructs a KVP entry representing a successful provisioning event.
 pub fn encoded_success_report(
     vm_id: &str,
@@ -168,7 +76,7 @@ pub fn encoded_success_report(
 }
 
 /// Serializes a slice of key-value strings as a single pipe-delimited entry.
-fn encode_report(data: &[String]) -> String {
+pub fn encode_report(data: &[String]) -> String {
     let mut wtr = csv::WriterBuilder::new()
         .delimiter(b'|')
         .quote_style(csv::QuoteStyle::Necessary)
@@ -197,14 +105,9 @@ pub async fn report_ready(
 
 /// Reports provisioning failure to the wireserver and/or KVP.
 pub async fn report_failure(
-    error: ReportableError,
-    vm_id: &str,
+    report_str: String,
     config: &Config,
 ) -> Result<(), Error> {
-    let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-    let now = Utc::now();
-    let report_str = error.as_encoded_report(vm_id, &agent, &now, "None");
-
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::ProvisioningFailed),
@@ -350,7 +253,6 @@ mod tests {
     use crate::config::{Config, Wireserver};
     use crate::unittest::{get_http_response_payload, serve_requests};
     use reqwest::StatusCode;
-    use serde_json::Value;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
@@ -383,8 +285,11 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let err = ReportableError::new("test_failure_retryable");
-        let result = report_failure(err, test_vm_id, &cfg).await;
+        let err = Error::Unhandled {
+            details: "test_failure_retryable".to_string(),
+        };
+        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let result = report_failure(report_str, &cfg).await;
         assert!(result.is_err(), "should have timed out after retrying");
         cancel.cancel();
     }
@@ -429,8 +334,11 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let err = ReportableError::new("err");
-        let result = report_failure(err, test_vm_id, &cfg).await;
+        let err = Error::Unhandled {
+            details: "test_report_unexpected_code".to_string(),
+        };
+        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let result = report_failure(report_str, &cfg).await;
         assert!(result.is_err(), "400 Bad Request should fail immediately");
         cancel.cancel();
     }
@@ -474,88 +382,16 @@ mod tests {
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         // no override == real health_endpoint, which we can't reach in tests
         let r1 = report_ready(&cfg, test_vm_id, None).await;
-        let err = ReportableError::new("no config");
-        let r2 = report_failure(err, test_vm_id, &cfg).await;
+        let err = Error::Unhandled {
+            details: "no config".to_string(),
+        };
+        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let r2 = report_failure(report_str, &cfg).await;
         assert!(
             r1.is_err(),
             "report_ready should fail against a dead server"
         );
         assert!(r2.is_err(), "report_failure should also fail");
-    }
-
-    // Ensures that ReportableError serializes correctly to JSON
-    // and all expected fields are present with the correct values.
-    #[test]
-    fn test_reportable_error_formatting() {
-        let reason = "Test failure";
-        let err = ReportableError::new(reason)
-            .with_supporting_data("debug_info", "42");
-
-        let json = serde_json::to_string_pretty(&err)
-            .expect("should serialize to JSON");
-        let parsed: Value =
-            serde_json::from_str(&json).expect("should parse JSON");
-
-        assert_eq!(parsed["result"], "error");
-        assert_eq!(parsed["reason"], reason);
-        assert_eq!(
-            parsed["documentation_url"],
-            "https://aka.ms/linuxprovisioningerror"
-        );
-        assert_eq!(parsed["debug_info"], "42");
-    }
-
-    // Verifies that as_encoded_report produces a pipe-separated,
-    // KVP string with all expected key-value pairs.
-    #[test]
-    fn test_reportable_error_as_encoded_report() {
-        let vm_id = "00000000-0000-0000-0000-000000000000";
-        let reason = "testing";
-        let mut err = ReportableError::new(reason);
-        err = err.with_supporting_data("extra1", "val1");
-        err = err.with_supporting_data("extra2", "val2");
-
-        let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-        let timestamp = Utc::now();
-        let pps_type = "None";
-
-        let encoded =
-            err.as_encoded_report(vm_id, &agent, &timestamp, pps_type);
-
-        assert!(
-            encoded.starts_with("result=error|"),
-            "Encoded should start with result=error"
-        );
-        assert!(
-            encoded.contains(&format!("reason={}", reason)),
-            "Encoded should contain failure reason"
-        );
-        assert!(
-            encoded.contains("agent=Azure-Init/"),
-            "Should contain agent"
-        );
-        assert!(
-            encoded.contains("extra1=val1"),
-            "Should contain supporting data 1"
-        );
-        assert!(
-            encoded.contains("extra2=val2"),
-            "Should contain supporting data 2"
-        );
-        assert!(
-            encoded.contains("vm_id=00000000-0000-0000-0000-000000000000"),
-            "Should contain vm_id"
-        );
-        assert!(encoded.contains(
-            "documentation_url=https://aka.ms/linuxprovisioningerror"
-        ));
-        assert!(encoded.contains("pps_type=None"));
-        assert!(encoded.contains("timestamp="));
-        assert!(encoded.contains("|"));
-        assert!(
-            !encoded.contains(","),
-            "Should not contain comma separators"
-        );
     }
 
     // Verifies encoded_success_report() creates the correct

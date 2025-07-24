@@ -19,8 +19,7 @@ use libazureinit::{
     Provision,
 };
 use libazureinit::{
-    get_vm_id, health::ReportableError, is_provisioning_complete,
-    mark_provisioning_complete,
+    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -233,12 +232,13 @@ async fn main() -> ExitCode {
                 // Build temporary config to pass in wireserver defaults for report_failure
                 let cfg = Config::default();
 
-                let report_result = report_failure(
-                    ReportableError::failed_to_load_config(&error),
-                    &vm_id,
-                    &cfg,
-                )
-                .await;
+                let err = LibError::ConfigLoadFailure {
+                    details: format!("{error:?}"),
+                };
+
+                // Report the failure to the health endpoint
+                let report_str = err.as_encoded_report(&vm_id, "None");
+                let report_result = report_failure(report_str, &cfg).await;
 
                 if let Err(report_error) = report_result {
                     tracing::warn!(
@@ -309,12 +309,20 @@ async fn main() -> ExitCode {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
 
-            if let Err(report_err) = report_failure(
-                ReportableError::provisioning_error(&e),
-                &vm_id,
-                &clone_config,
-            )
-            .await
+            let report_str =
+                if let Some(lib_error) = e.downcast_ref::<LibError>() {
+                    lib_error.as_encoded_report(&vm_id, "None")
+                } else {
+                    // Treat unknown errors as unhandled errors.
+                    LibError::unhandled_error_report(
+                        &vm_id,
+                        "None",
+                        &format!("{e:?}"),
+                    )
+                };
+
+            if let Err(report_err) =
+                report_failure(report_str, &clone_config).await
             {
                 tracing::error!(
                     health_report = "failure",

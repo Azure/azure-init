@@ -35,9 +35,11 @@ use sysinfo::System;
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
 
 use chrono::{DateTime, Utc};
-use libazureinit::health::{encoded_success_report, ReportableError};
+use libazureinit::health::encoded_success_report;
 use std::fmt;
 use uuid::Uuid;
+
+use libazureinit::error::Error as LibError;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
@@ -273,20 +275,18 @@ impl EmitKVPLayer {
             }
             "failure" => {
                 let reason_str = reason.as_deref().unwrap_or("Unknown failure");
-                let mut report = ReportableError::new(reason_str);
+                let mut details = reason_str.to_string();
                 if let Some(kvs) = supporting_data.as_ref() {
+                    let mut extra = String::new();
                     for (k, v) in kvs {
-                        report = report.with_supporting_data(k, v);
+                        extra.push_str(&format!("; {k}={v}"));
+                    }
+                    if !extra.is_empty() {
+                        details.push_str(&extra);
                     }
                 }
-                let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-                let now = Utc::now();
-                Some(report.as_encoded_report(
-                    &self.vm_id,
-                    &agent,
-                    &now,
-                    "None",
-                ))
+                let err = LibError::Unhandled { details };
+                Some(err.as_encoded_report(&self.vm_id, "None"))
             }
             "in progress" => {
                 let desc = format!(
