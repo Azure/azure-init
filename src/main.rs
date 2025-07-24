@@ -232,7 +232,7 @@ async fn main() -> ExitCode {
                 // Build temporary config to pass in wireserver defaults for report_failure
                 let cfg = Config::default();
 
-                let err = LibError::ConfigLoadFailure {
+                let err = LibError::LoadSshdConfig {
                     details: format!("{error:?}"),
                 };
 
@@ -309,27 +309,29 @@ async fn main() -> ExitCode {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
 
-            let report_str =
-                if let Some(lib_error) = e.downcast_ref::<LibError>() {
-                    lib_error.as_encoded_report(&vm_id, "None")
-                } else {
-                    // Treat unknown errors as unhandled errors.
-                    LibError::unhandled_error_report(
-                        &vm_id,
-                        "None",
-                        &format!("{e:?}"),
-                    )
-                };
+            let report_str = e
+                .downcast_ref::<LibError>()
+                .map(|lib_error| lib_error.as_encoded_report(&vm_id, "None"))
+                .unwrap_or_else(|| {
+                    LibError::UnhandledError {
+                        details: format!("{e:?}"),
+                    }
+                    .as_encoded_report(&vm_id, "None")
+                });
+            let report_result = report_failure(report_str, &clone_config).await;
 
-            if let Err(report_err) =
-                report_failure(report_str, &clone_config).await
-            {
-                tracing::error!(
-                    health_report = "failure",
-                    reason = format!("{}", report_err)
+            if let Err(report_error) = report_result {
+                tracing::warn!(
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
                 );
             }
 
+            tracing::error!(
+                health_report = "failure",
+                reason = %e,
+                "Provisioning failed with error"
+            );
             let config: u8 = exitcode::CONFIG
                 .try_into()
                 .expect("Error code must be less than 256");

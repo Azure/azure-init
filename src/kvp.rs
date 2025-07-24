@@ -285,7 +285,9 @@ impl EmitKVPLayer {
                         details.push_str(&extra);
                     }
                 }
-                let err = LibError::Unhandled { details };
+                let err = LibError::UnhandledError {
+                    details: details.to_string(),
+                };
                 Some(err.as_encoded_report(&self.vm_id, "None"))
             }
             "in progress" => {

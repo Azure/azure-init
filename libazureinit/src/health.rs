@@ -10,9 +10,7 @@ use tracing::instrument;
 
 use chrono::Utc;
 use reqwest::StatusCode;
-// use serde::Serialize;
 use serde_json::json;
-// use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::error::Error;
@@ -285,7 +283,7 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let err = Error::Unhandled {
+        let err = Error::UnhandledError {
             details: "test_failure_retryable".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id, "None");
@@ -334,7 +332,7 @@ mod tests {
 
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let err = Error::Unhandled {
+        let err = Error::UnhandledError {
             details: "test_report_unexpected_code".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id, "None");
@@ -382,7 +380,7 @@ mod tests {
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         // no override == real health_endpoint, which we can't reach in tests
         let r1 = report_ready(&cfg, test_vm_id, None).await;
-        let err = Error::Unhandled {
+        let err = Error::UnhandledError {
             details: "no config".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id, "None");

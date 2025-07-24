@@ -73,12 +73,12 @@ pub enum Error {
     NoPasswordProvisioner,
     #[error("A timeout error occurred")]
     Timeout,
-    #[error("Failed to update the sshd configuration")]
+    #[error("Failed to update sshd config")]
     UpdateSshdConfig,
     #[error("Failed to load sshd config: {details}")]
-    ConfigLoadFailure { details: String },
-    #[error("Unhandled exception")]
-    Unhandled { details: String },
+    LoadSshdConfig { details: String },
+    #[error("unhandled error: {details}")]
+    UnhandledError { details: String },
 }
 
 impl From<tokio::time::error::Elapsed> for Error {
@@ -89,45 +89,38 @@ impl From<tokio::time::error::Elapsed> for Error {
 
 /// Implement reportable formatting for `Error` to be used in health reporting.
 impl Error {
-    /// Returns a human-readable summary describing the error variant.
-    pub fn reason(&self) -> String {
+    /// Returns a concise, fixed string for health reporting, following cloud-init style:
+    /// lowercase, except for acronyms (e.g., JSON, XML, SSH).
+    ///
+    /// Any error variant not matched above—including `UnhandledError`—is caught by the `_` arm,
+    /// which ensures all unknown or new errors are reported as `"unhandled error"`.
+    pub fn reason(&self) -> &'static str {
         match self {
-            Self::Json(e) => format!("JSON error: {e}"),
-            Self::Xml(e) => format!("XML error: {e}"),
-            Self::Http(e) => format!("HTTP error: {e}"),
-            Self::Io(e) => format!("I/O error: {e}"),
-            Self::HttpStatus { status, .. } => {
-                format!("HTTP request failed with status: {status}")
-            }
-            Self::SubprocessFailed { status, .. } => {
-                format!("Subprocess failed with status: {status}")
-            }
-            Self::NulError(e) => format!("C string nul byte: {e}"),
-            Self::Nix(e) => format!("Nix error: {e}"),
-            Self::UserMissing { user } => format!("User not found: {user}"),
-            Self::UsernameFailure => "Failed to determine username".into(),
+            Self::Json(_) => "JSON error",
+            Self::Xml(_) => "XML error",
+            Self::Http(_) => "HTTP error",
+            Self::Io(_) => "I/O error",
+            Self::HttpStatus { .. } => "http status error",
+            Self::SubprocessFailed { .. } => "subprocess failed",
+            Self::NulError(_) => "C string nul byte",
+            Self::Nix(_) => "nix error",
+            Self::UserMissing { .. } => "user not found",
+            Self::UsernameFailure => "failed to determine username",
             Self::InstanceMetadataFailure => {
-                "Failed to retrieve instance metadata".into()
+                "failed to retrieve instance metadata"
             }
             Self::NonEmptyPassword => {
-                "Provisioning with non-empty password is unsupported".into()
+                "provisioning with non-empty password is unsupported"
             }
-            Self::BlockUtils(e) => format!("Block device error: {e}"),
-            Self::NoHostnameProvisioner => {
-                "Failed to provision hostname".into()
-            }
-            Self::NoUserProvisioner => "Failed to provision user".into(),
-            Self::NoPasswordProvisioner => {
-                "Failed to provision password".into()
-            }
-            Self::Timeout => "Operation timed out".into(),
-            Self::UpdateSshdConfig => "Failed to update sshd config".into(),
-            Self::ConfigLoadFailure { details } => {
-                format!("Failed to load sshd config: {details}")
-            }
-            Self::Unhandled { details } => {
-                format!("Unhandled exception: {details}")
-            }
+            Self::BlockUtils(_) => "block device error",
+            Self::NoHostnameProvisioner => "failed to provision hostname",
+            Self::NoUserProvisioner => "failed to provision user",
+            Self::NoPasswordProvisioner => "failed to provision password",
+            Self::Timeout => "operation timed out",
+            Self::UpdateSshdConfig => "failed to update sshd config",
+            Self::LoadSshdConfig { .. } => "failed to load sshd config",
+            // Any error not explicitly handled above is treated as unhandled.
+            _ => "unhandled error",
         }
     }
 
@@ -136,22 +129,10 @@ impl Error {
         "https://aka.ms/linuxprovisioningerror"
     }
 
-    /// Generates an encoded KVP report string for an unhandled exception.
-    pub fn unhandled_error_report(
-        vm_id: &str,
-        _pps_type: &str,
-        details: &str,
-    ) -> String {
-        Error::Unhandled {
-            details: details.to_string(),
-        }
-        .as_encoded_report(vm_id, _pps_type)
-    }
-
-    /// Returns a map of structured key-value pairs representing additional context for this error.
+    /// Returns a map of additional supporting data for health reporting.
     ///
-    /// These pairs are included in health reports and can provide extra details to aid debugging
-    /// (such as endpoint, user, or exit status).
+    /// Known error types provide relevant structured data.
+    /// Unhandled or unexpected errors include the stringified error as `"error"`.
     pub fn supporting_data(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         match self {
@@ -166,13 +147,13 @@ impl Error {
             Error::UserMissing { user } => {
                 map.insert("user".into(), user.clone());
             }
-            Error::ConfigLoadFailure { details } => {
+            Error::LoadSshdConfig { details } => {
                 map.insert("details".to_string(), details.clone());
             }
-            Error::Unhandled { details } => {
-                map.insert("details".to_string(), details.clone());
+            // All others (including any with unexpected/dynamic info):
+            _ => {
+                map.insert("error".into(), format!("{self}"));
             }
-            _ => {}
         }
         map
     }
@@ -206,15 +187,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_load_failure_as_encoded_report() {
+    fn test_load_sshd_config_failure_as_encoded_report() {
         let vm_id = "00000000-0000-0000-0000-000000000000";
-        let err = Error::ConfigLoadFailure {
+        let err = Error::LoadSshdConfig {
             details: "bad config".to_string(),
         };
         let encoded = err.as_encoded_report(vm_id, "None");
-        assert!(
-            encoded.contains("reason=Failed to load sshd config: bad config")
-        );
+        assert!(encoded.contains("reason=failed to load sshd config"));
         assert!(encoded.contains("details=bad config"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
         assert!(encoded.contains("result=error|"));
@@ -240,16 +219,16 @@ mod tests {
     }
 
     #[test]
-    fn test_unhandled_error_report_as_encoded_report() {
+    fn test_as_encoded_report_for_unhandled_error() {
         let vm_id = "00000000-0000-0000-0000-000000000000";
-        let details = "reason=failed; extra1=val1; extra2=val2";
-        let err = Error::Unhandled {
-            details: details.to_string(),
+        let err = Error::UnhandledError {
+            details: "test_unhandled_exception".to_string(),
         };
         let encoded = err.as_encoded_report(vm_id, "None");
-        assert!(
-            encoded.contains("details=reason=failed; extra1=val1; extra2=val2")
-        );
-        assert!(encoded.contains("reason=Unhandled exception: reason=failed; extra1=val1; extra2=val2"));
+
+        assert!(encoded.contains("reason=unhandled error"));
+        assert!(encoded.contains("error=unhandled error"));
+        assert!(encoded.contains("test_unhandled_exception"));
+        assert!(encoded.contains(&format!("vm_id={}", vm_id)));
     }
 }
