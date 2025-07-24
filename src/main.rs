@@ -12,7 +12,8 @@ use libazureinit::imds::InstanceMetadata;
 use libazureinit::User;
 use libazureinit::{
     error::Error as LibError,
-    goalstate, imds, media,
+    health::{report_failure, report_ready},
+    imds, media,
     media::{get_mount_device, Environment},
     reqwest::{header, Client},
     Provision,
@@ -227,6 +228,30 @@ async fn main() -> ExitCode {
             Err(error) => {
                 eprintln!("Failed to load configuration: {error:?}");
                 eprintln!("Example configuration:\n\n{}", Config::default());
+
+                // Build temporary config to pass in wireserver defaults for report_failure
+                let cfg = Config::default();
+
+                let err = LibError::LoadSshdConfig {
+                    details: format!("{error:?}"),
+                };
+
+                // Report the failure to the health endpoint
+                let report_str = err.as_encoded_report(&vm_id, "None");
+                let report_result = report_failure(report_str, &cfg).await;
+
+                if let Err(report_error) = report_result {
+                    tracing::warn!(
+                        "Failed to send provisioning failure report: {:?}",
+                        report_error
+                    );
+                }
+
+                tracing::error!(
+                    health_report = "failure",
+                    reason = %error,
+                    "Invalid config during early startup"
+                );
                 return ExitCode::FAILURE;
             }
         };
@@ -260,11 +285,53 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let clone_config = config.clone();
     match provision(config, &vm_id, opts).await {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            let report_result = report_ready(&clone_config, &vm_id, None).await;
+
+            if let Err(report_error) = report_result {
+                tracing::warn!(
+                    "Failed to send provisioning success report: {:?}",
+                    report_error
+                );
+            }
+
+            tracing::info!(
+                target: "azure_init",
+                health_report = "success",
+                "Provisioning completed successfully"
+            );
+
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
+
+            let report_str = e
+                .downcast_ref::<LibError>()
+                .map(|lib_error| lib_error.as_encoded_report(&vm_id, "None"))
+                .unwrap_or_else(|| {
+                    LibError::UnhandledError {
+                        details: format!("{e:?}"),
+                    }
+                    .as_encoded_report(&vm_id, "None")
+                });
+            let report_result = report_failure(report_str, &clone_config).await;
+
+            if let Err(report_error) = report_result {
+                tracing::warn!(
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
+                );
+            }
+
+            tracing::error!(
+                health_report = "failure",
+                reason = %e,
+                "Provisioning failed with error"
+            );
             let config: u8 = exitcode::CONFIG
                 .try_into()
                 .expect("Error code must be less than 256");
@@ -312,9 +379,6 @@ async fn provision(
         .default_headers(default_headers)
         .build()?;
 
-    let imds_http_timeout_sec: u64 = 5 * 60;
-    let imds_http_retry_interval_sec: u64 = 2;
-
     // Username can be obtained either via fetching instance metadata from IMDS
     // or mounting a local device for OVF environment file. It should not fail
     // immediately in a single failure, instead it should fall back to the other
@@ -322,8 +386,8 @@ async fn provision(
     // get_environment().
     let instance_metadata = imds::query(
         &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
+        Duration::from_secs_f64(clone_config.imds.connection_timeout_secs),
+        Duration::from_secs_f64(clone_config.imds.total_retry_timeout_secs),
         None, // default IMDS URL
     )
     .await
@@ -350,31 +414,6 @@ async fn provision(
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
     )
     .provision()?;
-
-    let vm_goalstate = goalstate::get_goalstate(
-        &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver goalstate URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to get the desired goalstate.");
-        "Failed to get desired goalstate."
-    })?;
-
-    goalstate::report_health(
-        &client,
-        vm_goalstate,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver health URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to report VM health.");
-        "Failed to report VM health."
-    })?;
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {
