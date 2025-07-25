@@ -20,7 +20,7 @@ use crate::http;
 enum ProvisioningState {
     Ready,
     NotReady,
-    InProgress,
+    //InProgress,
 }
 
 #[derive(Debug)]
@@ -34,7 +34,7 @@ impl std::fmt::Display for ProvisioningState {
         let s = match self {
             ProvisioningState::Ready => "Ready",
             ProvisioningState::NotReady => "NotReady",
-            ProvisioningState::InProgress => "InProgress",
+            //ProvisioningState::InProgress => "InProgress",
         };
         write!(f, "{s}")
     }
@@ -122,7 +122,7 @@ pub async fn report_in_progress(
 ) -> Result<(), Error> {
     let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
     _report(
-        ProvisioningState::InProgress,
+        ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::ProvisioningInProgress),
         Some(desc),
         config,
