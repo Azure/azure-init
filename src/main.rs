@@ -259,11 +259,24 @@ async fn main() -> ExitCode {
     if let Err(e) = setup_layers(tracer, &vm_id, &config) {
         tracing::error!("Failed to set final logging subscriber: {e:?}");
     }
+    // DEBUG REMOVE
+    tracing::info!(target: "azure_init", "KVP layer is now active");
 
     tracing::info!(
         target = "libazureinit::config::success",
         "Final configuration: {:#?}",
         config
+    );
+
+    // DEBUG REMOVE
+    tracing::info!(
+        target: "azure_init",
+        health_report = "in progress",
+        "Provisioning is currently in progress"
+    );
+    tracing::info!(
+        target: "azure_init",
+        "should see two in progress messages"
     );
 
     if let Some(Command::Clean { logs }) = opts.command {
@@ -300,6 +313,12 @@ async fn main() -> ExitCode {
             tracing::info!(
                 target: "azure_init",
                 health_report = "success",
+                "Provisioning completed successfully"
+            );
+
+            // DEBUG
+            tracing::info!(
+                target: "azure_init",
                 "Provisioning completed successfully"
             );
 

@@ -220,6 +220,8 @@ impl EmitKVPLayer {
         let mut supporting_data: Option<HashMap<String, String>> = None;
         let mut optional_key_value: Option<(String, String)> = None;
 
+        tracing::info!(target: "azure_init", "KVP: handle_health_report called with status={}", status);
+
         event.record(
             &mut |field: &tracing::field::Field,
                   value: &dyn std::fmt::Debug| {
@@ -268,12 +270,14 @@ impl EmitKVPLayer {
 
         let provisioning_status: Option<String> = match status {
             "success" => {
+                tracing::info!(target: "azure_init", "provisioning_status_block: success");
                 let okv = optional_key_value
                     .as_ref()
                     .map(|(k, v)| (k.as_str(), v.as_str()));
                 Some(encoded_success_report(&self.vm_id, okv))
             }
             "failure" => {
+                tracing::info!(target: "azure_init", "provisioning_status_block: failure");
                 let reason_str = reason.as_deref().unwrap_or("Unknown failure");
                 let mut details = reason_str.to_string();
                 if let Some(kvs) = supporting_data.as_ref() {
@@ -291,6 +295,7 @@ impl EmitKVPLayer {
                 Some(err.as_encoded_report(&self.vm_id, "None"))
             }
             "in progress" => {
+                tracing::info!(target: "azure_init", "provisioning_status_block: in progress");
                 let desc = format!(
                     "Provisioning is still in progress for vm_id={}.",
                     self.vm_id
