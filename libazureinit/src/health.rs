@@ -26,7 +26,7 @@ enum ProvisioningState {
 #[derive(Debug)]
 enum ProvisioningSubStatus {
     ProvisioningFailed,
-    ProvisioningInProgress,
+    Provisioning,
 }
 
 impl std::fmt::Display for ProvisioningState {
@@ -44,9 +44,7 @@ impl std::fmt::Display for ProvisioningSubStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ProvisioningSubStatus::ProvisioningFailed => "ProvisioningFailed",
-            ProvisioningSubStatus::ProvisioningInProgress => {
-                "ProvisioningInProgress"
-            }
+            ProvisioningSubStatus::Provisioning => "Provisioning",
         };
         write!(f, "{s}")
     }
@@ -123,7 +121,7 @@ pub async fn report_in_progress(
     let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
     _report(
         ProvisioningState::NotReady,
-        Some(ProvisioningSubStatus::ProvisioningInProgress),
+        Some(ProvisioningSubStatus::Provisioning),
         Some(desc),
         config,
     )

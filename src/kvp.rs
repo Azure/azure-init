@@ -344,15 +344,30 @@ where
     /// event!(Level::INFO, msg = "Event message");
     /// ```
     fn on_event(&self, event: &tracing::Event<'_>, ctx: TracingContext<'_, S>) {
-        let mut event_message = String::new();
+        // Check for health_report events, as they exist outside of a span.
+        let mut health_report = None;
+        event.record(
+            &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
+                if field.name() == "health_report" {
+                    health_report =
+                        Some(format!("{value:?}").trim_matches('"').to_string());
+                }
+            },
+        );
 
-        let mut visitor = StringVisitor {
-            string: &mut event_message,
-        };
+        if let Some(health_str) = health_report {
+            self.handle_health_report(event, &health_str);
+            return;
+        }
 
-        event.record(&mut visitor);
-
+        // All other events are inside a span.
         if let Some(span) = ctx.lookup_current() {
+            let mut event_message = String::new();
+            let mut visitor = StringVisitor {
+                string: &mut event_message,
+            };
+            event.record(&mut visitor);
+
             let mut extensions = span.extensions_mut();
 
             if event.metadata().level() == &tracing::Level::ERROR {
@@ -373,23 +388,6 @@ where
 
             let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ");
-
-            let mut health_report = None;
-            event.record(
-                &mut |field: &tracing::field::Field,
-                      value: &dyn std::fmt::Debug| {
-                    if field.name() == "health_report" {
-                        health_report = Some(
-                            format!("{value:?}").trim_matches('"').to_string(),
-                        );
-                    }
-                },
-            );
-
-            if let Some(health_str) = health_report {
-                self.handle_health_report(event, &health_str);
-                return;
-            }
 
             let event_value =
                 format!("Time: {event_time_dt} | Event: {event_message}");
