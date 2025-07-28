@@ -274,7 +274,7 @@ impl EmitKVPLayer {
                 let okv = optional_key_value
                     .as_ref()
                     .map(|(k, v)| (k.as_str(), v.as_str()));
-                Some(encoded_success_report(&self.vm_id, okv))
+                Some(encoded_success_report(&self.vm_id, "None", okv))
             }
             "failure" => {
                 tracing::info!(target: "azure_init", "provisioning_status_block: failure");

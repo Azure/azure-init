@@ -20,7 +20,6 @@ use crate::http;
 enum ProvisioningState {
     Ready,
     NotReady,
-    //InProgress,
 }
 
 #[derive(Debug)]
@@ -34,7 +33,6 @@ impl std::fmt::Display for ProvisioningState {
         let s = match self {
             ProvisioningState::Ready => "Ready",
             ProvisioningState::NotReady => "NotReady",
-            //ProvisioningState::InProgress => "InProgress",
         };
         write!(f, "{s}")
     }
@@ -53,6 +51,7 @@ impl std::fmt::Display for ProvisioningSubStatus {
 /// Constructs a KVP entry representing a successful provisioning event.
 pub fn encoded_success_report(
     vm_id: &str,
+    pps_type: &str,
     optional_key_value: Option<(&str, &str)>,
 ) -> String {
     let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
@@ -61,7 +60,7 @@ pub fn encoded_success_report(
     let mut data = vec![
         "result=success".to_string(),
         format!("agent={}", agent),
-        "pps_type=None".to_string(),
+        format!("pps_type={}", pps_type),
         format!("vm_id={}", vm_id),
         format!("timestamp={}", timestamp),
     ];
@@ -95,7 +94,7 @@ pub async fn report_ready(
     optional_key_value: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     tracing::info!("Reporting provisioning complete");
-    let desc = encoded_success_report(vm_id, optional_key_value);
+    let desc = encoded_success_report(vm_id, "None", optional_key_value);
     _report(ProvisioningState::Ready, None, Some(desc), config).await
 }
 
@@ -396,7 +395,7 @@ mod tests {
     fn test_encoded_success_report_format() {
         let vm_id = "00000000-0000-0000-0000-000000000abc";
         let encoded =
-            encoded_success_report(vm_id, Some(("build", "test-123")));
+            encoded_success_report(vm_id, "None", Some(("build", "test-123")));
 
         assert!(encoded.contains("result=success"));
         assert!(encoded.contains("agent=Azure-Init/"));
