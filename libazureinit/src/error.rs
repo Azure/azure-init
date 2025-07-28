@@ -169,12 +169,12 @@ impl Error {
         let mut data = vec![
             "result=error".to_string(),
             format!("reason={}", self.reason()),
-            format!("agent={}", agent),
+            format!("agent={agent}"),
         ];
         for (k, v) in self.supporting_data() {
             data.push(format!("{k}={v}"));
         }
-        data.push(format!("pps_type={}", pps_type));
+        data.push(format!("pps_type={pps_type}"));
         data.push(format!("vm_id={vm_id}"));
         data.push(format!("timestamp={}", timestamp.to_rfc3339()));
         data.push(format!("documentation_url={}", self.documentation_url()));

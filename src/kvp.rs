@@ -32,7 +32,7 @@ use tracing_subscriber::{
 
 use sysinfo::System;
 
-use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
+use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender, oneshot};
 
 use chrono::{DateTime, Utc};
 use libazureinit::health::encoded_success_report;
@@ -142,7 +142,7 @@ impl EmitKVPLayer {
     pub fn new(
         file_path: std::path::PathBuf,
         vm_id: &str,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<(Self, oneshot::Receiver<()>), anyhow::Error> {
         truncate_guest_pool_file(&file_path)?;
 
         let file = OpenOptions::new()
@@ -154,13 +154,17 @@ impl EmitKVPLayer {
             UnboundedSender<Vec<u8>>,
             UnboundedReceiver<Vec<u8>>,
         ) = tokio::sync::mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
 
-        tokio::spawn(Self::kvp_writer(file, events_rx));
+        tokio::spawn(Self::kvp_writer(file, events_rx, completion_tx));
 
-        Ok(Self {
-            events_tx,
-            vm_id: vm_id.to_string(),
-        })
+        Ok((
+            Self {
+                events_tx,
+                vm_id: vm_id.to_string(),
+            },
+            completion_rx,
+        ))
     }
 
     /// An asynchronous task that serializes incoming KVP data to the specified file.
@@ -173,6 +177,7 @@ impl EmitKVPLayer {
     async fn kvp_writer(
         mut file: File,
         mut events: UnboundedReceiver<Vec<u8>>,
+        completion_tx: oneshot::Sender<()>,
     ) -> io::Result<()> {
         while let Some(encoded_kvp) = events.recv().await {
             if let Err(e) = file.write_all(&encoded_kvp) {
@@ -182,6 +187,8 @@ impl EmitKVPLayer {
                 eprintln!("Failed to flush the log file: {e}");
             }
         }
+        // The receiver might have been dropped if the main thread doesn't wait
+        let _ = completion_tx.send(());
         Ok(())
     }
 
@@ -347,10 +354,12 @@ where
         // Check for health_report events, as they exist outside of a span.
         let mut health_report = None;
         event.record(
-            &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
                 if field.name() == "health_report" {
-                    health_report =
-                        Some(format!("{value:?}").trim_matches('"').to_string());
+                    health_report = Some(
+                        format!("{value:?}").trim_matches('"').to_string(),
+                    );
                 }
             },
         );
@@ -696,8 +705,9 @@ mod tests {
 
         let test_vm_id = "00000000-0000-0000-0000-000000000001";
 
-        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone(), test_vm_id)
-            .expect("Failed to create EmitKVPLayer");
+        let (emit_kvp_layer, mut _rx) =
+            EmitKVPLayer::new(temp_path.clone(), test_vm_id)
+                .expect("Failed to create EmitKVPLayer");
 
         let subscriber = Registry::default().with(emit_kvp_layer);
         let default_guard = tracing::subscriber::set_default(subscriber);
@@ -873,7 +883,8 @@ mod tests {
         let emit_kvp_layer = if kvp_enabled {
             Some(
                 EmitKVPLayer::new(temp_path.clone(), test_vm_id)
-                    .expect("Failed to create EmitKVPLayer"),
+                    .expect("Failed to create EmitKVPLayer")
+                    .0,
             )
         } else {
             None
