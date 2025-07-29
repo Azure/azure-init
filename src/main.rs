@@ -7,19 +7,16 @@ pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use libazureinit::config::Config;
-use libazureinit::imds::InstanceMetadata;
-use libazureinit::User;
 use libazureinit::{
+    config::Config,
     error::Error as LibError,
+    get_vm_id,
     health::{report_failure, report_ready},
-    imds, media,
-    media::{get_mount_device, Environment},
+    imds::{query, InstanceMetadata},
+    is_provisioning_complete, mark_provisioning_complete,
+    media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
-    Provision,
-};
-use libazureinit::{
-    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+    Provision, User,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -81,7 +78,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
 
     // loop until it finds a correct device.
     for dev in ovf_devices {
-        environment = match media::mount_parse_ovf_env(dev) {
+        environment = match mount_parse_ovf_env(dev) {
             Ok(env) => Some(env),
             Err(_) => continue,
         }
@@ -394,7 +391,7 @@ async fn provision(
     // immediately in a single failure, instead it should fall back to the other
     // mechanism. So it is not a good idea to use `?` for query() or
     // get_environment().
-    let instance_metadata = imds::query(
+    let instance_metadata = query(
         &client,
         Duration::from_secs_f64(clone_config.imds.connection_timeout_secs),
         Duration::from_secs_f64(clone_config.imds.total_retry_timeout_secs),
