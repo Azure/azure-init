@@ -220,105 +220,33 @@ async fn main() -> ExitCode {
     let temp_subscriber =
         tracing_subscriber::Registry::default().with(temp_layer);
 
-    let config =
-        match tracing::subscriber::with_default(temp_subscriber, || {
-            Config::load(opts.config.clone())
-        }) {
-            Ok(cfg) => cfg,
-            Err(error) => {
-                eprintln!("Failed to load configuration: {error:?}");
-                eprintln!("Example configuration:\n\n{}", Config::default());
-
-                // Build temporary config to pass in wireserver defaults for report_failure
-                let cfg = Config::default();
-
-                let err = LibError::LoadSshdConfig {
-                    details: format!("{error:?}"),
-                };
-
-                // Report the failure to the health endpoint
-                let report_str = err.as_encoded_report(&vm_id, "None");
-                let report_result = report_failure(report_str, &cfg).await;
-
-                if let Err(report_error) = report_result {
-                    tracing::warn!(
-                        "Failed to send provisioning failure report: {:?}",
-                        report_error
-                    );
-                }
-
-                tracing::error!(
-                    health_report = "failure",
-                    reason = %error,
-                    "Invalid config during early startup"
-                );
-                return ExitCode::FAILURE;
+    let setup_result =
+        tracing::subscriber::with_default(temp_subscriber, || {
+            let config = Config::load(opts.config.clone())?;
+            let (subscriber, rx) = setup_layers(tracer, &vm_id, &config)?;
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber)
+            {
+                eprintln!("Failed to set global default subscriber: {e}");
             }
-        };
+            Ok::<_, anyhow::Error>((config, rx))
+        });
 
-    if let Err(e) = setup_layers(tracer, &vm_id, &config) {
-        tracing::error!("Failed to set final logging subscriber: {e:?}");
-    }
+    let (config, kvp_completion_rx) = match setup_result {
+        Ok((config, rx)) => (config, rx),
+        Err(error) => {
+            eprintln!("Failed to load configuration: {error:?}");
+            eprintln!("Example configuration:\n\n{}", Config::default());
 
-    tracing::info!(
-        target = "libazureinit::config::success",
-        "Final configuration: {:#?}",
-        config
-    );
+            // Build temporary config to pass in wireserver defaults for report_failure
+            let cfg = Config::default();
 
-    if let Some(Command::Clean { logs }) = opts.command {
-        if clean_provisioning_status(&config).is_err() {
-            return ExitCode::FAILURE;
-        }
+            let err = LibError::LoadSshdConfig {
+                details: format!("{error:?}"),
+            };
 
-        if logs && clean_log_file(&config).is_err() {
-            return ExitCode::FAILURE;
-        }
-
-        return ExitCode::SUCCESS;
-    }
-
-    if is_provisioning_complete(Some(&config), &vm_id) {
-        tracing::info!(
-            "Provisioning already completed earlier. Skipping provisioning."
-        );
-        return ExitCode::SUCCESS;
-    }
-
-    let clone_config = config.clone();
-    match provision(config, &vm_id, opts).await {
-        Ok(_) => {
-            let report_result = report_ready(&clone_config, &vm_id, None).await;
-
-            if let Err(report_error) = report_result {
-                tracing::warn!(
-                    "Failed to send provisioning success report: {:?}",
-                    report_error
-                );
-            }
-
-            tracing::info!(
-                target: "azure_init",
-                health_report = "success",
-                "Provisioning completed successfully"
-            );
-
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            tracing::error!("Provisioning failed with error: {:?}", e);
-            eprintln!("{e:?}");
-
-            let report_str = e
-                .downcast_ref::<LibError>()
-                .map(|lib_error| lib_error.as_encoded_report(&vm_id, "None"))
-                .unwrap_or_else(|| {
-                    LibError::UnhandledError {
-                        details: format!("{e:?}"),
-                    }
-                    .as_encoded_report(&vm_id, "None")
-                });
-            let report_result = report_failure(report_str, &clone_config).await;
+            // Report the failure to the health endpoint
+            let report_str = err.as_encoded_report(&vm_id, "None");
+            let report_result = report_failure(report_str, &cfg).await;
 
             if let Err(report_error) = report_result {
                 tracing::warn!(
@@ -329,21 +257,103 @@ async fn main() -> ExitCode {
 
             tracing::error!(
                 health_report = "failure",
-                reason = %e,
-                "Provisioning failed with error"
+                reason = %error,
+                "Invalid config during early startup"
             );
-            let config: u8 = exitcode::CONFIG
-                .try_into()
-                .expect("Error code must be less than 256");
-            match e.root_cause().downcast_ref::<LibError>() {
-                Some(LibError::UserMissing { user: _ }) => {
-                    ExitCode::from(config)
+            return ExitCode::FAILURE;
+        }
+    };
+
+    tracing::info!(
+        target = "libazureinit::config::success",
+        "Final configuration: {:#?}",
+        config
+    );
+
+    let exit_code = if let Some(Command::Clean { logs }) = opts.command {
+        if clean_provisioning_status(&config).is_err()
+            || (logs && clean_log_file(&config).is_err())
+        {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
+    } else if is_provisioning_complete(Some(&config), &vm_id) {
+        tracing::info!(
+            "Provisioning already completed earlier. Skipping provisioning."
+        );
+        ExitCode::SUCCESS
+    } else {
+        let clone_config = config.clone();
+        match provision(config, &vm_id, opts).await {
+            Ok(_) => {
+                let report_result =
+                    report_ready(&clone_config, &vm_id, None).await;
+
+                if let Err(report_error) = report_result {
+                    tracing::warn!(
+                        "Failed to send provisioning success report: {:?}",
+                        report_error
+                    );
                 }
-                Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                Some(_) | None => ExitCode::FAILURE,
+
+                tracing::info!(
+                    target: "azure_init",
+                    health_report = "success",
+                    "Provisioning completed successfully"
+                );
+
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                tracing::error!("Provisioning failed with error: {:?}", e);
+                eprintln!("{e:?}");
+
+                let report_str = e
+                    .downcast_ref::<LibError>()
+                    .map(|lib_error| {
+                        lib_error.as_encoded_report(&vm_id, "None")
+                    })
+                    .unwrap_or_else(|| {
+                        LibError::UnhandledError {
+                            details: format!("{e:?}"),
+                        }
+                        .as_encoded_report(&vm_id, "None")
+                    });
+                let report_result =
+                    report_failure(report_str, &clone_config).await;
+
+                if let Err(report_error) = report_result {
+                    tracing::warn!(
+                        "Failed to send provisioning failure report: {:?}",
+                        report_error
+                    );
+                }
+
+                tracing::error!(
+                    health_report = "failure",
+                    reason = %e,
+                    "Provisioning failed with error"
+                );
+                let config: u8 = exitcode::CONFIG
+                    .try_into()
+                    .expect("Error code must be less than 256");
+                match e.root_cause().downcast_ref::<LibError>() {
+                    Some(LibError::UserMissing { user: _ }) => {
+                        ExitCode::from(config)
+                    }
+                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+                    Some(_) | None => ExitCode::FAILURE,
+                }
             }
         }
+    };
+
+    if let Some(rx) = kvp_completion_rx {
+        // Wait for the KVP writer to finish.
+        let _ = rx.await;
     }
+    exit_code
 }
 
 #[instrument(name = "root", skip_all)]

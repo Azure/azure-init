@@ -162,19 +162,19 @@ impl Error {
     ///
     /// Includes the result, reason, agent, supporting data, and standard fields such as
     /// `vm_id`, `timestamp`, and documentation URL.
-    pub fn as_encoded_report(&self, vm_id: &str, _pps_type: &str) -> String {
+    pub fn as_encoded_report(&self, vm_id: &str, pps_type: &str) -> String {
         let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
         let timestamp = chrono::Utc::now();
 
         let mut data = vec![
             "result=error".to_string(),
             format!("reason={}", self.reason()),
-            format!("agent={}", agent),
+            format!("agent={agent}"),
         ];
         for (k, v) in self.supporting_data() {
             data.push(format!("{k}={v}"));
         }
-        data.push("pps_type=None".to_string());
+        data.push(format!("pps_type={pps_type}"));
         data.push(format!("vm_id={vm_id}"));
         data.push(format!("timestamp={}", timestamp.to_rfc3339()));
         data.push(format!("documentation_url={}", self.documentation_url()));
