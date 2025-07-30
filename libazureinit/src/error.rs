@@ -89,6 +89,9 @@ impl From<tokio::time::error::Elapsed> for Error {
 
 /// Implement reportable formatting for `Error` to be used in health reporting.
 impl Error {
+    /// Documentation URL for end users/support.
+    const DOCUMENTATION_URL: &'static str =
+        "https://aka.ms/linuxprovisioningerror";
     /// Returns a concise, fixed string for health reporting, following cloud-init style:
     /// lowercase, except for acronyms (e.g., JSON, XML, SSH).
     ///
@@ -124,11 +127,6 @@ impl Error {
         }
     }
 
-    /// Documentation URL for end users/support.
-    pub fn documentation_url(&self) -> &'static str {
-        "https://aka.ms/linuxprovisioningerror"
-    }
-
     /// Returns a map of additional supporting data for health reporting.
     ///
     /// Known error types provide relevant structured data.
@@ -162,7 +160,7 @@ impl Error {
     ///
     /// Includes the result, reason, agent, supporting data, and standard fields such as
     /// `vm_id`, `timestamp`, and documentation URL.
-    pub fn as_encoded_report(&self, vm_id: &str, pps_type: &str) -> String {
+    pub fn as_encoded_report(&self, vm_id: &str) -> String {
         let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
         let timestamp = chrono::Utc::now();
 
@@ -174,10 +172,10 @@ impl Error {
         for (k, v) in self.supporting_data() {
             data.push(format!("{k}={v}"));
         }
-        data.push(format!("pps_type={pps_type}"));
+        data.push("pps_type=None".to_string());
         data.push(format!("vm_id={vm_id}"));
         data.push(format!("timestamp={}", timestamp.to_rfc3339()));
-        data.push(format!("documentation_url={}", self.documentation_url()));
+        data.push(format!("documentation_url={}", Self::DOCUMENTATION_URL));
         encode_report(&data)
     }
 }
@@ -192,7 +190,7 @@ mod tests {
         let err = Error::LoadSshdConfig {
             details: "bad config".to_string(),
         };
-        let encoded = err.as_encoded_report(vm_id, "None");
+        let encoded = err.as_encoded_report(vm_id);
         assert!(encoded.contains("reason=failed to load sshd config"));
         assert!(encoded.contains("details=bad config"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
@@ -212,7 +210,7 @@ mod tests {
             endpoint: "http://example.com".to_string(),
             status: reqwest::StatusCode::NOT_FOUND,
         };
-        let encoded = err.as_encoded_report(vm_id, "None");
+        let encoded = err.as_encoded_report(vm_id);
         assert!(encoded.contains("endpoint=http://example.com"));
         assert!(encoded.contains("status=404"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
@@ -224,7 +222,7 @@ mod tests {
         let err = Error::UnhandledError {
             details: "test_unhandled_exception".to_string(),
         };
-        let encoded = err.as_encoded_report(vm_id, "None");
+        let encoded = err.as_encoded_report(vm_id);
 
         assert!(encoded.contains("reason=unhandled error"));
         assert!(encoded.contains("error=unhandled error"));

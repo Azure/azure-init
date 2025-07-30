@@ -51,7 +51,6 @@ impl std::fmt::Display for ProvisioningSubStatus {
 /// Constructs a KVP entry representing a successful provisioning event.
 pub fn encoded_success_report(
     vm_id: &str,
-    pps_type: &str,
     optional_key_value: Option<(&str, &str)>,
 ) -> String {
     let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
@@ -60,7 +59,7 @@ pub fn encoded_success_report(
     let mut data = vec![
         "result=success".to_string(),
         format!("agent={}", agent),
-        format!("pps_type={}", pps_type),
+        "pps_type=None".to_string(),
         format!("vm_id={}", vm_id),
         format!("timestamp={}", timestamp),
     ];
@@ -94,7 +93,7 @@ pub async fn report_ready(
     optional_key_value: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     tracing::info!("Reporting provisioning complete");
-    let desc = encoded_success_report(vm_id, "None", optional_key_value);
+    let desc = encoded_success_report(vm_id, optional_key_value);
     _report(ProvisioningState::Ready, None, Some(desc), config).await
 }
 
@@ -283,7 +282,7 @@ mod tests {
         let err = Error::UnhandledError {
             details: "test_failure_retryable".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let report_str = err.as_encoded_report(test_vm_id);
         let result = report_failure(report_str, &cfg).await;
         assert!(result.is_err(), "should have timed out after retrying");
         cancel.cancel();
@@ -332,7 +331,7 @@ mod tests {
         let err = Error::UnhandledError {
             details: "test_report_unexpected_code".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let report_str = err.as_encoded_report(test_vm_id);
         let result = report_failure(report_str, &cfg).await;
         assert!(result.is_err(), "400 Bad Request should fail immediately");
         cancel.cancel();
@@ -380,7 +379,7 @@ mod tests {
         let err = Error::UnhandledError {
             details: "no config".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id, "None");
+        let report_str = err.as_encoded_report(test_vm_id);
         let r2 = report_failure(report_str, &cfg).await;
         assert!(
             r1.is_err(),
@@ -395,7 +394,7 @@ mod tests {
     fn test_encoded_success_report_format() {
         let vm_id = "00000000-0000-0000-0000-000000000abc";
         let encoded =
-            encoded_success_report(vm_id, "None", Some(("build", "test-123")));
+            encoded_success_report(vm_id, Some(("build", "test-123")));
 
         assert!(encoded.contains("result=success"));
         assert!(encoded.contains("agent=Azure-Init/"));

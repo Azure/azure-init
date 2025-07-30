@@ -5,7 +5,8 @@ use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
-use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{event, Level, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -13,12 +14,12 @@ use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
-use crate::kvp::EmitKVPLayer;
+use crate::kvp::Kvp;
 use libazureinit::config::Config;
 
 pub type LoggingSetup = (
     Box<dyn Subscriber + Send + Sync + 'static>,
-    Option<oneshot::Receiver<()>>,
+    Option<JoinHandle<std::io::Result<()>>>,
 );
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
@@ -44,6 +45,7 @@ pub fn setup_layers(
     tracer: sdktrace::Tracer,
     vm_id: &str,
     config: &Config,
+    graceful_shutdown: CancellationToken,
 ) -> Result<LoggingSetup, anyhow::Error> {
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
@@ -65,17 +67,21 @@ pub fn setup_layers(
         .join(","),
     )?;
 
-    let (emit_kvp_layer, kvp_completion_rx) = if config
+    let (emit_kvp_layer, kvp_writer_handle) = if config
         .telemetry
         .kvp_diagnostics
     {
-        match EmitKVPLayer::new(
+        match Kvp::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
+            graceful_shutdown,
         ) {
-            Ok((layer, rx)) => (Some(layer.with_filter(kvp_filter)), Some(rx)),
+            Ok(kvp) => {
+                let layer = kvp.tracing_layer.with_filter(kvp_filter);
+                (Some(layer), Some(kvp.writer))
+            }
             Err(e) => {
-                event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
+                event!(Level::ERROR, "Failed to initialize Kvp: {}. Continuing without KVP logging.", e);
                 (None, None)
             }
         }
@@ -133,5 +139,5 @@ pub fn setup_layers(
         .with(emit_kvp_layer)
         .with(file_layer);
 
-    Ok((Box::new(subscriber), kvp_completion_rx))
+    Ok((Box::new(subscriber), kvp_writer_handle))
 }

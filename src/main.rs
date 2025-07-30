@@ -21,6 +21,7 @@ use libazureinit::{
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
@@ -206,6 +207,7 @@ async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
     let opts = Cli::parse();
+    let graceful_shutdown = CancellationToken::new();
 
     let temp_layer = tracing_subscriber::fmt::layer()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
@@ -220,7 +222,12 @@ async fn main() -> ExitCode {
     let setup_result =
         tracing::subscriber::with_default(temp_subscriber, || {
             let config = Config::load(opts.config.clone())?;
-            let (subscriber, rx) = setup_layers(tracer, &vm_id, &config)?;
+            let (subscriber, rx) = setup_layers(
+                tracer,
+                &vm_id,
+                &config,
+                graceful_shutdown.clone(),
+            )?;
             if let Err(e) = tracing::subscriber::set_global_default(subscriber)
             {
                 eprintln!("Failed to set global default subscriber: {e}");
@@ -242,7 +249,7 @@ async fn main() -> ExitCode {
             };
 
             // Report the failure to the health endpoint
-            let report_str = err.as_encoded_report(&vm_id, "None");
+            let report_str = err.as_encoded_report(&vm_id);
             let report_result = report_failure(report_str, &cfg).await;
 
             if let Err(report_error) = report_result {
@@ -308,14 +315,12 @@ async fn main() -> ExitCode {
 
                 let report_str = e
                     .downcast_ref::<LibError>()
-                    .map(|lib_error| {
-                        lib_error.as_encoded_report(&vm_id, "None")
-                    })
+                    .map(|lib_error| lib_error.as_encoded_report(&vm_id))
                     .unwrap_or_else(|| {
                         LibError::UnhandledError {
                             details: format!("{e:?}"),
                         }
-                        .as_encoded_report(&vm_id, "None")
+                        .as_encoded_report(&vm_id)
                     });
                 let report_result =
                     report_failure(report_str, &clone_config).await;
@@ -332,6 +337,7 @@ async fn main() -> ExitCode {
                     reason = %e,
                     "Provisioning failed with error"
                 );
+
                 let config: u8 = exitcode::CONFIG
                     .try_into()
                     .expect("Error code must be less than 256");
@@ -346,9 +352,22 @@ async fn main() -> ExitCode {
         }
     };
 
-    if let Some(rx) = kvp_completion_rx {
-        // Wait for the KVP writer to finish.
-        let _ = rx.await;
+    if let Some(handle) = kvp_completion_rx {
+        graceful_shutdown.cancel();
+        match handle.await {
+            Ok(Ok(_)) => {
+                tracing::info!("KVP writer task finished successfully.");
+            }
+            Ok(Err(io_err)) => {
+                tracing::warn!(
+                    "KVP writer task finished with an IO error: {:?}",
+                    io_err
+                );
+            }
+            Err(join_err) => {
+                tracing::warn!("KVP writer task panicked: {:?}", join_err);
+            }
+        }
     }
     exit_code
 }
