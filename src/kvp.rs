@@ -26,7 +26,9 @@ use tracing::{
 };
 
 use tracing_subscriber::{
-    layer::Context as TracingContext, registry::LookupSpan, Layer,
+    layer::Context as TracingContext,
+    registry::{LookupSpan, SpanRef},
+    Layer,
 };
 
 use sysinfo::System;
@@ -129,6 +131,18 @@ pub struct EmitKVPLayer {
 }
 
 impl EmitKVPLayer {
+    /// Sets the span's status to Failure if it has not already been set.
+    /// This prevents a panic from trying to insert the same extension type twice.
+    fn set_span_as_failed<S: Subscriber + for<'lookup> LookupSpan<'lookup>>(
+        &self,
+        span: &SpanRef<'_, S>,
+    ) {
+        let mut extensions = span.extensions_mut();
+        if extensions.get_mut::<SpanStatus>().is_none() {
+            extensions.insert(SpanStatus::Failure);
+        }
+    }
+
     /// Creates a new `EmitKVPLayer`, initializing the log file and starting
     /// an asynchronous writer task for handling incoming KVP data.
     ///
@@ -241,10 +255,8 @@ where
         event.record(&mut visitor);
 
         if let Some(span) = ctx.lookup_current() {
-            let mut extensions = span.extensions_mut();
-
             if event.metadata().level() == &tracing::Level::ERROR {
-                extensions.insert(SpanStatus::Failure);
+                self.set_span_as_failed(&span);
             }
 
             let span_context = span.metadata();
@@ -733,5 +745,30 @@ mod tests {
         );
 
         println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_error_events_in_span_does_not_panic() {
+        // This test reproduces the condition that caused the mutex poisoning panic.
+        // It creates a tracing layer, enters a span, and fires two ERROR events.
+        // Without the fix to check before inserting a SpanStatus, this test would
+        // panic on the second `insert` call. It passes now, serving as a
+        // regression test to prevent this bug from recurring.
+        let (events_tx, _events_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let layer = EmitKVPLayer {
+            events_tx,
+            vm_id: "test-vm-id".to_string(),
+        };
+        let subscriber = Registry::default().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            #[instrument]
+            fn a_failing_operation() {
+                event!(Level::ERROR, "This is the first error.");
+                event!(Level::ERROR, "This is the second error.");
+            }
+            a_failing_operation();
+        });
+        // The test passes if it completes without panicking.
     }
 }
