@@ -771,34 +771,4 @@ mod tests {
         });
         // The test passes if it completes without panicking.
     }
-    #[test]
-    #[should_panic(expected = "assertion failed: self.replace(val).is_none()")]
-    fn test_repro_insert_panic() {
-        // This test confirms the root cause of the panic. It demonstrates that
-        // calling `insert` twice on a span's extensions with the same data type
-        // will cause a panic, which is the behavior we fixed.
-        use tracing_subscriber::{layer::Context, Layer};
-        struct MyTestLayer;
-        impl<S> Layer<S> for MyTestLayer
-        where
-            S: Subscriber + for<'a> LookupSpan<'a>,
-        {
-            fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-                if let Some(span) = ctx.span(id) {
-                    let mut extensions = span.extensions_mut();
-                    // The first insert succeeds
-                    extensions.insert(SpanStatus::Failure);
-                    // The second insert of the same type will panic, which is expected.
-                    extensions.insert(SpanStatus::Failure);
-                }
-            }
-        }
-        let subscriber = Registry::default().with(MyTestLayer);
-        tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::span!(Level::INFO, "my_span");
-            span.in_scope(|| {
-                // The on_enter in MyTestLayer will be called here, triggering the panic.
-            });
-        });
-    }
 }
