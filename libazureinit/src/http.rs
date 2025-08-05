@@ -126,7 +126,12 @@ async fn request(
                         match response.error_for_status() {
                             Ok(response) => {
                                 if statuscode == StatusCode::OK {
-                                    tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
+                                    tracing::info!(
+                                        target: "libazureinit::http::success",
+                                        operation_status = "success",
+                                        "HTTP response succeeded with status {}",
+                                        statuscode
+                                    );
                                     return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                                 }
                             },
@@ -144,7 +149,7 @@ async fn request(
                     },
                     Err(error) => {
                         let _enter = span.enter();
-                        tracing::error!(?error, "HTTP request failed to complete");
+                        tracing::warn!(?error, "HTTP request failed to complete");
                     },
                 }
             span.in_scope(||{

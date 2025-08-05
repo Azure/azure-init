@@ -203,6 +203,10 @@ pub async fn query(
                         error.into()
                     });
                 if metadata.is_ok() {
+                    tracing::info!(
+                        operation_status = "success",
+                        "Successfully retrieved and parsed IMDS metadata."
+                    );
                     return metadata;
                 }
             }

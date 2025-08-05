@@ -99,6 +99,10 @@ pub(crate) fn provision_ssh(
 
     chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
 
+    tracing::info!(
+        operation_status = "success",
+        "Successfully provisioned SSH keys."
+    );
     Ok(())
 }
 
@@ -151,7 +155,7 @@ fn run_sshd_command(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!(
+            tracing::warn!(
                 code=output.status.code().unwrap_or(-1),
                 stdout=%stdout,
                 stderr=%stderr,
@@ -160,7 +164,7 @@ fn run_sshd_command(
             None
         }
         Err(e) => {
-            error!(
+            tracing::warn!(
                 error=%e,
                 "Failed to execute sshd -G, assuming sshd configuration defaults",
             );

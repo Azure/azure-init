@@ -134,6 +134,10 @@ pub async fn get_goalstate(
                     error.into()
                 });
                 if goalstate.is_ok() {
+                    tracing::info!(
+                        operation_status = "success",
+                        "Successfully retrieved and parsed goalstate."
+                    );
                     return goalstate;
                 }
             }

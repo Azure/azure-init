@@ -92,6 +92,26 @@ impl Visit for StringVisitor<'_> {
     }
 }
 
+/// A visitor that checks for a specific field indicating a final success status.
+pub struct StatusVisitor {
+    is_success_event: bool,
+}
+
+impl Visit for StatusVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "operation_status" && value == "success" {
+            self.is_success_event = true;
+        }
+    }
+    // Required boilerplate for other types, do nothing.
+    fn record_debug(
+        &mut self,
+        _field: &tracing::field::Field,
+        _value: &dyn std_fmt::Debug,
+    ) {
+    }
+}
+
 /// Represents the state of a span within the `EmitKVPLayer`.
 #[derive(Copy, Clone, Debug)]
 enum SpanStatus {
@@ -133,15 +153,11 @@ pub struct EmitKVPLayer {
 }
 
 impl EmitKVPLayer {
-    /// Sets the span's status to Failure if it has not already been set.
-    /// This prevents a panic from trying to insert the same extension type twice.
+    /// Sets the span's status to Failure, creating or updating it as needed.
     fn set_span_as_failed<S: Subscriber + for<'lookup> LookupSpan<'lookup>>(
         &self,
         span: &SpanRef<'_, S>,
     ) {
-        // Attempt to lock the mutex. If it's poisoned, recover the lock
-        // and proceed. A poisoned lock in the telemetry layer should not
-        // cause a panic
         let _guard = match self.span_status_mutex.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -150,8 +166,33 @@ impl EmitKVPLayer {
             }
         };
         let mut extensions = span.extensions_mut();
-        if extensions.get_mut::<SpanStatus>().is_none() {
+        if let Some(status) = extensions.get_mut::<SpanStatus>() {
+            *status = SpanStatus::Failure;
+        } else {
             extensions.insert(SpanStatus::Failure);
+        }
+    }
+
+    /// Sets the span's status to Success, creating or updating it as needed.
+    /// This is used to override a transient failure if the operation ultimately succeeds.
+    fn set_span_as_succeeded<
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    >(
+        &self,
+        span: &SpanRef<'_, S>,
+    ) {
+        let _guard = match self.span_status_mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("azure-init: Recovering from a poisoned mutex in the KVP tracing layer.");
+                poisoned.into_inner()
+            }
+        };
+        let mut extensions = span.extensions_mut();
+        if let Some(status) = extensions.get_mut::<SpanStatus>() {
+            *status = SpanStatus::Success;
+        } else {
+            extensions.insert(SpanStatus::Success);
         }
     }
 
@@ -268,7 +309,16 @@ where
         event.record(&mut visitor);
 
         if let Some(span) = ctx.lookup_current() {
-            if event.metadata().level() == &tracing::Level::ERROR {
+            // Check for explicit success override, which takes precedence.
+            let mut status_visitor = StatusVisitor {
+                is_success_event: false,
+            };
+            event.record(&mut status_visitor);
+            // An explicit success event will override any previous failures.
+            if status_visitor.is_success_event {
+                self.set_span_as_succeeded(&span);
+            } else if event.metadata().level() == &tracing::Level::ERROR {
+                // Otherwise, a standard error event sets the status to failure.
                 self.set_span_as_failed(&span);
             }
 
@@ -760,13 +810,13 @@ mod tests {
         println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
     }
 
+    // This test reproduces the condition that caused the mutex poisoning panic.
+    // It creates a tracing layer, enters a span, and fires two ERROR events
+    // concurrently using tokio tasks. Without the fix, this test would likely
+    // panic. It passes now, serving as a regression test to prevent this
+    // bug from recurring.
     #[tokio::test]
     async fn test_multiple_error_events_in_span_does_not_panic() {
-        // This test reproduces the condition that caused the mutex poisoning panic.
-        // It creates a tracing layer, enters a span, and fires two ERROR events
-        // concurrently using tokio tasks. Without the fix, this test would likely
-        // panic. It passes now, serving as a regression test to prevent this
-        // bug from recurring.
         let (events_tx, _events_rx) =
             tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let layer = EmitKVPLayer {
@@ -794,12 +844,84 @@ mod tests {
             event!(Level::ERROR, "This is the second error.");
         });
 
-        // The main thread also waits on the barrier
         barrier.wait().await;
 
-        // Wait for both tasks to complete
+        // The test passes if it completes without panicking.
         task1.await.unwrap();
         task2.await.unwrap();
-        // The test passes if it completes without panicking.
+    }
+
+    // This test verifies that an explicit success event can override a previous
+    // failure event, ensuring the final span status is 'success'.
+    #[tokio::test]
+    async fn test_span_status_override() {
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+        let test_vm_id = "test-vm-override";
+
+        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone(), test_vm_id)
+            .expect("Failed to create EmitKVPLayer");
+
+        let subscriber = Registry::default().with(emit_kvp_layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Create a span, simulate a failure, and then a final success.
+        let span = tracing::info_span!("retry_operation");
+        let _enter = span.enter();
+
+        event!(Level::ERROR, msg = "First attempt failed");
+        event!(
+            Level::INFO,
+            operation_status = "success",
+            msg = "Retry succeeded"
+        );
+
+        drop(_enter);
+        drop(span);
+
+        // Give the writer a moment to flush.
+        sleep(Duration::from_millis(100)).await;
+
+        let contents =
+            std::fs::read(temp_path).expect("Failed to read temp file");
+
+        let slice_size =
+            HV_KVP_EXCHANGE_MAX_KEY_SIZE + HV_KVP_EXCHANGE_MAX_VALUE_SIZE;
+        let decoded_slices: Vec<(String, String)> = contents
+            .chunks(slice_size)
+            .map(|chunk| decode_kvp_item(chunk).unwrap())
+            .collect();
+
+        // The final span summary is an INFO-level KVP that contains "Status:"
+        let span_summary_kvp = decoded_slices
+            .iter()
+            .find(|(key, value)| {
+                key.contains("retry_operation")
+                    && key.contains("INFO")
+                    && value.contains("Status:")
+            })
+            .expect("Could not find the final span summary KVP.");
+
+        assert!(
+            span_summary_kvp.1.contains("Status: success"),
+            "Final span status should be 'success', but was: {}",
+            span_summary_kvp.1
+        );
+
+        // Also ensure the original error event was still recorded.
+        let error_event_kvp = decoded_slices
+            .iter()
+            .find(|(key, _)| {
+                key.contains("retry_operation") && key.contains("ERROR")
+            })
+            .expect("Could not find the ERROR event KVP.");
+
+        assert!(
+            error_event_kvp
+                .1
+                .contains(r#"Event: msg="First attempt failed";"#),
+            "Failure event was not correctly recorded."
+        );
     }
 }
