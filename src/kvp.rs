@@ -16,6 +16,7 @@ use std::{
     io::{self, ErrorKind, Write},
     os::unix::fs::MetadataExt,
     path::Path,
+    sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -128,6 +129,7 @@ impl fmt::Display for SpanStatus {
 pub struct EmitKVPLayer {
     events_tx: UnboundedSender<Vec<u8>>,
     vm_id: String,
+    span_status_mutex: Mutex<()>,
 }
 
 impl EmitKVPLayer {
@@ -137,6 +139,16 @@ impl EmitKVPLayer {
         &self,
         span: &SpanRef<'_, S>,
     ) {
+        // Attempt to lock the mutex. If it's poisoned, recover the lock
+        // and proceed. A poisoned lock in the telemetry layer should not
+        // cause a panic
+        let _guard = match self.span_status_mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("azure-init: Recovering from a poisoned mutex in the KVP tracing layer.");
+                poisoned.into_inner()
+            }
+        };
         let mut extensions = span.extensions_mut();
         if extensions.get_mut::<SpanStatus>().is_none() {
             extensions.insert(SpanStatus::Failure);
@@ -170,6 +182,7 @@ impl EmitKVPLayer {
         Ok(Self {
             events_tx,
             vm_id: vm_id.to_string(),
+            span_status_mutex: Mutex::new(()),
         })
     }
 
@@ -750,25 +763,43 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_error_events_in_span_does_not_panic() {
         // This test reproduces the condition that caused the mutex poisoning panic.
-        // It creates a tracing layer, enters a span, and fires two ERROR events.
-        // Without the fix to check before inserting a SpanStatus, this test would
-        // panic on the second `insert` call. It passes now, serving as a
-        // regression test to prevent this bug from recurring.
+        // It creates a tracing layer, enters a span, and fires two ERROR events
+        // concurrently using tokio tasks. Without the fix, this test would likely
+        // panic. It passes now, serving as a regression test to prevent this
+        // bug from recurring.
         let (events_tx, _events_rx) =
             tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let layer = EmitKVPLayer {
             events_tx,
             vm_id: "test-vm-id".to_string(),
+            span_status_mutex: Mutex::new(()),
         };
         let subscriber = Registry::default().with(layer);
-        tracing::subscriber::with_default(subscriber, || {
-            #[instrument]
-            fn a_failing_operation() {
-                event!(Level::ERROR, "This is the first error.");
-                event!(Level::ERROR, "This is the second error.");
-            }
-            a_failing_operation();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+
+        let span = tracing::error_span!("a_failing_operation");
+        let _enter = span.enter();
+
+        let c_barrier = barrier.clone();
+        let task1 = tokio::spawn(async move {
+            c_barrier.wait().await;
+            event!(Level::ERROR, "This is the first error.");
         });
+
+        let c_barrier = barrier.clone();
+        let task2 = tokio::spawn(async move {
+            c_barrier.wait().await;
+            event!(Level::ERROR, "This is the second error.");
+        });
+
+        // The main thread also waits on the barrier
+        barrier.wait().await;
+
+        // Wait for both tasks to complete
+        task1.await.unwrap();
+        task2.await.unwrap();
         // The test passes if it completes without panicking.
     }
 }
