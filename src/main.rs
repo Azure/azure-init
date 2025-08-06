@@ -263,7 +263,6 @@ async fn main() -> ExitCode {
     match provision(config, &vm_id, opts).await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!("Provisioning failed with error: {:?}", e);
             eprintln!("{e:?}");
             let config: u8 = exitcode::CONFIG
                 .try_into()
@@ -279,7 +278,7 @@ async fn main() -> ExitCode {
     }
 }
 
-#[instrument(name = "root", skip_all)]
+#[instrument(name = "root", skip_all, ret(level = "info"), err)]
 async fn provision(
     config: Config,
     vm_id: &str,
