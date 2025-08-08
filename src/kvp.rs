@@ -11,6 +11,7 @@
 //!
 
 use std::{
+    collections::HashMap,
     fmt::{self as std_fmt, Write as std_write},
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
@@ -31,15 +32,125 @@ use tracing_subscriber::{
 
 use sysinfo::System;
 
-use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender};
+use tokio::{
+    sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
 
 use chrono::{DateTime, Utc};
+use libazureinit::health::encoded_success_report;
 use uuid::Uuid;
+
+use libazureinit::error::Error as LibError;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
 const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1022;
 const EVENT_PREFIX: &str = concat!("azure-init-", env!("CARGO_PKG_VERSION"));
+
+/// Encapsulates the KVP (Key-Value Pair) tracing infrastructure.
+///
+/// This struct holds both the `tracing` layer (`EmitKVPLayer`) that generates
+/// telemetry data and the `JoinHandle` for the background task that writes this
+/// data to the KVP file. This allows the caller to manage the lifecycle of the
+/// writer task separately from the tracing layer.
+pub struct Kvp {
+    /// The `tracing` layer that captures span and event data and sends it
+    /// to the KVP writer task.
+    pub tracing_layer: EmitKVPLayer,
+    /// The `JoinHandle` for the background task responsible for writing
+    /// KVP data to the file. The caller can use this handle to wait for
+    /// the writer to finish.
+    pub writer: JoinHandle<io::Result<()>>,
+}
+
+impl Kvp {
+    /// Creates a new `Kvp` instance, spawning a background task for writing
+    /// KVP telemetry data to a file.
+    ///
+    /// This function initializes the necessary components for KVP logging:
+    /// - It truncates the KVP file if it contains stale data.
+    /// - It creates an unbounded channel for passing encoded KVP data from the
+    ///   tracing layer to the writer task.
+    /// - It spawns the `kvp_writer` task, which listens for data and shutdown signals.
+    pub fn new(
+        file_path: std::path::PathBuf,
+        vm_id: &str,
+        graceful_shutdown: CancellationToken,
+    ) -> Result<Self, anyhow::Error> {
+        truncate_guest_pool_file(&file_path)?;
+
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&file_path)?;
+
+        let (events_tx, events_rx): (
+            UnboundedSender<Vec<u8>>,
+            UnboundedReceiver<Vec<u8>>,
+        ) = tokio::sync::mpsc::unbounded_channel();
+
+        let writer =
+            tokio::spawn(Self::kvp_writer(file, events_rx, graceful_shutdown));
+
+        Ok(Self {
+            tracing_layer: EmitKVPLayer {
+                events_tx,
+                vm_id: vm_id.to_string(),
+            },
+            writer,
+        })
+    }
+
+    /// The background task that writes encoded KVP data to a file.
+    ///
+    /// This asynchronous function runs in a loop, waiting for two events:
+    /// 1. Receiving encoded KVP data from the `events` channel, which it then
+    ///    writes to the specified `file`.
+    /// 2. A cancellation signal from the `token`.
+    ///
+    /// Upon receiving the cancellation signal, it stops accepting new events,
+    /// drains the `events` channel of any remaining messages, and writes them
+    /// to the file before exiting gracefully.
+    async fn kvp_writer(
+        mut file: File,
+        mut events: UnboundedReceiver<Vec<u8>>,
+        token: CancellationToken,
+    ) -> io::Result<()> {
+        loop {
+            tokio::select! {
+                biased;
+
+                Some(encoded_kvp) = events.recv() => {
+                    if let Err(e) = file.write_all(&encoded_kvp) {
+                        eprintln!("Failed to write to log file: {e}");
+                    }
+                    if let Err(e) = file.flush() {
+                         eprintln!("Failed to flush the log file: {e}");
+                    }
+                }
+
+                _ = token.cancelled() => {
+                    // Shutdown signal received.
+                    // close the channel and drain remaining messages.
+                    events.close();
+                    while let Some(encoded_kvp) = events.recv().await {
+                        if let Err(e) = file.write_all(&encoded_kvp) {
+                            eprintln!("Failed to write to log file during shutdown: {e}");
+                        }
+                        if let Err(e) = file.flush() {
+                            eprintln!("Failed to flush the log file during shutdown: {e}");
+                        }
+                    }
+                    // All messages are drained, exit the loop.
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 /// A wrapper around `std::time::Instant` that provides convenient methods
 /// for time tracking in spans and events. Implements the `Deref` trait, allowing
@@ -100,58 +211,6 @@ pub struct EmitKVPLayer {
 }
 
 impl EmitKVPLayer {
-    /// Creates a new `EmitKVPLayer`, initializing the log file and starting
-    /// an asynchronous writer task for handling incoming KVP data.
-    ///
-    /// # Arguments
-    /// * `file_path` - The file path where the KVP data will be stored.
-    ///
-    pub fn new(
-        file_path: std::path::PathBuf,
-        vm_id: &str,
-    ) -> Result<Self, anyhow::Error> {
-        truncate_guest_pool_file(&file_path)?;
-
-        let file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&file_path)?;
-
-        let (events_tx, events_rx): (
-            UnboundedSender<Vec<u8>>,
-            UnboundedReceiver<Vec<u8>>,
-        ) = tokio::sync::mpsc::unbounded_channel();
-
-        tokio::spawn(Self::kvp_writer(file, events_rx));
-
-        Ok(Self {
-            events_tx,
-            vm_id: vm_id.to_string(),
-        })
-    }
-
-    /// An asynchronous task that serializes incoming KVP data to the specified file.
-    /// This function manages the file I/O operations to ensure the data is written
-    /// and flushed consistently.
-    ///
-    /// # Arguments
-    /// * `file` - The file where KVP data will be written.
-    /// * `events` - A receiver that provides encoded KVP data as it arrives.
-    async fn kvp_writer(
-        mut file: File,
-        mut events: UnboundedReceiver<Vec<u8>>,
-    ) -> io::Result<()> {
-        while let Some(encoded_kvp) = events.recv().await {
-            if let Err(e) = file.write_all(&encoded_kvp) {
-                eprintln!("Failed to write to log file: {e}");
-            }
-            if let Err(e) = file.flush() {
-                eprintln!("Failed to flush the log file: {e}");
-            }
-        }
-        Ok(())
-    }
-
     /// Sends encoded KVP data to the writer task for asynchronous logging.
     ///
     /// # Arguments
@@ -176,6 +235,106 @@ impl EmitKVPLayer {
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
     }
+
+    /// Emit a health KVP report for success, failure, or in-progress.
+    pub fn handle_health_report(
+        &self,
+        event: &tracing::Event<'_>,
+        status: &str,
+    ) {
+        let mut reason: Option<String> = None;
+        let mut supporting_data: Option<HashMap<String, String>> = None;
+        let mut optional_key_value: Option<(String, String)> = None;
+
+        event.record(
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
+                match field.name() {
+                    "reason" => {
+                        reason = Some(
+                            format!("{value:?}").trim_matches('"').to_string(),
+                        );
+                    }
+                    "supporting_data" => {
+                        let raw = format!("{value:?}");
+                        let mut map = HashMap::new();
+                        let entries = raw
+                            .trim_matches(|c| c == '{' || c == '}')
+                            .split(',');
+                        for entry in entries {
+                            let parts: Vec<&str> = entry
+                                .split(':')
+                                .map(|s| s.trim().trim_matches('"'))
+                                .collect();
+                            if parts.len() == 2 {
+                                map.insert(
+                                    parts[0].to_string(),
+                                    parts[1].to_string(),
+                                );
+                            }
+                        }
+                        if !map.is_empty() {
+                            supporting_data = Some(map);
+                        }
+                    }
+                    "optional_key_value" => {
+                        let raw =
+                            format!("{value:?}").trim_matches('"').to_string();
+                        if let Some((k, v)) = raw.split_once('=') {
+                            optional_key_value = Some((
+                                k.trim().to_string(),
+                                v.trim().to_string(),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        );
+
+        let provisioning_status: Option<String> = match status {
+            "success" => {
+                let okv = optional_key_value
+                    .as_ref()
+                    .map(|(k, v)| (k.as_str(), v.as_str()));
+                Some(encoded_success_report(&self.vm_id, okv))
+            }
+            "failure" => {
+                let reason_str = reason.as_deref().unwrap_or("Unknown failure");
+                let mut details = reason_str.to_string();
+                if let Some(kvs) = supporting_data.as_ref() {
+                    let mut extra = String::new();
+                    for (k, v) in kvs {
+                        extra.push_str(&format!("; {k}={v}"));
+                    }
+                    if !extra.is_empty() {
+                        details.push_str(&extra);
+                    }
+                }
+                let err = LibError::UnhandledError {
+                    details: details.to_string(),
+                };
+                Some(err.as_encoded_report(&self.vm_id))
+            }
+            "in progress" => {
+                let desc = format!(
+                    "Provisioning is still in progress for vm_id={}.",
+                    self.vm_id
+                );
+                Some(desc)
+            }
+            _ => {
+                tracing::warn!(%status, "Invalid health report type");
+                None
+            }
+        };
+
+        if let Some(report_str) = provisioning_status {
+            let msg =
+                encode_kvp_item("PROVISIONING_REPORT", &report_str).concat();
+            self.send_event(msg);
+        }
+    }
 }
 
 impl<S> Layer<S> for EmitKVPLayer
@@ -192,6 +351,9 @@ where
     /// If an `ERROR` level event is encountered, it marks the span's status as a failure,
     /// which will be reflected in the span's data upon closure.
     ///
+    /// Additionally, this function checks if the event contains a `health_report` field.
+    /// If present, the event is delegated to [`handle_health_report`] to be uniquely formatted.
+    ///
     /// # Arguments
     /// * `event` - The tracing event instance containing the message and metadata.
     /// * `ctx` - The current tracing context, which is used to access the span associated
@@ -203,15 +365,32 @@ where
     /// event!(Level::INFO, msg = "Event message");
     /// ```
     fn on_event(&self, event: &tracing::Event<'_>, ctx: TracingContext<'_, S>) {
-        let mut event_message = String::new();
+        // Check for health_report events, as they exist outside of a span.
+        let mut health_report = None;
+        event.record(
+            &mut |field: &tracing::field::Field,
+                  value: &dyn std::fmt::Debug| {
+                if field.name() == "health_report" {
+                    health_report = Some(
+                        format!("{value:?}").trim_matches('"').to_string(),
+                    );
+                }
+            },
+        );
 
-        let mut visitor = StringVisitor {
-            string: &mut event_message,
-        };
+        if let Some(health_str) = health_report {
+            self.handle_health_report(event, &health_str);
+            return;
+        }
 
-        event.record(&mut visitor);
-
+        // All other events are inside a span.
         if let Some(span) = ctx.lookup_current() {
+            let mut event_message = String::new();
+            let mut visitor = StringVisitor {
+                string: &mut event_message,
+            };
+            event.record(&mut visitor);
+
             let span_context = span.metadata();
             let span_id: Uuid = Uuid::new_v4();
 
@@ -491,8 +670,12 @@ mod tests {
 
         mock_child_function(0).await;
         sleep(Duration::from_millis(300)).await;
-
-        event!(Level::INFO, msg = "Provisioning completed");
+        event!(
+            Level::INFO,
+            health_report = "success",
+            optional_key_value = "origin=mock_source",
+            "Provisioning completed successfully"
+        );
 
         Ok(())
     }
@@ -500,10 +683,18 @@ mod tests {
     #[instrument]
     async fn mock_failure_function() -> Result<(), anyhow::Error> {
         let error_message = "Simulated failure during processing";
-        event!(Level::ERROR, msg = %error_message);
+        let mut supporting = HashMap::new();
+        supporting.insert("step", "mock_stuff");
+        supporting.insert("source", "unit_test");
+        event!(
+            Level::ERROR,
+            health_report = "failure",
+            reason = "Simulated failure during processing",
+            supporting_data = ?supporting,
+            "Provisioning failed"
+        );
 
         sleep(Duration::from_millis(100)).await;
-
         Err(anyhow::anyhow!(error_message))
     }
 
@@ -515,18 +706,23 @@ mod tests {
 
         let test_vm_id = "00000000-0000-0000-0000-000000000001";
 
-        let emit_kvp_layer = EmitKVPLayer::new(temp_path.clone(), test_vm_id)
-            .expect("Failed to create EmitKVPLayer");
+        let graceful_shutdown = CancellationToken::new();
+        let kvp =
+            Kvp::new(temp_path.clone(), test_vm_id, graceful_shutdown.clone())
+                .expect("Failed to create Kvp");
 
-        let subscriber = Registry::default().with(emit_kvp_layer);
+        let subscriber = Registry::default().with(kvp.tracing_layer);
         let default_guard = tracing::subscriber::set_default(subscriber);
 
         let _ = mock_provision().await;
         let _ = mock_failure_function().await;
 
-        sleep(Duration::from_secs(1)).await;
-
         drop(default_guard);
+        graceful_shutdown.cancel();
+        kvp.writer
+            .await
+            .expect("KVP writer task panicked")
+            .expect("KVP writer task returned an IO error");
 
         let contents =
             std::fs::read(temp_path).expect("Failed to read temp file");
@@ -546,6 +742,9 @@ mod tests {
             contents.len()
         );
 
+        let mut found_success = false;
+        let mut found_failure = false;
+
         for i in 0..num_slices {
             let start = i * slice_size;
             let end = start + slice_size;
@@ -561,6 +760,19 @@ mod tests {
                 Ok((key, value)) => {
                     println!("Decoded KVP - Key: {key}");
                     println!("Decoded KVP - Value: {value}\n");
+
+                    // Check for success or failure reports
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=success")
+                    {
+                        found_success = true;
+                    }
+
+                    if key == "PROVISIONING_REPORT"
+                        && value.contains("result=error")
+                    {
+                        found_failure = true;
+                    }
                 }
                 Err(e) => {
                     panic!("Failed to decode KVP: {e}");
@@ -577,6 +789,15 @@ mod tests {
                 "Value section in slice {i} should contain non-zero bytes"
             );
         }
+
+        assert!(
+            found_success,
+            "Expected to find a 'result=success' entry but did not."
+        );
+        assert!(
+            found_failure,
+            "Expected to find a 'result=error' entry but did not."
+        );
     }
 
     #[tokio::test]
@@ -664,10 +885,16 @@ mod tests {
 
         let kvp_enabled = config.telemetry.kvp_diagnostics;
 
+        let graceful_shutdown = CancellationToken::new();
         let emit_kvp_layer = if kvp_enabled {
             Some(
-                EmitKVPLayer::new(temp_path.clone(), test_vm_id)
-                    .expect("Failed to create EmitKVPLayer"),
+                Kvp::new(
+                    temp_path.clone(),
+                    test_vm_id,
+                    graceful_shutdown.clone(),
+                )
+                .expect("Failed to create Kvp")
+                .tracing_layer,
             )
         } else {
             None

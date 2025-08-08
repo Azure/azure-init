@@ -7,22 +7,21 @@ pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use libazureinit::config::Config;
-use libazureinit::imds::InstanceMetadata;
-use libazureinit::User;
 use libazureinit::{
+    config::Config,
     error::Error as LibError,
-    goalstate, imds, media,
-    media::{get_mount_device, Environment},
+    get_vm_id,
+    health::{report_failure, report_ready},
+    imds::{query, InstanceMetadata},
+    is_provisioning_complete, mark_provisioning_complete,
+    media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
-    Provision,
-};
-use libazureinit::{
-    get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+    Provision, User,
 };
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
@@ -80,7 +79,7 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
 
     // loop until it finds a correct device.
     for dev in ovf_devices {
-        environment = match media::mount_parse_ovf_env(dev) {
+        environment = match mount_parse_ovf_env(dev) {
             Ok(env) => Some(env),
             Err(_) => continue,
         }
@@ -208,6 +207,7 @@ async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
     let opts = Cli::parse();
+    let graceful_shutdown = CancellationToken::new();
 
     let temp_layer = tracing_subscriber::fmt::layer()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
@@ -219,21 +219,54 @@ async fn main() -> ExitCode {
     let temp_subscriber =
         tracing_subscriber::Registry::default().with(temp_layer);
 
-    let config =
-        match tracing::subscriber::with_default(temp_subscriber, || {
-            Config::load(opts.config.clone())
-        }) {
-            Ok(cfg) => cfg,
-            Err(error) => {
-                eprintln!("Failed to load configuration: {error:?}");
-                eprintln!("Example configuration:\n\n{}", Config::default());
-                return ExitCode::FAILURE;
+    let setup_result =
+        tracing::subscriber::with_default(temp_subscriber, || {
+            let config = Config::load(opts.config.clone())?;
+            let (subscriber, rx) = setup_layers(
+                tracer,
+                &vm_id,
+                &config,
+                graceful_shutdown.clone(),
+            )?;
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber)
+            {
+                eprintln!("Failed to set global default subscriber: {e}");
             }
-        };
+            Ok::<_, anyhow::Error>((config, rx))
+        });
 
-    if let Err(e) = setup_layers(tracer, &vm_id, &config) {
-        tracing::error!("Failed to set final logging subscriber: {e:?}");
-    }
+    let (config, kvp_completion_rx) = match setup_result {
+        Ok((config, rx)) => (config, rx),
+        Err(error) => {
+            eprintln!("Failed to load configuration: {error:?}");
+            eprintln!("Example configuration:\n\n{}", Config::default());
+
+            // Build temporary config to pass in wireserver defaults for report_failure
+            let cfg = Config::default();
+
+            let err = LibError::LoadSshdConfig {
+                details: format!("{error:?}"),
+            };
+
+            // Report the failure to the health endpoint
+            let report_str = err.as_encoded_report(&vm_id);
+            let report_result = report_failure(report_str, &cfg).await;
+
+            if let Err(report_error) = report_result {
+                tracing::warn!(
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
+                );
+            }
+
+            tracing::error!(
+                health_report = "failure",
+                reason = %error,
+                "Invalid config during early startup"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     tracing::info!(
         target = "libazureinit::config::success",
@@ -241,41 +274,101 @@ async fn main() -> ExitCode {
         config
     );
 
-    if let Some(Command::Clean { logs }) = opts.command {
-        if clean_provisioning_status(&config).is_err() {
-            return ExitCode::FAILURE;
+    let exit_code = if let Some(Command::Clean { logs }) = opts.command {
+        if clean_provisioning_status(&config).is_err()
+            || (logs && clean_log_file(&config).is_err())
+        {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
         }
-
-        if logs && clean_log_file(&config).is_err() {
-            return ExitCode::FAILURE;
-        }
-
-        return ExitCode::SUCCESS;
-    }
-
-    if is_provisioning_complete(Some(&config), &vm_id) {
+    } else if is_provisioning_complete(Some(&config), &vm_id) {
         tracing::info!(
             "Provisioning already completed earlier. Skipping provisioning."
         );
-        return ExitCode::SUCCESS;
-    }
+        ExitCode::SUCCESS
+    } else {
+        let clone_config = config.clone();
+        match provision(config, &vm_id, opts).await {
+            Ok(_) => {
+                let report_result =
+                    report_ready(&clone_config, &vm_id, None).await;
 
-    match provision(config, &vm_id, opts).await {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{e:?}");
-            let config: u8 = exitcode::CONFIG
-                .try_into()
-                .expect("Error code must be less than 256");
-            match e.root_cause().downcast_ref::<LibError>() {
-                Some(LibError::UserMissing { user: _ }) => {
-                    ExitCode::from(config)
+                if let Err(report_error) = report_result {
+                    tracing::warn!(
+                        "Failed to send provisioning success report: {:?}",
+                        report_error
+                    );
                 }
-                Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                Some(_) | None => ExitCode::FAILURE,
+
+                tracing::info!(
+                    target: "azure_init",
+                    health_report = "success",
+                    "Provisioning completed successfully"
+                );
+
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e:?}");
+
+                let report_str = e
+                    .downcast_ref::<LibError>()
+                    .map(|lib_error| lib_error.as_encoded_report(&vm_id))
+                    .unwrap_or_else(|| {
+                        LibError::UnhandledError {
+                            details: format!("{e:?}"),
+                        }
+                        .as_encoded_report(&vm_id)
+                    });
+                let report_result =
+                    report_failure(report_str, &clone_config).await;
+
+                if let Err(report_error) = report_result {
+                    tracing::warn!(
+                        "Failed to send provisioning failure report: {:?}",
+                        report_error
+                    );
+                }
+
+                tracing::error!(
+                    health_report = "failure",
+                    reason = %e,
+                    "Provisioning failed with error"
+                );
+
+                let config: u8 = exitcode::CONFIG
+                    .try_into()
+                    .expect("Error code must be less than 256");
+                match e.root_cause().downcast_ref::<LibError>() {
+                    Some(LibError::UserMissing { user: _ }) => {
+                        ExitCode::from(config)
+                    }
+                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+                    Some(_) | None => ExitCode::FAILURE,
+                }
+            }
+        }
+    };
+
+    if let Some(handle) = kvp_completion_rx {
+        graceful_shutdown.cancel();
+        match handle.await {
+            Ok(Ok(_)) => {
+                tracing::info!("KVP writer task finished successfully.");
+            }
+            Ok(Err(io_err)) => {
+                tracing::warn!(
+                    "KVP writer task finished with an IO error: {:?}",
+                    io_err
+                );
+            }
+            Err(join_err) => {
+                tracing::warn!("KVP writer task panicked: {:?}", join_err);
             }
         }
     }
+    exit_code
 }
 
 #[instrument(name = "root", skip_all, ret(level = "info"), err)]
@@ -311,18 +404,15 @@ async fn provision(
         .default_headers(default_headers)
         .build()?;
 
-    let imds_http_timeout_sec: u64 = 5 * 60;
-    let imds_http_retry_interval_sec: u64 = 2;
-
     // Username can be obtained either via fetching instance metadata from IMDS
     // or mounting a local device for OVF environment file. It should not fail
     // immediately in a single failure, instead it should fall back to the other
     // mechanism. So it is not a good idea to use `?` for query() or
     // get_environment().
-    let instance_metadata = imds::query(
+    let instance_metadata = query(
         &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
+        Duration::from_secs_f64(clone_config.imds.connection_timeout_secs),
+        Duration::from_secs_f64(clone_config.imds.total_retry_timeout_secs),
         None, // default IMDS URL
     )
     .await
@@ -349,31 +439,6 @@ async fn provision(
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
     )
     .provision()?;
-
-    let vm_goalstate = goalstate::get_goalstate(
-        &client,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver goalstate URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to get the desired goalstate.");
-        "Failed to get desired goalstate."
-    })?;
-
-    goalstate::report_health(
-        &client,
-        vm_goalstate,
-        Duration::from_secs(imds_http_retry_interval_sec),
-        Duration::from_secs(imds_http_timeout_sec),
-        None, // default wireserver health URL
-    )
-    .await
-    .with_context(|| {
-        tracing::error!("Failed to report VM health.");
-        "Failed to report VM health."
-    })?;
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {
