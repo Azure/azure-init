@@ -27,9 +27,7 @@ use tracing::{
 };
 
 use tracing_subscriber::{
-    layer::Context as TracingContext,
-    registry::{LookupSpan, SpanRef},
-    Layer,
+    layer::Context as TracingContext, registry::LookupSpan, Layer,
 };
 
 use sysinfo::System;
@@ -42,7 +40,6 @@ use tokio_util::sync::CancellationToken;
 
 use chrono::{DateTime, Utc};
 use libazureinit::health::encoded_success_report;
-use std::fmt;
 use uuid::Uuid;
 
 use libazureinit::error::Error as LibError;
@@ -202,34 +199,6 @@ impl Visit for StringVisitor<'_> {
     }
 }
 
-/// Represents the state of a span within the `EmitKVPLayer`.
-#[derive(Copy, Clone, Debug)]
-enum SpanStatus {
-    Success,
-    Failure,
-}
-
-impl SpanStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            SpanStatus::Success => "success",
-            SpanStatus::Failure => "failure",
-        }
-    }
-
-    fn level(&self) -> &'static str {
-        match self {
-            SpanStatus::Success => "INFO",
-            SpanStatus::Failure => "ERROR",
-        }
-    }
-}
-
-impl fmt::Display for SpanStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
 /// A custom tracing layer that emits span and event data as key-value pairs (KVP)
 /// to a file for Hyper-V telemetry consumption. The layer manages the asynchronous
 /// writing of telemetry data to a specified file in KVP format.
@@ -242,18 +211,6 @@ pub struct EmitKVPLayer {
 }
 
 impl EmitKVPLayer {
-    /// Sets the span's status to Failure if it has not already been set.
-    /// This prevents a panic from trying to insert the same extension type twice.
-    fn set_span_as_failed<S: Subscriber + for<'lookup> LookupSpan<'lookup>>(
-        &self,
-        span: &SpanRef<'_, S>,
-    ) {
-        let mut extensions = span.extensions_mut();
-        if extensions.get_mut::<SpanStatus>().is_none() {
-            extensions.insert(SpanStatus::Failure);
-        }
-    }
-
     /// Sends encoded KVP data to the writer task for asynchronous logging.
     ///
     /// # Arguments
@@ -434,10 +391,6 @@ where
             };
             event.record(&mut visitor);
 
-            if event.metadata().level() == &tracing::Level::ERROR {
-                self.set_span_as_failed(&span);
-            }
-
             let span_context = span.metadata();
             let span_id: Uuid = Uuid::new_v4();
 
@@ -491,12 +444,6 @@ where
     /// * `ctx` - The current tracing context, used to access the span's metadata and status.
     fn on_close(&self, id: Id, ctx: TracingContext<S>) {
         if let Some(span) = ctx.span(&id) {
-            let span_status = span
-                .extensions()
-                .get::<SpanStatus>()
-                .copied()
-                .unwrap_or(SpanStatus::Success);
-
             let end_time = SystemTime::now();
 
             let span_context = span.metadata();
@@ -514,12 +461,11 @@ where
                 let end_time_dt = DateTime::<Utc>::from(end_time)
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ");
 
-                let event_value = format!(
-                    "Start: {start_time_dt} | End: {end_time_dt} | Status: {span_status}"
-                );
+                let event_value =
+                    format!("Start: {start_time_dt} | End: {end_time_dt}");
 
                 self.handle_kvp_operation(
-                    span_status.level(),
+                    span_context.level().as_str(),
                     span_context.name(),
                     &span_id.to_string(),
                     &event_value,
@@ -972,30 +918,5 @@ mod tests {
         );
 
         println!("KVP file is empty as expected because kvp_diagnostics is disabled.");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_error_events_in_span_does_not_panic() {
-        // This test reproduces the condition that caused the mutex poisoning panic.
-        // It creates a tracing layer, enters a span, and fires two ERROR events.
-        // Without the fix to check before inserting a SpanStatus, this test would
-        // panic on the second `insert` call. It passes now, serving as a
-        // regression test to prevent this bug from recurring.
-        let (events_tx, _events_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let layer = EmitKVPLayer {
-            events_tx,
-            vm_id: "test-vm-id".to_string(),
-        };
-        let subscriber = Registry::default().with(layer);
-        tracing::subscriber::with_default(subscriber, || {
-            #[instrument]
-            fn a_failing_operation() {
-                event!(Level::ERROR, "This is the first error.");
-                event!(Level::ERROR, "This is the second error.");
-            }
-            a_failing_operation();
-        });
-        // The test passes if it completes without panicking.
     }
 }

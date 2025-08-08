@@ -310,7 +310,6 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                tracing::error!("Provisioning failed with error: {:?}", e);
                 eprintln!("{e:?}");
 
                 let report_str = e
@@ -372,7 +371,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(name = "root", skip_all)]
+#[instrument(name = "root", skip_all, ret(level = "info"), err)]
 async fn provision(
     config: Config,
     vm_id: &str,
