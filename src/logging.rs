@@ -5,15 +5,22 @@ use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
-use tracing::{event, Level};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use tracing::{event, Level, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
-use crate::kvp::EmitKVPLayer;
+use crate::kvp::Kvp;
 use libazureinit::config::Config;
+
+pub type LoggingSetup = (
+    Box<dyn Subscriber + Send + Sync + 'static>,
+    Option<JoinHandle<std::io::Result<()>>>,
+);
 
 pub fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()
@@ -38,7 +45,8 @@ pub fn setup_layers(
     tracer: sdktrace::Tracer,
     vm_id: &str,
     config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+    graceful_shutdown: CancellationToken,
+) -> Result<LoggingSetup, anyhow::Error> {
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
 
@@ -54,19 +62,27 @@ pub fn setup_layers(
             "libazureinit::user::add",
             "libazureinit::status::success",
             "libazureinit::status::retrieved_vm_id",
+            "libazureinit::health::status",
         ]
         .join(","),
     )?;
 
-    let emit_kvp_layer = if config.telemetry.kvp_diagnostics {
-        match EmitKVPLayer::new(
+    let (emit_kvp_layer, kvp_writer_handle) = if config
+        .telemetry
+        .kvp_diagnostics
+    {
+        match Kvp::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
+            graceful_shutdown,
         ) {
-            Ok(layer) => Some(layer.with_filter(kvp_filter)),
+            Ok(kvp) => {
+                let layer = kvp.tracing_layer.with_filter(kvp_filter);
+                (Some(layer), Some(kvp.writer))
+            }
             Err(e) => {
-                event!(Level::ERROR, "Failed to initialize EmitKVPLayer: {}. Continuing without KVP logging.", e);
-                None
+                event!(Level::ERROR, "Failed to initialize Kvp: {}. Continuing without KVP logging.", e);
+                (None, None)
             }
         }
     } else {
@@ -74,7 +90,7 @@ pub fn setup_layers(
             Level::INFO,
             "Hyper-V KVP diagnostics are disabled via config.  It is recommended to be enabled for support purposes."
         );
-        None
+        (None, None)
     };
 
     let stderr_layer = fmt::layer()
@@ -123,7 +139,5 @@ pub fn setup_layers(
         .with(emit_kvp_layer)
         .with(file_layer);
 
-    tracing::subscriber::set_global_default(subscriber)?;
-
-    Ok(())
+    Ok((Box::new(subscriber), kvp_writer_handle))
 }
