@@ -14,8 +14,8 @@ use tracing_subscriber::{
     fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
+use crate::config::Config;
 use crate::kvp::Kvp;
-use libazureinit::config::Config;
 
 pub type LoggingSetup = (
     Box<dyn Subscriber + Send + Sync + 'static>,

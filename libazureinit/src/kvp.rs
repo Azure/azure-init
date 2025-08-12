@@ -38,11 +38,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::health::encoded_success_report;
 use chrono::{DateTime, Utc};
-use libazureinit::health::encoded_success_report;
 use uuid::Uuid;
 
-use libazureinit::error::Error as LibError;
+use crate::error::Error as LibError;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
@@ -58,11 +58,11 @@ const EVENT_PREFIX: &str = concat!("azure-init-", env!("CARGO_PKG_VERSION"));
 pub struct Kvp {
     /// The `tracing` layer that captures span and event data and sends it
     /// to the KVP writer task.
-    pub tracing_layer: EmitKVPLayer,
+    pub(crate) tracing_layer: EmitKVPLayer,
     /// The `JoinHandle` for the background task responsible for writing
     /// KVP data to the file. The caller can use this handle to wait for
     /// the writer to finish.
-    pub writer: JoinHandle<io::Result<()>>,
+    pub(crate) writer: JoinHandle<io::Result<()>>,
 }
 
 impl Kvp {
@@ -74,7 +74,7 @@ impl Kvp {
     /// - It creates an unbounded channel for passing encoded KVP data from the
     ///   tracing layer to the writer task.
     /// - It spawns the `kvp_writer` task, which listens for data and shutdown signals.
-    pub fn new(
+    pub(crate) fn new(
         file_path: std::path::PathBuf,
         vm_id: &str,
         graceful_shutdown: CancellationToken,
@@ -215,14 +215,14 @@ impl EmitKVPLayer {
     ///
     /// # Arguments
     /// * `message` - The encoded data to send as a vector of bytes (Vec<u8>).
-    pub fn send_event(&self, message: Vec<u8>) {
+    fn send_event(&self, message: Vec<u8>) {
         let _ = self.events_tx.send(message);
     }
 
     /// Handles the orchestration of key-value pair (KVP) encoding and logging operations
     /// by generating a unique event key, encoding it with the provided value, and sending
     /// it to the `EmitKVPLayer` for logging.
-    pub fn handle_kvp_operation(
+    fn handle_kvp_operation(
         &self,
         event_level: &str,
         event_name: &str,
@@ -237,11 +237,7 @@ impl EmitKVPLayer {
     }
 
     /// Emit a health KVP report for success, failure, or in-progress.
-    pub fn handle_health_report(
-        &self,
-        event: &tracing::Event<'_>,
-        status: &str,
-    ) {
+    fn handle_health_report(&self, event: &tracing::Event<'_>, status: &str) {
         let mut reason: Option<String> = None;
         let mut supporting_data: Option<HashMap<String, String>> = None;
         let mut optional_key_value: Option<(String, String)> = None;
@@ -630,7 +626,7 @@ fn get_uptime() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libazureinit::config::{Config, Telemetry};
+    use crate::config::{Config, Telemetry};
     use tempfile::NamedTempFile;
     use tokio::time::{sleep, Duration};
     use tracing::instrument;

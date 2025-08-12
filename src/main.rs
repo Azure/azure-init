@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use std::path::PathBuf;
-mod kvp;
-mod logging;
-pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -13,7 +10,9 @@ use libazureinit::{
     get_vm_id,
     health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
-    is_provisioning_complete, mark_provisioning_complete,
+    is_provisioning_complete,
+    logging::{initialize_tracing, setup_layers},
+    mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
     Provision, User,
