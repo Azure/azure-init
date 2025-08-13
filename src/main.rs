@@ -258,11 +258,6 @@ async fn main() -> ExitCode {
                 );
             }
 
-            tracing::error!(
-                health_report = "failure",
-                reason = %error,
-                "Invalid config during early startup"
-            );
             return ExitCode::FAILURE;
         }
     };
@@ -300,11 +295,7 @@ async fn main() -> ExitCode {
                     );
                 }
 
-                tracing::info!(
-                    target: "azure_init",
-                    health_report = "success",
-                    "Provisioning completed successfully"
-                );
+                tracing::info!("Provisioning completed successfully");
 
                 ExitCode::SUCCESS
             }
@@ -330,11 +321,7 @@ async fn main() -> ExitCode {
                     );
                 }
 
-                tracing::error!(
-                    health_report = "failure",
-                    reason = %e,
-                    "Provisioning failed with error"
-                );
+                tracing::error!("Provisioning failed with error: {e:?}");
 
                 let config: u8 = exitcode::CONFIG
                     .try_into()

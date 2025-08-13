@@ -136,6 +136,10 @@ async fn _report(
     description: Option<String>,
     config: &Config,
 ) -> Result<(), Error> {
+    if let Some(description_str) = &description {
+        tracing::info!(health_report = %description_str);
+    }
+
     let body = if let Some(sub) = substatus {
         json!({
             "state": state.to_string(),
