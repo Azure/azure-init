@@ -47,8 +47,10 @@ pub fn setup_layers(
     config: &Config,
     graceful_shutdown: CancellationToken,
 ) -> Result<LoggingSetup, anyhow::Error> {
-    let otel_layer = OpenTelemetryLayer::new(tracer)
-        .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
+    let otel_layer = OpenTelemetryLayer::new(tracer).with_filter(
+        EnvFilter::try_from_env("AZURE_INIT_LOG")
+            .unwrap_or_else(|_| EnvFilter::new("info")),
+    );
 
     let kvp_filter = EnvFilter::builder().parse(
         [
@@ -96,7 +98,10 @@ pub fn setup_layers(
     let stderr_layer = fmt::layer()
         .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_writer(std::io::stderr)
-        .with_filter(EnvFilter::from_env("AZURE_INIT_LOG"));
+        .with_filter(
+            EnvFilter::try_from_env("AZURE_INIT_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("error")),
+        );
 
     let file_layer = match OpenOptions::new()
         .create(true)
@@ -118,7 +123,10 @@ pub fn setup_layers(
                 fmt::layer()
                     .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                     .with_writer(file)
-                    .with_filter(EnvFilter::from_env("AZURE_INIT_LOG")),
+                    .with_filter(
+                        EnvFilter::try_from_env("AZURE_INIT_LOG")
+                            .unwrap_or_else(|_| EnvFilter::new("info")),
+                    ),
             )
         }
         Err(e) => {
@@ -140,4 +148,112 @@ pub fn setup_layers(
         .with(file_layer);
 
     Ok((Box::new(subscriber), kvp_writer_handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gag::BufferRedirect;
+    use std::io::Read;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn test_azure_init_log() {
+        let log_file = NamedTempFile::new().expect("Failed to create tempfile");
+        let log_path = log_file.path().to_path_buf();
+
+        let mut config = Config::default();
+        config.azure_init_log_path.path = log_path.clone();
+        config.telemetry.kvp_diagnostics = false;
+
+        let tracer = initialize_tracing();
+        let vm_id = "test-vm-id-for-logging";
+        let graceful_shutdown = CancellationToken::new();
+
+        let (subscriber, _kvp_handle) =
+            setup_layers(tracer, vm_id, &config, graceful_shutdown.clone())
+                .expect("Failed to setup layers");
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(
+                "This is a trace message and should NOT be logged."
+            );
+            tracing::debug!(
+                "This is a debug message and should NOT be logged."
+            );
+            tracing::info!(
+                "This is an info message and should be logged to the file."
+            );
+            tracing::warn!(
+                "This is a warn message and should be logged to the file."
+            );
+            tracing::error!(
+                "This is an error message and should be logged to the file."
+            );
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        graceful_shutdown.cancel();
+
+        let log_contents = std::fs::read_to_string(&log_path)
+            .expect("Failed to read log file");
+
+        println!(
+            "--- Log file contents for test_azure_init_log ---\n{}\n",
+            log_contents
+        );
+
+        let lines: Vec<&str> = log_contents.lines().collect();
+
+        assert!(!lines.iter().any(|&line| line.contains("TRACE")));
+        assert!(!lines.iter().any(|&line| line.contains("DEBUG")));
+        assert!(lines.iter().any(|&line| line.contains("INFO")
+            && line.contains("should be logged to the file")));
+        assert!(lines.iter().any(|&line| line.contains("WARN")
+            && line.contains("should be logged to the file")));
+        assert!(lines.iter().any(|&line| line.contains("ERROR")
+            && line.contains("should be logged to the file")));
+    }
+
+    #[tokio::test]
+    async fn test_stderr_logger_defaults_to_error() {
+        let mut config = Config::default();
+        config.telemetry.kvp_diagnostics = false;
+
+        let tracer = initialize_tracing();
+        let test_vm_id = "00000000-0000-0000-0000-000000000000";
+        let graceful_shutdown = CancellationToken::new();
+
+        // Redirect stderr to a buffer
+        let mut buf = BufferRedirect::stderr().unwrap();
+
+        let (subscriber, _kvp_handle) =
+            setup_layers(tracer, test_vm_id, &config, graceful_shutdown.clone())
+                .expect("Failed to setup layers");
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                "This is an info message and should NOT be logged to stderr."
+            );
+            tracing::warn!(
+                "This is a warn message and should NOT be logged to stderr."
+            );
+            tracing::error!(
+                "This is an error message and should be logged to stderr."
+            );
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        graceful_shutdown.cancel();
+
+        let mut stderr_contents = String::new();
+        buf.read_to_string(&mut stderr_contents)
+            .expect("Failed to read from stderr buffer");
+
+        drop(buf); // release stderr
+
+        assert!(!stderr_contents.contains("This is an info message"));
+        assert!(!stderr_contents.contains("This is a warn message"));
+        assert!(stderr_contents.contains("This is an error message"));
+    }
 }
