@@ -19,16 +19,31 @@ impl PasswordProvisioner {
     }
 }
 
+/// Manages the user's password during provisioning.
+///
+/// By default, `azure-init` does not support provisioning users with passwords.
+/// This function ensures that password-based login is disabled for the provisioned
+/// user by locking the account's password using `passwd -l`.
+///
+/// If the `User` object contains a password, this function will return a
+/// `NonEmptyPassword` error, as provisioning with a password is not a
+/// supported feature.
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     let path_passwd = env!("PATH_PASSWD");
 
     if user.password.is_none() {
+        tracing::info!(
+            target = "libazureinit::password::lock",
+            "Locking password for user '{}' to disable password-based login.",
+            user.name
+        );
         let mut command = Command::new(path_passwd);
         command.arg("-l").arg(&user.name);
         crate::run(command)?;
     } else {
         // creating user with a non-empty password is not allowed.
+        tracing::error!("Attempted to provision user with a password, which is not supported.");
         return Err(Error::NonEmptyPassword);
     }
 
