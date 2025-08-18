@@ -15,7 +15,13 @@ use crate::config::UserProvisioner;
 ///
 /// A bare minimum user includes a name and a set of SSH public keys to allow
 /// the user to log into the host. Additional configuration includes a set of
-/// supplementary groups to add the user to, and a password to set for the user.
+/// supplementary groups to add the user to.
+///
+/// # Password Handling
+/// While the `User` struct has a field for a password, `azure-init` does not
+/// support provisioning users with a password. If a password is provided, the
+/// provisioning process will fail. Instead, password authentication is disabled
+/// by locking the user's account.
 ///
 /// By default, the user is not included in any group. To grant administrator
 /// privileges via the `sudo` command, additional groups like "wheel" can be
