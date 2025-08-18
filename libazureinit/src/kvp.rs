@@ -190,7 +190,10 @@ impl Visit for StringVisitor<'_> {
         field: &tracing::field::Field,
         value: &dyn std_fmt::Debug,
     ) {
-        write!(self.string, "{}={:?}; ", field.name(), value)
+        if !self.string.is_empty() {
+            self.string.push_str(", ");
+        }
+        write!(self.string, "{}={:?}", field.name(), value)
             .expect("Writing to a string should never fail");
     }
 }

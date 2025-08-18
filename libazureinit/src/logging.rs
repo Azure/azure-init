@@ -65,6 +65,7 @@ pub fn setup_layers(
             "libazureinit::status::success",
             "libazureinit::status::retrieved_vm_id",
             "libazureinit::health::status",
+            "libazureinit::health::report",
         ]
         .join(","),
     )?;
@@ -227,9 +228,13 @@ mod tests {
         // Redirect stderr to a buffer
         let mut buf = BufferRedirect::stderr().unwrap();
 
-        let (subscriber, _kvp_handle) =
-            setup_layers(tracer, test_vm_id, &config, graceful_shutdown.clone())
-                .expect("Failed to setup layers");
+        let (subscriber, _kvp_handle) = setup_layers(
+            tracer,
+            test_vm_id,
+            &config,
+            graceful_shutdown.clone(),
+        )
+        .expect("Failed to setup layers");
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(

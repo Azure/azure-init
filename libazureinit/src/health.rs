@@ -137,7 +137,10 @@ async fn _report(
     config: &Config,
 ) -> Result<(), Error> {
     if let Some(description_str) = &description {
-        tracing::info!(health_report = %description_str);
+        tracing::info!(
+            target: "libazureinit::health::report",
+            health_report = %description_str
+        );
     }
 
     let body = if let Some(sub) = substatus {
