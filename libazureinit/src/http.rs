@@ -47,9 +47,6 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
     StatusCode::METHOD_NOT_ALLOWED,
 ];
 
-/// Timeout for communicating with IMDS.
-pub(crate) const IMDS_HTTP_TIMEOUT_SEC: u64 = 30;
-
 /// Send an HTTP GET request to the given URL with an empty body.
 #[instrument(err, skip_all)]
 pub(crate) async fn get(
