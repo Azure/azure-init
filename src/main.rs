@@ -11,7 +11,7 @@ use libazureinit::{
     health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
     is_provisioning_complete,
-    logging::{initialize_tracing, setup_layers},
+    logging::setup_layers,
     mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
@@ -202,7 +202,6 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let tracer = initialize_tracing();
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
     let opts = Cli::parse();
@@ -221,12 +220,8 @@ async fn main() -> ExitCode {
     let setup_result =
         tracing::subscriber::with_default(temp_subscriber, || {
             let config = Config::load(opts.config.clone())?;
-            let (subscriber, rx) = setup_layers(
-                tracer,
-                &vm_id,
-                &config,
-                graceful_shutdown.clone(),
-            )?;
+            let (subscriber, rx) =
+                setup_layers(&vm_id, &config, graceful_shutdown.clone())?;
             if let Err(e) = tracing::subscriber::set_global_default(subscriber)
             {
                 eprintln!("Failed to set global default subscriber: {e}");

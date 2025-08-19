@@ -22,7 +22,7 @@ pub type LoggingSetup = (
     Option<JoinHandle<std::io::Result<()>>>,
 );
 
-pub fn initialize_tracing() -> sdktrace::Tracer {
+fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()
         .with_sampler(Sampler::AlwaysOn)
         .build();
@@ -42,11 +42,11 @@ pub fn initialize_tracing() -> sdktrace::Tracer {
 ///   with `config`, adding file logging to `config.azure_init_log_path.path` or
 ///   falling back to `DEFAULT_AZURE_INIT_LOG_PATH` if unspecified.
 pub fn setup_layers(
-    tracer: sdktrace::Tracer,
     vm_id: &str,
     config: &Config,
     graceful_shutdown: CancellationToken,
 ) -> Result<LoggingSetup, anyhow::Error> {
+    let tracer = initialize_tracing();
     let otel_layer = OpenTelemetryLayer::new(tracer).with_filter(
         EnvFilter::try_from_env("AZURE_INIT_LOG")
             .unwrap_or_else(|_| EnvFilter::new("info")),
@@ -167,12 +167,11 @@ mod tests {
         config.azure_init_log_path.path = log_path.clone();
         config.telemetry.kvp_diagnostics = false;
 
-        let tracer = initialize_tracing();
         let vm_id = "test-vm-id-for-logging";
         let graceful_shutdown = CancellationToken::new();
 
         let (subscriber, _kvp_handle) =
-            setup_layers(tracer, vm_id, &config, graceful_shutdown.clone())
+            setup_layers(vm_id, &config, graceful_shutdown.clone())
                 .expect("Failed to setup layers");
 
         tracing::subscriber::with_default(subscriber, || {
@@ -221,20 +220,15 @@ mod tests {
         let mut config = Config::default();
         config.telemetry.kvp_diagnostics = false;
 
-        let tracer = initialize_tracing();
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let graceful_shutdown = CancellationToken::new();
 
         // Redirect stderr to a buffer
         let mut buf = BufferRedirect::stderr().unwrap();
 
-        let (subscriber, _kvp_handle) = setup_layers(
-            tracer,
-            test_vm_id,
-            &config,
-            graceful_shutdown.clone(),
-        )
-        .expect("Failed to setup layers");
+        let (subscriber, _kvp_handle) =
+            setup_layers(test_vm_id, &config, graceful_shutdown.clone())
+                .expect("Failed to setup layers");
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(
