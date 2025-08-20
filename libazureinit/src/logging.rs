@@ -11,11 +11,12 @@ use tracing::{event, Level, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
-    fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
+    filter::Filtered, fmt, layer::SubscriberExt, registry::LookupSpan,
+    EnvFilter, Layer, Registry,
 };
 
 use crate::config::Config;
-use crate::kvp::Kvp;
+use crate::kvp::{EmitKVPLayer, Kvp as KvpInternal};
 
 pub type LoggingSetup = (
     Box<dyn Subscriber + Send + Sync + 'static>,
@@ -29,6 +30,100 @@ fn initialize_tracing() -> sdktrace::Tracer {
 
     global::set_tracer_provider(provider.clone());
     provider.tracer("azure-kvp")
+}
+
+fn kvp_env_filter() -> Result<EnvFilter, anyhow::Error> {
+    Ok(EnvFilter::builder().parse(
+        [
+            "WARN",
+            "azure_init=INFO",
+            "libazureinit::config::success",
+            "libazureinit::http::received",
+            "libazureinit::http::success",
+            "libazureinit::ssh::authorized_keys",
+            "libazureinit::ssh::success",
+            "libazureinit::user::add",
+            "libazureinit::status::success",
+            "libazureinit::status::retrieved_vm_id",
+            "libazureinit::health::status",
+            "libazureinit::health::report",
+        ]
+        .join(","),
+    )?)
+}
+
+// Public KVP wrapper API for library consumers
+struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
+
+/// Emit tracing data to the Hyper-V KVP.
+///
+/// # Example
+///
+/// ```no_run
+/// # use libazureinit::logging::Kvp;
+/// use tracing_subscriber::layer::SubscriberExt;
+///
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
+/// let mut kvp = Kvp::new("a-unique-id")?;
+/// let registry = tracing_subscriber::Registry::default().with(kvp.layer());
+///
+/// // When it's time to shut down, doing this ensures all writes are flushed
+/// kvp.halt().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct Kvp<S: Subscriber> {
+    layer: Option<KvpLayer<S>>,
+    /// The `JoinHandle` for the background task responsible for writing
+    /// KVP data to the file. The caller can use this handle to wait for
+    /// the writer to finish.
+    pub writer: JoinHandle<std::io::Result<()>>,
+    shutdown: CancellationToken,
+}
+
+impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
+    /// Create a new tracing layer for KVP.
+    ///
+    /// Refer to [`libazureinit::get_vm_id`] to retrieve the VM's unique identifier.
+    pub fn new<T: AsRef<str>>(vm_id: T) -> Result<Self, anyhow::Error> {
+        let shutdown = CancellationToken::new();
+        let inner = KvpInternal::new(
+            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
+            vm_id.as_ref(),
+            shutdown.clone(),
+        )?;
+
+        let kvp_filter = kvp_env_filter()?;
+        let layer = Some(KvpLayer(inner.tracing_layer.with_filter(kvp_filter)));
+
+        Ok(Self {
+            layer,
+            writer: inner.writer,
+            shutdown,
+        })
+    }
+
+    /// Get a tracing [`Layer`] to use with a [`Registry`].
+    ///
+    /// # Panics if this function is called more than once.
+    pub fn layer(&mut self) -> Filtered<EmitKVPLayer, EnvFilter, S> {
+        assert!(
+            self.layer.is_some(),
+            "Kvp::layer cannot be called multiple times!"
+        );
+        self.layer.take().unwrap().0
+    }
+
+    /// Gracefully shut down the KVP writer.
+    ///
+    /// This will stop new KVP logs from being queued and wait for all pending writes to the KVP
+    /// pool to complete.  After this returns, no further logs will be written to KVP.
+    pub async fn halt(self) -> Result<(), anyhow::Error> {
+        self.shutdown.cancel();
+        self.writer.await??;
+        Ok(())
+    }
 }
 
 /// Builds a `tracing` subscriber that can optionally write azure-init.log
@@ -52,29 +147,13 @@ pub fn setup_layers(
             .unwrap_or_else(|_| EnvFilter::new("info")),
     );
 
-    let kvp_filter = EnvFilter::builder().parse(
-        [
-            "WARN",
-            "azure_init=INFO",
-            "libazureinit::config::success",
-            "libazureinit::http::received",
-            "libazureinit::http::success",
-            "libazureinit::ssh::authorized_keys",
-            "libazureinit::ssh::success",
-            "libazureinit::user::add",
-            "libazureinit::status::success",
-            "libazureinit::status::retrieved_vm_id",
-            "libazureinit::health::status",
-            "libazureinit::health::report",
-        ]
-        .join(","),
-    )?;
+    let kvp_filter = kvp_env_filter()?;
 
     let (emit_kvp_layer, kvp_writer_handle) = if config
         .telemetry
         .kvp_diagnostics
     {
-        match Kvp::new(
+        match KvpInternal::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
             graceful_shutdown,
