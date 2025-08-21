@@ -78,7 +78,7 @@ pub struct Kvp<S: Subscriber> {
     /// The `JoinHandle` for the background task responsible for writing
     /// KVP data to the file. The caller can use this handle to wait for
     /// the writer to finish.
-    pub writer: JoinHandle<std::io::Result<()>>,
+    writer: JoinHandle<std::io::Result<()>>,
     shutdown: CancellationToken,
 }
 
