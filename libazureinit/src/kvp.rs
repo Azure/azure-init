@@ -11,7 +11,6 @@
 //!
 
 use std::{
-    collections::HashMap,
     fmt::{self as std_fmt, Write as std_write},
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
@@ -39,10 +38,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use chrono::{DateTime, Utc};
-use libazureinit::health::encoded_success_report;
 use uuid::Uuid;
-
-use libazureinit::error::Error as LibError;
 
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
@@ -58,11 +54,11 @@ const EVENT_PREFIX: &str = concat!("azure-init-", env!("CARGO_PKG_VERSION"));
 pub struct Kvp {
     /// The `tracing` layer that captures span and event data and sends it
     /// to the KVP writer task.
-    pub tracing_layer: EmitKVPLayer,
+    pub(crate) tracing_layer: EmitKVPLayer,
     /// The `JoinHandle` for the background task responsible for writing
     /// KVP data to the file. The caller can use this handle to wait for
     /// the writer to finish.
-    pub writer: JoinHandle<io::Result<()>>,
+    pub(crate) writer: JoinHandle<io::Result<()>>,
 }
 
 impl Kvp {
@@ -74,7 +70,7 @@ impl Kvp {
     /// - It creates an unbounded channel for passing encoded KVP data from the
     ///   tracing layer to the writer task.
     /// - It spawns the `kvp_writer` task, which listens for data and shutdown signals.
-    pub fn new(
+    pub(crate) fn new(
         file_path: std::path::PathBuf,
         vm_id: &str,
         graceful_shutdown: CancellationToken,
@@ -194,7 +190,10 @@ impl Visit for StringVisitor<'_> {
         field: &tracing::field::Field,
         value: &dyn std_fmt::Debug,
     ) {
-        write!(self.string, "{}={:?}; ", field.name(), value)
+        if !self.string.is_empty() {
+            self.string.push_str(", ");
+        }
+        write!(self.string, "{}={:?}", field.name(), value)
             .expect("Writing to a string should never fail");
     }
 }
@@ -215,14 +214,14 @@ impl EmitKVPLayer {
     ///
     /// # Arguments
     /// * `message` - The encoded data to send as a vector of bytes (Vec<u8>).
-    pub fn send_event(&self, message: Vec<u8>) {
+    fn send_event(&self, message: Vec<u8>) {
         let _ = self.events_tx.send(message);
     }
 
     /// Handles the orchestration of key-value pair (KVP) encoding and logging operations
     /// by generating a unique event key, encoding it with the provided value, and sending
     /// it to the `EmitKVPLayer` for logging.
-    pub fn handle_kvp_operation(
+    fn handle_kvp_operation(
         &self,
         event_level: &str,
         event_name: &str,
@@ -234,106 +233,6 @@ impl EmitKVPLayer {
         let encoded_kvp = encode_kvp_item(&event_key, event_value);
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
-    }
-
-    /// Emit a health KVP report for success, failure, or in-progress.
-    pub fn handle_health_report(
-        &self,
-        event: &tracing::Event<'_>,
-        status: &str,
-    ) {
-        let mut reason: Option<String> = None;
-        let mut supporting_data: Option<HashMap<String, String>> = None;
-        let mut optional_key_value: Option<(String, String)> = None;
-
-        event.record(
-            &mut |field: &tracing::field::Field,
-                  value: &dyn std::fmt::Debug| {
-                match field.name() {
-                    "reason" => {
-                        reason = Some(
-                            format!("{value:?}").trim_matches('"').to_string(),
-                        );
-                    }
-                    "supporting_data" => {
-                        let raw = format!("{value:?}");
-                        let mut map = HashMap::new();
-                        let entries = raw
-                            .trim_matches(|c| c == '{' || c == '}')
-                            .split(',');
-                        for entry in entries {
-                            let parts: Vec<&str> = entry
-                                .split(':')
-                                .map(|s| s.trim().trim_matches('"'))
-                                .collect();
-                            if parts.len() == 2 {
-                                map.insert(
-                                    parts[0].to_string(),
-                                    parts[1].to_string(),
-                                );
-                            }
-                        }
-                        if !map.is_empty() {
-                            supporting_data = Some(map);
-                        }
-                    }
-                    "optional_key_value" => {
-                        let raw =
-                            format!("{value:?}").trim_matches('"').to_string();
-                        if let Some((k, v)) = raw.split_once('=') {
-                            optional_key_value = Some((
-                                k.trim().to_string(),
-                                v.trim().to_string(),
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            },
-        );
-
-        let provisioning_status: Option<String> = match status {
-            "success" => {
-                let okv = optional_key_value
-                    .as_ref()
-                    .map(|(k, v)| (k.as_str(), v.as_str()));
-                Some(encoded_success_report(&self.vm_id, okv))
-            }
-            "failure" => {
-                let reason_str = reason.as_deref().unwrap_or("Unknown failure");
-                let mut details = reason_str.to_string();
-                if let Some(kvs) = supporting_data.as_ref() {
-                    let mut extra = String::new();
-                    for (k, v) in kvs {
-                        extra.push_str(&format!("; {k}={v}"));
-                    }
-                    if !extra.is_empty() {
-                        details.push_str(&extra);
-                    }
-                }
-                let err = LibError::UnhandledError {
-                    details: details.to_string(),
-                };
-                Some(err.as_encoded_report(&self.vm_id))
-            }
-            "in progress" => {
-                let desc = format!(
-                    "Provisioning is still in progress for vm_id={}.",
-                    self.vm_id
-                );
-                Some(desc)
-            }
-            _ => {
-                tracing::warn!(%status, "Invalid health report type");
-                None
-            }
-        };
-
-        if let Some(report_str) = provisioning_status {
-            let msg =
-                encode_kvp_item("PROVISIONING_REPORT", &report_str).concat();
-            self.send_event(msg);
-        }
     }
 }
 
@@ -378,8 +277,10 @@ where
             },
         );
 
-        if let Some(health_str) = health_report {
-            self.handle_health_report(event, &health_str);
+        if let Some(report_str) = health_report {
+            let msg =
+                encode_kvp_item("PROVISIONING_REPORT", &report_str).concat();
+            self.send_event(msg);
             return;
         }
 
@@ -630,7 +531,9 @@ fn get_uptime() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libazureinit::config::{Config, Telemetry};
+    use crate::config::{Config, Telemetry};
+    use crate::error::Error as LibError;
+    use crate::health::encoded_success_report;
     use tempfile::NamedTempFile;
     use tokio::time::{sleep, Duration};
     use tracing::instrument;
@@ -647,7 +550,7 @@ mod tests {
     }
 
     #[instrument]
-    async fn mock_provision() -> Result<(), anyhow::Error> {
+    async fn mock_provision(vm_id: &str) -> Result<(), anyhow::Error> {
         let mut system = System::new();
         system.refresh_memory();
         system.refresh_cpu_usage();
@@ -670,10 +573,12 @@ mod tests {
 
         mock_child_function(0).await;
         sleep(Duration::from_millis(300)).await;
+
+        let success_report =
+            encoded_success_report(vm_id, Some(("origin", "mock_source")));
         event!(
             Level::INFO,
-            health_report = "success",
-            optional_key_value = "origin=mock_source",
+            health_report = %success_report,
             "Provisioning completed successfully"
         );
 
@@ -681,16 +586,16 @@ mod tests {
     }
 
     #[instrument]
-    async fn mock_failure_function() -> Result<(), anyhow::Error> {
+    async fn mock_failure_function(vm_id: &str) -> Result<(), anyhow::Error> {
         let error_message = "Simulated failure during processing";
-        let mut supporting = HashMap::new();
-        supporting.insert("step", "mock_stuff");
-        supporting.insert("source", "unit_test");
+        let err = LibError::UnhandledError {
+            details: error_message.to_string(),
+        };
+        let failure_report = err.as_encoded_report(vm_id);
+
         event!(
             Level::ERROR,
-            health_report = "failure",
-            reason = "Simulated failure during processing",
-            supporting_data = ?supporting,
+            health_report = %failure_report,
             "Provisioning failed"
         );
 
@@ -714,8 +619,8 @@ mod tests {
         let subscriber = Registry::default().with(kvp.tracing_layer);
         let default_guard = tracing::subscriber::set_default(subscriber);
 
-        let _ = mock_provision().await;
-        let _ = mock_failure_function().await;
+        let _ = mock_provision(test_vm_id).await;
+        let _ = mock_failure_function(test_vm_id).await;
 
         drop(default_guard);
         graceful_shutdown.cancel();
@@ -903,7 +808,7 @@ mod tests {
         let subscriber = Registry::default().with(emit_kvp_layer);
         let default_guard = tracing::subscriber::set_default(subscriber);
 
-        let _ = mock_provision().await;
+        let _ = mock_provision(test_vm_id).await;
 
         sleep(Duration::from_secs(1)).await;
 

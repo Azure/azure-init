@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 use std::path::PathBuf;
-mod kvp;
-mod logging;
-pub use logging::{initialize_tracing, setup_layers};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -13,7 +10,9 @@ use libazureinit::{
     get_vm_id,
     health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
-    is_provisioning_complete, mark_provisioning_complete,
+    is_provisioning_complete,
+    logging::setup_layers,
+    mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
     Provision, User,
@@ -203,7 +202,6 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let tracer = initialize_tracing();
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
     let opts = Cli::parse();
@@ -222,12 +220,8 @@ async fn main() -> ExitCode {
     let setup_result =
         tracing::subscriber::with_default(temp_subscriber, || {
             let config = Config::load(opts.config.clone())?;
-            let (subscriber, rx) = setup_layers(
-                tracer,
-                &vm_id,
-                &config,
-                graceful_shutdown.clone(),
-            )?;
+            let (subscriber, rx) =
+                setup_layers(&vm_id, &config, graceful_shutdown.clone())?;
             if let Err(e) = tracing::subscriber::set_global_default(subscriber)
             {
                 eprintln!("Failed to set global default subscriber: {e}");
@@ -259,11 +253,6 @@ async fn main() -> ExitCode {
                 );
             }
 
-            tracing::error!(
-                health_report = "failure",
-                reason = %error,
-                "Invalid config during early startup"
-            );
             return ExitCode::FAILURE;
         }
     };
@@ -301,11 +290,7 @@ async fn main() -> ExitCode {
                     );
                 }
 
-                tracing::info!(
-                    target: "azure_init",
-                    health_report = "success",
-                    "Provisioning completed successfully"
-                );
+                tracing::info!("Provisioning completed successfully");
 
                 ExitCode::SUCCESS
             }
@@ -331,11 +316,7 @@ async fn main() -> ExitCode {
                     );
                 }
 
-                tracing::error!(
-                    health_report = "failure",
-                    reason = %e,
-                    "Provisioning failed with error"
-                );
+                tracing::error!("Provisioning failed with error: {e:?}");
 
                 let config: u8 = exitcode::CONFIG
                     .try_into()
