@@ -132,27 +132,12 @@ struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
 ///
 /// The value of the variable must be a string that follows the syntax for
 /// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
-/// logging directives. For example: `warn,my_crate=debug`.
+/// logging directives. For example: `warn,my_crate=debug` or `info,my_crate::api=trace`.
+/// See `config.rs` for more details.
 ///
-/// If `AZURE_INIT_KVP_FILTER` is not set, a default filter tailored for `azure-init`
-/// is used.
-///
-/// ### Examples of setting the environment variable:
-///
-/// - **Capture `INFO` level and above for all crates:**
-///   ```sh
-///   export AZURE_INIT_KVP_FILTER="info"
-///   ```
-///
-/// - **Capture `DEBUG` from your crate and `WARN` from others:**
-///   ```sh
-///   export AZURE_INIT_KVP_FILTER="warn,my_crate=debug"
-///   ```
-///
-/// - **Capture `TRACE` from a specific module:**
-///   ```sh
-///   export AZURE_INIT_KVP_FILTER="info,my_crate::api=trace"
-///   ```
+/// The filter can also be configured via the `kvp_filter` field in the `Config` struct.
+/// **Precedence**: Environment variable > Config field > Default filter.
+/// If neither is set, a default filter tailored for `azure-init` (WARN level + specific modules) is used.
 ///
 /// If an invalid filter string is provided (via env or config), a warning is logged
 /// and the default filter is used instead.
