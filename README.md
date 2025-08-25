@@ -4,17 +4,51 @@
 
 A reference implementation for provisioning Linux VMs on Azure.
 
-Azure-init configures Linux guests from provisioning metadata.
-Contrary to complex guest configuration and customisation systems like e.g. cloud-init, azure-init aims to be minimal.
-It strictly focuses on basic instance initialisation from Azure metadata.
+## What is Azure-init?
 
-Azure-init has very few requirements on its environment, so it may run in a very early stage of the boot process.
+Azure-init is a lightweight provisioning agent that configures Linux virtual machines using Azure metadata. Unlike complex guest configuration systems (such as cloud-init), azure-init focuses exclusively on the essential initialization tasks for Azure VMs:
 
-## Installing Rust
+- Setting up user accounts
+- Configuring SSH keys for authentication
+- Setting the hostname
+- Managing passwords
+- Processing VM provisioning metadata
+
+Azure-init is designed to be minimal, fast, and reliable, with very few dependencies. This allows it to run in the early stages of the boot process when initializing Linux VMs in Azure.
+
+## Key Features
+
+- **Minimal footprint**: Small binary size and few dependencies
+- **Fast execution**: Optimized for quick VM provisioning
+- **Early boot compatibility**: Can run in very early boot stages
+- **Azure-specific**: Tailored for the Azure environment
+- **Configurable**: Allows customization through configuration files
+
+## Architecture
+
+Azure-init consists of two main components:
+
+1. **azure-init** - The main provisioning agent binary
+2. **libazureinit** - A library that provides core functionality for accessing Azure services
+
+The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
+
+For a detailed architectural overview, see [Architecture Documentation](doc/architecture.md).
+
+## Getting Started
+
+For step-by-step instructions on installing, configuring, and using azure-init, please refer to our [Getting Started Guide](doc/getting_started.md).
+
+### Prerequisites
+
+- Rust programming environment
+- Access to an Azure subscription (for e2e testing)
+
+### Installing Rust
 
 To install Rust see here: https://www.rust-lang.org/tools/install.
 
-## Building the Project
+### Building the Project
 
 Building this project can be done by going to the base of the repository in the command line and entering the command
 `cargo build --all`. This project contains two binaries, the main provisioning agent and the functional testing binary,
@@ -22,6 +56,25 @@ so this command builds both. These binaries are quite small, but you can build o
 `cargo build --bin <binary_name>` and indicating either `azure-init` or `functional_tests`.
 
 To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
+
+## Documentation
+
+Azure-init includes comprehensive documentation to help you understand, configure, and test the system:
+
+| Document | Description |
+|----------|-------------|
+| [Getting Started Guide](doc/getting_started.md) | Step-by-step instructions for new users |
+| [Architecture Overview](doc/architecture.md) | High-level system design and component interactions |
+| [Configuration Guide](doc/configuration.md) | Detailed configuration options and file structure |
+| [Tracing System](doc/libazurekvp.md) | Understanding the telemetry and tracing capabilities |
+| [End-to-End Testing](docs/E2E_TESTING.md) | How to perform comprehensive system testing |
+| [Library Documentation](libazureinit/README.md) | Documentation for the libazureinit library |
+
+## Configuration
+
+Azure-init supports customization through configuration files. The default configuration path is `/etc/azure-init/azure-init.toml`, but additional configuration can be provided in the `/etc/azure-init/azure-init.toml.d/` directory.
+
+For detailed information about configuration options and structure, see [configuration.md](doc/configuration.md).
 
 ## Testing
 
@@ -43,7 +96,7 @@ Please refer to [E2E_TESTING.md](docs/E2E_TESTING.md) for end-to-end testing.
 
 ## Contributing
 
-Contribution require you to agree to Microsoft's Contributor License Agreement (CLA).
+Contributions require you to agree to Microsoft's Contributor License Agreement (CLA).
 Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for detailed instructions.
 
 This project adheres to the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
