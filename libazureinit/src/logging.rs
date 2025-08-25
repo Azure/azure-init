@@ -32,8 +32,6 @@ fn initialize_tracing() -> sdktrace::Tracer {
     provider.tracer("azure-kvp")
 }
 
-const AZURE_INIT_KVP_FILTER_ENV: &str = "AZURE_INIT_KVP_FILTER";
-
 fn default_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
     Ok(EnvFilter::builder().parse(
         [
@@ -54,27 +52,66 @@ fn default_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
     )?)
 }
 
-fn get_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
-    match std::env::var(AZURE_INIT_KVP_FILTER_ENV) {
+fn get_kvp_filter(
+    config_filter: Option<&str>,
+) -> Result<EnvFilter, anyhow::Error> {
+    match std::env::var("AZURE_INIT_KVP_FILTER") {
         Ok(filter) if !filter.is_empty() => {
             tracing::info!(
                 "Using KVP filter override from environment variable '{}': '{}'",
-                AZURE_INIT_KVP_FILTER_ENV,
+                "AZURE_INIT_KVP_FILTER",
                 filter
             );
             match EnvFilter::builder().parse(filter) {
                 Ok(f) => Ok(f),
                 Err(e) => {
                     tracing::warn!(
-                        "Invalid '{}' value, falling back to default: {}",
-                        AZURE_INIT_KVP_FILTER_ENV,
+                        "Invalid '{}' value, falling back to {} filter: {}",
+                        "AZURE_INIT_KVP_FILTER",
+                        if config_filter.is_some() {
+                            "config"
+                        } else {
+                            "default"
+                        },
                         e
                     );
+                    // Try config filter if provided; otherwise use default
+                    if let Some(cfg) = config_filter {
+                        if !cfg.trim().is_empty() {
+                            return EnvFilter::builder()
+                                .parse(cfg)
+                                .map_err(anyhow::Error::from)
+                                .or_else(|parse_err| {
+                                    tracing::warn!(
+                                        "Invalid config kvp_filter, falling back to default: {}",
+                                        parse_err
+                                    );
+                                    default_kvp_filter()
+                                });
+                        }
+                    }
                     default_kvp_filter()
                 }
             }
         }
         _ => {
+            // No env var set; try config if provided
+            if let Some(cfg) = config_filter {
+                let cfg = cfg.trim();
+                if !cfg.is_empty() {
+                    tracing::info!("Using KVP filter from config: '{}'", cfg);
+                    return match EnvFilter::builder().parse(cfg) {
+                        Ok(f) => Ok(f),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Invalid config kvp_filter, falling back to default: {}",
+                                e
+                            );
+                            default_kvp_filter()
+                        }
+                    };
+                }
+            }
             tracing::info!("Using default KVP filter");
             default_kvp_filter()
         }
@@ -117,7 +154,8 @@ struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
 ///   export AZURE_INIT_KVP_FILTER="info,my_crate::api=trace"
 ///   ```
 ///
-/// If an invalid filter string is provided, initialization will fail.
+/// If an invalid filter string is provided (via env or config), a warning is logged
+/// and the default filter is used instead.
 ///
 /// # Example
 ///
@@ -156,7 +194,7 @@ impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
             shutdown.clone(),
         )?;
 
-        let kvp_filter = get_kvp_filter()?;
+        let kvp_filter = get_kvp_filter(None)?;
         let layer = Some(KvpLayer(inner.tracing_layer.with_filter(kvp_filter)));
 
         Ok(Self {
@@ -209,7 +247,7 @@ pub fn setup_layers(
             .unwrap_or_else(|_| EnvFilter::new("info")),
     );
 
-    let kvp_filter = get_kvp_filter()?;
+    let kvp_filter = get_kvp_filter(config.telemetry.kvp_filter.as_deref())?;
 
     let (emit_kvp_layer, kvp_writer_handle) = if config
         .telemetry
@@ -296,90 +334,181 @@ pub fn setup_layers(
 mod tests {
     use super::*;
     use gag::BufferRedirect;
+    use serial_test::serial;
     use std::io::Read;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_kvp_filter_default_then_override_in_one_test() {
-        // 1) Default behavior (no env var) -> WARN visible, DEBUG hidden
-        std::env::remove_var(AZURE_INIT_KVP_FILTER_ENV);
+    #[serial]
+    fn test_kvp_filter_default() {
+        std::env::remove_var("AZURE_INIT_KVP_FILTER");
 
-        let default_file = NamedTempFile::new().expect("create temp file");
-        let default_path = default_file.path().to_path_buf();
+        let log_file = NamedTempFile::new().expect("create temp file");
+        let log_path = log_file.path().to_path_buf();
 
-        let default_filter = get_kvp_filter().expect("default filter parses");
-        let writer_path_1 = default_path.clone();
-        let make_writer_1 = move || {
+        let kvp_filter = get_kvp_filter(None).expect("default filter parses");
+
+        let writer_path = log_path.clone();
+        let make_writer = move || {
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&writer_path_1)
-                .expect("open writer 1")
+                .open(&writer_path)
+                .expect("open writer")
         };
 
-        let default_sub = Registry::default().with(
+        let subscriber = Registry::default().with(
             fmt::layer()
-                .with_writer(make_writer_1)
-                .with_filter(default_filter),
+                .with_writer(make_writer)
+                .with_filter(kvp_filter),
         );
 
-        tracing::subscriber::with_default(default_sub, || {
+        tracing::subscriber::with_default(subscriber, || {
             tracing::warn!("warn-default");
             tracing::debug!("debug-default-hidden");
         });
 
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let default_contents =
-            std::fs::read_to_string(&default_path).expect("read default log");
-        assert!(default_contents.contains("warn-default"));
-        assert!(!default_contents.contains("debug-default-hidden"));
 
-        // 2) Override behavior in same test -> set env var, new subscriber, DEBUG visible
-        std::env::set_var(AZURE_INIT_KVP_FILTER_ENV, "debug");
+        let contents =
+            std::fs::read_to_string(&log_path).expect("read default log");
+        assert!(contents.contains("warn-default"));
+        assert!(!contents.contains("debug-default-hidden"));
+    }
 
-        let override_file = NamedTempFile::new().expect("create temp file");
-        let override_path = override_file.path().to_path_buf();
+    #[test]
+    #[serial]
+    fn test_kvp_filter_env_override() {
+        std::env::set_var("AZURE_INIT_KVP_FILTER", "debug");
 
-        let override_filter = get_kvp_filter().expect("override filter parses");
-        let writer_path_2 = override_path.clone();
-        let make_writer_2 = move || {
+        let log_file = NamedTempFile::new().expect("create temp file");
+        let log_path = log_file.path().to_path_buf();
+
+        let kvp_filter = get_kvp_filter(None).expect("override filter parses");
+
+        let writer_path = log_path.clone();
+        let make_writer = move || {
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&writer_path_2)
-                .expect("open writer 2")
+                .open(&writer_path)
+                .expect("open writer")
         };
 
-        let override_sub = Registry::default().with(
+        let subscriber = Registry::default().with(
             fmt::layer()
-                .with_writer(make_writer_2)
-                .with_filter(override_filter),
+                .with_writer(make_writer)
+                .with_filter(kvp_filter),
         );
 
-        tracing::subscriber::with_default(override_sub, || {
+        tracing::subscriber::with_default(subscriber, || {
             tracing::warn!("warn-override");
             tracing::debug!("debug-override-visible");
         });
 
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let override_contents =
-            std::fs::read_to_string(&override_path).expect("read override log");
-        assert!(override_contents.contains("warn-override"));
-        assert!(override_contents.contains("debug-override-visible"));
 
-        std::env::remove_var(AZURE_INIT_KVP_FILTER_ENV);
+        let contents =
+            std::fs::read_to_string(&log_path).expect("read override log");
+        assert!(contents.contains("warn-override"));
+        assert!(contents.contains("debug-override-visible"));
+
+        std::env::remove_var("AZURE_INIT_KVP_FILTER");
     }
 
     #[test]
+    #[serial]
+    fn test_kvp_filter_from_config() {
+        std::env::remove_var("AZURE_INIT_KVP_FILTER");
+
+        let log_file = NamedTempFile::new().expect("create temp file");
+        let log_path = log_file.path().to_path_buf();
+
+        let kvp_filter =
+            get_kvp_filter(Some("debug")).expect("config filter parses");
+
+        let writer_path = log_path.clone();
+        let make_writer = move || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&writer_path)
+                .expect("open writer")
+        };
+
+        let subscriber = Registry::default().with(
+            fmt::layer()
+                .with_writer(make_writer)
+                .with_filter(kvp_filter),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn-cfg-only");
+            tracing::debug!("debug-cfg-only-visible");
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let contents =
+            std::fs::read_to_string(&log_path).expect("read cfg-only log");
+        assert!(contents.contains("warn-cfg-only"));
+        assert!(contents.contains("debug-cfg-only-visible"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_kvp_filter_env_overrides_config() {
+        std::env::set_var("AZURE_INIT_KVP_FILTER", "warn");
+
+        let log_file = NamedTempFile::new().expect("create temp file");
+        let log_path = log_file.path().to_path_buf();
+
+        let kvp_filter =
+            get_kvp_filter(Some("debug")).expect("precedence filter parses");
+
+        let writer_path = log_path.clone();
+        let make_writer = move || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&writer_path)
+                .expect("open writer")
+        };
+
+        let subscriber = Registry::default().with(
+            fmt::layer()
+                .with_writer(make_writer)
+                .with_filter(kvp_filter),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn-precedence");
+            tracing::debug!("debug-precedence-hidden");
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let contents =
+            std::fs::read_to_string(&log_path).expect("read precedence log");
+        assert!(contents.contains("warn-precedence"));
+        assert!(!contents.contains("debug-precedence-hidden"));
+
+        std::env::remove_var("AZURE_INIT_KVP_FILTER");
+    }
+
+    #[test]
+    #[serial]
     fn test_kvp_filter_invalid_env_falls_back_to_default() {
-        // A clearly invalid directive; should trigger fallback (no DEBUG lines)
-        std::env::set_var(AZURE_INIT_KVP_FILTER_ENV, "bananas!!!");
+        std::env::set_var(
+            "AZURE_INIT_KVP_FILTER",
+            "app=not_a_valid_level", // This will cause a parse error
+        );
 
         let log_file = NamedTempFile::new().expect("Failed to create tempfile");
         let log_path = log_file.path().to_path_buf();
 
-        let kvp_filter =
-            get_kvp_filter().expect("filter should be available (fallback)");
+        let kvp_filter = get_kvp_filter(None)
+            .expect("filter should be available (fallback)");
 
         let writer_path = log_path.clone();
         let make_writer = move || {
@@ -411,11 +540,15 @@ mod tests {
             "Invalid env should fall back to default filter (no DEBUG)"
         );
 
-        std::env::remove_var(AZURE_INIT_KVP_FILTER_ENV);
+        std::env::remove_var("AZURE_INIT_KVP_FILTER");
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_azure_init_log() {
+        // Redirect stderr to a buffer to keep the main test output clean from ERROR logs.
+        let _buf = BufferRedirect::stderr().unwrap();
+
         let log_file = NamedTempFile::new().expect("Failed to create tempfile");
         let log_path = log_file.path().to_path_buf();
 
@@ -472,6 +605,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_stderr_logger_defaults_to_error() {
         let mut config = Config::default();
         config.telemetry.kvp_diagnostics = false;
