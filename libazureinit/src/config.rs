@@ -223,15 +223,50 @@ impl Default for Wireserver {
 ///
 /// Configures telemetry behavior, including diagnostic settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct Telemetry {
     /// Flag to enable or disable KVP diagnostics. Defaults to `true`.
     pub kvp_diagnostics: bool,
+
+    /// Optional filter directives for the KVP tracing layer. When set,
+    /// these directives are parsed using `tracing_subscriber::EnvFilter` and
+    /// applied to the KVP layer unless overridden by the `AZURE_INIT_KVP_FILTER`
+    /// environment variable. When not set, defaults tailored for azure-init are used.
+    ///
+    /// **Precedence**: Environment variable `AZURE_INIT_KVP_FILTER` takes precedence
+    /// over this config value. If neither is set, azure-init-specific defaults are used.
+    ///
+    /// The value must be a string that follows the syntax for
+    /// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
+    /// logging directives. For example: `warn,my_crate=debug`.
+    ///
+    /// ### Examples of acceptable values:
+    ///
+    /// - **Capture `INFO` level and above for all crates:**
+    ///   ```toml
+    ///   kvp_filter = "info"
+    ///   ```
+    ///
+    /// - **Capture `DEBUG` from your crate and `WARN` from others:**
+    ///   ```toml
+    ///   kvp_filter = "warn,my_crate=debug"
+    ///   ```
+    ///
+    /// - **Capture `TRACE` from a specific module:**
+    ///   ```toml
+    ///   kvp_filter = "info,my_crate::api=trace"
+    ///   ```
+    ///
+    /// If an invalid filter string is provided, a warning is logged
+    /// and the default filter is used instead.
+    pub kvp_filter: Option<String>,
 }
 
 impl Default for Telemetry {
     fn default() -> Self {
         Self {
             kvp_diagnostics: true,
+            kvp_filter: None,
         }
     }
 }
@@ -664,6 +699,7 @@ mod tests {
         );
 
         assert!(config.telemetry.kvp_diagnostics);
+        assert!(config.telemetry.kvp_filter.is_none());
 
         assert_eq!(
             config.azure_init_data_dir.path.to_str().unwrap(),
@@ -708,6 +744,7 @@ mod tests {
         enable = false
         [telemetry]
         kvp_diagnostics = false
+        kvp_filter = "custom-filter-from-config"
         [azure_init_data_dir]
         path = "/custom/azure-init-data-dir"
         [azure_init_log_path]
@@ -767,6 +804,10 @@ mod tests {
 
         tracing::debug!("Verifying merged telemetry configuration...");
         assert!(!config.telemetry.kvp_diagnostics);
+        assert_eq!(
+            config.telemetry.kvp_filter,
+            Some("custom-filter-from-config".to_string())
+        );
 
         tracing::debug!(
             "Verifying merged azure-init data directory configuration..."
@@ -849,6 +890,7 @@ mod tests {
 
         tracing::debug!("Verifying default telemetry configuration...");
         assert!(config.telemetry.kvp_diagnostics);
+        assert!(config.telemetry.kvp_filter.is_none());
 
         tracing::debug!(
             "Verifying default azure-init data directory configuration..."
@@ -894,6 +936,7 @@ mod tests {
         enable = false
         [telemetry]
         kvp_diagnostics = false
+        kvp_filter = "cli-override-filter"
         [azure_init_data_dir]
         path = "/cli-override-azure-init-data-dir"
         [azure_init_log_path]
@@ -947,6 +990,10 @@ mod tests {
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
+        );
+        assert_eq!(
+            config.telemetry.kvp_filter,
+            Some("cli-override-filter".to_string())
         );
 
         Ok(())
@@ -1018,6 +1065,7 @@ mod tests {
         query_sshd_config = false
         [telemetry]
         kvp_diagnostics = false
+        kvp_filter = "final-filter"
         "#
         )?;
 
@@ -1031,6 +1079,10 @@ mod tests {
         );
         assert!(!config.ssh.query_sshd_config);
         assert!(!config.telemetry.kvp_diagnostics);
+        assert_eq!(
+            config.telemetry.kvp_filter,
+            Some("final-filter".to_string())
+        );
 
         tracing::debug!(
             "test_merge_toml_basic_and_progressive completed successfully."

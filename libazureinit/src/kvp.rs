@@ -781,6 +781,7 @@ mod tests {
 
         let telemetry_config = Telemetry {
             kvp_diagnostics: false,
+            kvp_filter: None,
         };
 
         let config = Config {
