@@ -231,7 +231,6 @@ mod tests {
     use super::{query, InstanceMetadata, OsProfile};
     use crate::config;
     use reqwest::{header, Client, StatusCode};
-    use std::time::Duration;
     use tokio::net::TcpListener;
 
     use crate::{http, unittest};

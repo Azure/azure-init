@@ -21,7 +21,9 @@ async fn main() {
     let user_agent = header::HeaderValue::from_str("azure-init").unwrap();
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs_f64(
+            config.imds.connection_timeout_secs,
+        ))
         .default_headers(default_headers)
         .build()
         .unwrap();
@@ -45,13 +47,9 @@ async fn main() {
     // Simplified version of calling imds::query. Since username is directly
     // given by cli_args below, it is not needed to get instance metadata like
     // how it is done in provision() in main.
-    let _ = imds::query(
-        &client,
-        None, // default IMDS URL
-        None,
-    )
-    .await
-    .expect("Failed to query IMDS");
+    let _ = imds::query(&client, Some(&config), None)
+        .await
+        .expect("Failed to query IMDS");
 
     let username = &cli_args[1];
 
