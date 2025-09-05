@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json;
 use serde_json::Value;
 
+use crate::config::Config;
 use crate::error::Error;
 use crate::http;
 
@@ -159,28 +160,34 @@ const DEFAULT_IMDS_URL: &str =
 /// ```
 /// # use reqwest::Client;
 /// # use std::time::Duration;
+/// # use libazureinit::config;
 ///
 /// let client = Client::builder()
 ///     .timeout(std::time::Duration::from_secs(5))
 ///     .build()
 ///     .unwrap();
 ///
+/// let config = config::Config::default();
 /// let res = libazureinit::imds::query(
-///     &client, Duration::from_secs(1), Duration::from_secs(5),
+///     &client,
+///     Some(&config),
 ///     Some("http://127.0.0.1:8000/"),
 /// );
 /// ```
 #[instrument(err, skip_all)]
 pub async fn query(
     client: &Client,
-    retry_interval: Duration,
-    mut total_timeout: Duration,
+    config: Option<&Config>,
     url: Option<&str>,
 ) -> Result<InstanceMetadata, Error> {
+    let imds = config.map(|c| c.imds.clone()).unwrap_or_default();
     let mut headers = HeaderMap::new();
     headers.insert("Metadata", HeaderValue::from_static("true"));
     let url = url.unwrap_or(DEFAULT_IMDS_URL);
-    let request_timeout = Duration::from_secs(http::IMDS_HTTP_TIMEOUT_SEC);
+    let request_timeout = Duration::from_secs_f64(imds.request_timeout_secs);
+    let retry_interval = Duration::from_secs_f64(imds.retry_interval_secs);
+    let mut total_timeout =
+        Duration::from_secs_f64(imds.total_retry_timeout_secs);
 
     while !total_timeout.is_zero() {
         let (response, remaining_timeout) = http::get(
@@ -222,9 +229,8 @@ mod tests {
     use serde_json::json;
 
     use super::{query, InstanceMetadata, OsProfile};
-
+    use crate::config;
     use reqwest::{header, Client, StatusCode};
-    use std::time::Duration;
     use tokio::net::TcpListener;
 
     use crate::{http, unittest};
@@ -324,9 +330,10 @@ mod tests {
 
     // Runs a test around sending via imds::query() with a given statuscode.
     async fn run_imds_query_retry(statuscode: &StatusCode) -> bool {
-        const IMDS_HTTP_TOTAL_TIMEOUT_SEC: u64 = 5;
-        const IMDS_HTTP_PERCLIENT_TIMEOUT_SEC: u64 = 5;
-        const IMDS_HTTP_RETRY_INTERVAL_SEC: u64 = 1;
+        let mut config = config::Config::default();
+        config.imds.total_retry_timeout_secs = 5.0;
+        config.imds.request_timeout_secs = 5.0;
+        config.imds.retry_interval_secs = 1.0;
 
         let mut default_headers = header::HeaderMap::new();
         let user_agent =
@@ -348,7 +355,7 @@ mod tests {
         default_headers.insert(header::USER_AGENT, user_agent);
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(
-                IMDS_HTTP_PERCLIENT_TIMEOUT_SEC,
+                config.imds.request_timeout_secs as u64,
             ))
             .default_headers(default_headers)
             .build()
@@ -356,8 +363,7 @@ mod tests {
 
         let res = query(
             &client,
-            Duration::from_secs(IMDS_HTTP_RETRY_INTERVAL_SEC),
-            Duration::from_secs(IMDS_HTTP_TOTAL_TIMEOUT_SEC),
+            Some(&config),
             Some(format!("http://{:}:{:}/", addr.ip(), addr.port()).as_str()),
         )
         .await;
@@ -408,6 +414,10 @@ mod tests {
              body
         );
 
+        let mut config = config::Config::default();
+        config.imds.retry_interval_secs = 0.01;
+        config.imds.total_retry_timeout_secs = 0.05;
+
         let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = serverlistener.local_addr().unwrap();
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -424,8 +434,7 @@ mod tests {
 
         let res = query(
             &client,
-            Duration::from_millis(10),
-            Duration::from_millis(50),
+            Some(&config),
             Some(format!("http://{:}:{:}/", addr.ip(), addr.port()).as_str()),
         )
         .await;
