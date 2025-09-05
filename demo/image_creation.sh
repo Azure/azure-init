@@ -67,20 +67,29 @@ echo "Done"
 echo "*********************************************************************"
 echo "Creating storage account $STORAGE_ACCOUNT"
 echo "*********************************************************************"
-az storage account create -g "$RG" -l "$LOCATION" -n "$STORAGE_ACCOUNT" --sku Standard_LRS -o none
+az storage account create -g "$RG" -l "$LOCATION" -n "$STORAGE_ACCOUNT" --sku Standard_LRS --allow-shared-key-access false -o none
 echo "Done"
 
 echo "*********************************************************************"
 echo "Creating storage container $STORAGE_CONTAINER with account $STORAGE_ACCOUNT"
 echo "*********************************************************************"
-az storage container create --name "$STORAGE_CONTAINER" --account-name "$STORAGE_ACCOUNT"
+az storage container create --name "$STORAGE_CONTAINER" --account-name "$STORAGE_ACCOUNT" --auth-mode login
 echo "Done"
 
 echo "*********************************************************************"
 echo "Generating a SAS for azure-init-$EPOCH.tgz"
 echo "*********************************************************************"
 EXPIRY=$(date -u -d '10 days' '+%Y-%m-%dT%H:%MZ')
-SASURL=$(az storage blob generate-sas --account-name "$STORAGE_ACCOUNT" -c "$STORAGE_CONTAINER" -n azure-init-"$EPOCH".tgz --permissions r --expiry "$EXPIRY" --https-only --full-uri)
+SASURL=$(az storage blob generate-sas \
+  --account-name "$STORAGE_ACCOUNT" \
+  --container-name "$STORAGE_CONTAINER" \
+  --name azure-init-"$EPOCH".tgz \
+  --permissions r \
+  --expiry "$EXPIRY" \
+  --https-only \
+  --auth-mode login \
+  --as-user \
+  --full-uri)
 echo "Done"
 
 echo "*********************************************************************"
@@ -89,22 +98,19 @@ echo "*********************************************************************"
 sed -i "s __SASURL__ ${SASURL//&/\\&} g" "$TEMP_DIR"/customdata.yml
 echo "Done"
 
-CONNECTION_STRING=$(az storage account show-connection-string --name "$STORAGE_ACCOUNT" --resource-group "$RG" --output tsv)
-echo "Generated connection string: $CONNECTION_STRING"
-
 VM_NAME="${VM_NAME:-testvm-$EPOCH}"
 VM_SIZE="${VM_SIZE:-Standard_D2ds_v5}"
 SSH_KEY_PATH=~/.ssh/id_rsa.pub
 BASE_IMAGE="${BASE_IMAGE:-canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-testuser-$EPOCH}"
 
-# Both "az vm create" and "az sig image-definition" should use the same securit type.
+# Both "az vm create" and "az sig image-definition" should use the same security type.
 SECURITY_TYPE="${SECURITY_TYPE:-TrustedLaunch}"
 
 echo "*********************************************************************"
 echo "Uploading package as azure-init-$EPOCH.tgz"
 echo "*********************************************************************"
-az storage blob upload --account-name "$STORAGE_ACCOUNT" --connection-string "$CONNECTION_STRING" --container-name "$STORAGE_CONTAINER" --file azure-init.tgz --name azure-init-"$EPOCH".tgz
+az storage blob upload --account-name "$STORAGE_ACCOUNT" --container-name "$STORAGE_CONTAINER" --file azure-init.tgz --name azure-init-"$EPOCH".tgz --auth-mode login
 echo "Done"
 
 echo "*********************************************************************"
