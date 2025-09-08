@@ -1,0 +1,92 @@
+# Azure Init - Kubinit Project
+
+A containerized Azure provisioning agent that simulates Azure Instance Metadata Service (IMDS) and WireServer for testing and development environments.
+
+## Overview
+
+This project consists of two main components:
+- **Provisioning Agent**: A systemd-based service running `azure-init` binary in a container
+- **Testing Server**: A mock Azure service providing IMDS and WireServer endpoints
+
+## Architecture
+
+The setup creates two Docker networks with Azure-like IP addresses:
+- `imds-network` (169.254.0.0/16) - For IMDS communication
+- `wireserver-network` (168.63.0.0/16) - For WireServer communication
+
+## Prerequisites
+
+- Docker and Docker Compose
+- WSL2 or Linux environment
+- Build tools for the `azure-init` binary (located in `target/debug/`)
+
+## Quick Start
+
+### Starting Services
+
+Run the start script to launch both services:
+
+```bash
+./start-all.sh
+```
+
+This will:
+1. Start the testing server first (creates networks with Azure IP addresses)
+2. Wait for the testing server to be ready
+3. Start the provisioning agent (connects to existing networks)
+
+### Stopping Services
+
+Stop all services and clean up:
+
+```bash
+./stop-all.sh
+```
+
+This will:
+1. Stop the provisioning agent
+2. Stop the testing server
+3. Remove orphaned containers
+4. Clean up Docker networks
+
+## Service Details
+
+### Provisioning Agent
+
+- **Container**: `azureinit-provisioning-agent`
+- **Image**: Built from local Dockerfile
+- **Service**: systemd-based `azure-init.service`
+- **Privileges**: Runs with `privileged: true` for systemd support
+- **Binary Location**: `/usr/local/bin/azure-init`
+
+### Testing Server
+
+- **Container**: `azure-testing-server`
+- **Endpoints**:
+  - IMDS: `http://169.254.169.254/metadata/instance`
+  - WireServer: `http://168.63.129.16/machine`
+- **Port**: 80 (mapped to host)
+- **Health Check**: Validates IMDS endpoint availability
+
+## Monitoring and Debugging
+
+### View Logs
+
+**Provisioning Agent:**
+```bash
+docker compose logs -f provisioning-agent
+```
+
+**Testing Server:**
+```bash
+cd testing-server
+docker compose logs -f testing-server
+```
+
+## Development
+
+### Building
+
+The Dockerfile expects:
+- `../azure-init/target/debug/azure-init` - The main binary (compiled via `cargo build --release`)
+- `../azure-init/config/azure-init.service` - The systemd service file

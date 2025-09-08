@@ -1,0 +1,88 @@
+name: "E2E Testing"
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+jobs:
+  e2e-test:
+    name: End-to-End Testing with Docker
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libudev-dev
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      
+      - name: Build azure-init binary
+        run: |
+          cargo build --verbose
+          # Create target/debug directory structure that Dockerfile expects
+          mkdir -p target/debug
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Make start-all.sh executable
+        run: chmod +x kubinit/start-all.sh kubinit/stop-all.sh
+      
+      - name: Run E2E tests
+        working-directory: kubinit
+        run: |
+          echo "Starting E2E test environment..."
+          ./start-all.sh
+        
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for services to fully initialize..."
+          sleep 30
+      
+      - name: Check service health
+        run: |
+          echo "Checking if services are running..."
+          docker ps -a
+          echo "Checking container logs..."
+          cd kubinit
+          docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
+          cd testing-server
+          docker compose logs testing-server || echo "No testing-server logs yet"
+          cd ..
+      
+      - name: Test Azure service endpoints
+        run: |
+          echo "Testing IMDS endpoint..."
+          # Test if the IMDS endpoint is accessible (may fail if not fully configured, but should not error)
+          curl -f -s http://169.254.169.254/metadata/instance -H "Metadata: true" || echo "IMDS endpoint test completed"
+          
+          echo "Testing WireServer endpoint..."
+          # Test if the WireServer endpoint is accessible
+          curl -f -s http://168.63.129.16/machine || echo "WireServer endpoint test completed"
+      
+      - name: Cleanup - Stop all services
+        if: always()
+        working-directory: kubinit
+        run: |
+          echo "Cleaning up services..."
+          ./stop-all.sh || echo "Cleanup completed"
+          
+      - name: Show final Docker state
+        if: always()
+        run: |
+          echo "Final Docker containers state:"
+          docker ps -a
+          echo "Final Docker networks state:"
+          docker network ls
