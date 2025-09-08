@@ -73,7 +73,9 @@ jobs:
           cd kubinit
           docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
           echo "**************************************************************************"
-          echo "\n\n"
+          echo ""
+          echo ""
+          echo ""
           echo "**************************************************************************"
           cd testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"

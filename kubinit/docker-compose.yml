@@ -15,7 +15,7 @@ services:
     tty: true
     container_name: azureinit-provisioning-agent
     cap_add:
-      - SYS_ADMIN # Still good to have
+      - SYS_ADMIN
     environment:
       - PATH_HOSTNAMECTL=/usr/bin/hostnamectl
     networks:
