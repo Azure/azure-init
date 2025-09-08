@@ -3,7 +3,12 @@
 echo "Starting testing-server first (creates networks with Azure IP addresses)..."
 cd testing-server
 docker compose up -d --build
+echo "cade, ls"
+ls
 cd ..
+
+echo "cade, ls 2"
+ls
 
 echo "Waiting for testing-server to be ready..."
 sleep 10

@@ -43,6 +43,7 @@ jobs:
       - name: Run E2E tests
         run: |
           cd kubinit
+          ls
           echo "Starting E2E test environment..."
           ./start-all.sh
         
