@@ -55,23 +55,26 @@ jobs:
         run: |
           echo "Checking if services are running..."
           docker ps -a
+      
+      - name: Test Azure service endpoints
+        run: |
+          echo "Testing IMDS endpoint from within provisioning agent container..."
+          # Test if the IMDS endpoint is accessible from within the container and show response
+          docker exec azureinit-provisioning-agent curl -f http://169.254.169.254/metadata/instance -H "Metadata: true" || echo "IMDS endpoint test completed"
+          
+          echo "Testing WireServer endpoint from within provisioning agent container..."
+          # Test if the WireServer endpoint is accessible from within the container and show response
+          docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine || echo "WireServer endpoint test completed"
+      
+      - name: Print logs
+        run: |
           echo "Checking container logs..."
           cd kubinit
           docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
           cd testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
           cd ..
-      
-      - name: Test Azure service endpoints
-        run: |
-          echo "Testing IMDS endpoint..."
-          # Test if the IMDS endpoint is accessible (may fail if not fully configured, but should not error)
-          curl -f -s http://169.254.169.254/metadata/instance -H "Metadata: true" || echo "IMDS endpoint test completed"
-          
-          echo "Testing WireServer endpoint..."
-          # Test if the WireServer endpoint is accessible
-          curl -f -s http://168.63.129.16/machine || echo "WireServer endpoint test completed"
-      
+
       - name: Cleanup - Stop all services
         if: always()
         working-directory: kubinit
