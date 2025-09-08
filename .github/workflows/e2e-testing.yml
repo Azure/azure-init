@@ -41,8 +41,8 @@ jobs:
         run: chmod +x kubinit/start-all.sh kubinit/stop-all.sh
       
       - name: Run E2E tests
-        working-directory: kubinit
         run: |
+          cd kubinit
           echo "Starting E2E test environment..."
           ./start-all.sh
         
