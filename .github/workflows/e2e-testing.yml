@@ -46,12 +46,11 @@ jobs:
           ls
           echo "Starting E2E test environment..."
           ./start-all.sh
-          sleep 60
         
       - name: Wait for services to be ready
         run: |
           echo "Waiting for services to fully initialize..."
-          sleep 30
+          sleep 5
       
       - name: Check service health
         run: |
@@ -73,6 +72,9 @@ jobs:
           echo "Checking container logs..."
           cd kubinit
           docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
+          echo "**************************************************************************"
+          echo "\n\n"
+          echo "**************************************************************************"
           cd testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
           cd ..
