@@ -46,6 +46,7 @@ jobs:
           ls
           echo "Starting E2E test environment..."
           ./start-all.sh
+          sleep 60
         
       - name: Wait for services to be ready
         run: |

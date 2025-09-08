@@ -2,7 +2,7 @@ services:
   provisioning-agent:
     build:
       context: ../
-      dockerfile: ../kubinit/Dockerfile
+      dockerfile: Dockerfile
     privileged: true
     cgroup: host
     tmpfs:
