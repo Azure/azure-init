@@ -1,7 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+//!
+//! Password provisioning behavior for `libazureinit`.
+//!
+//! - If `User.password` is present, the password is set securely using the
+//!   `chpasswd` utility. The input format is `"username:password"` written to
+//!   stdin. Stdout is discarded and stderr is inherited. Secrets are not
+//!   included in argv or logs.
+//! - If `User.password` is absent, the account is locked using `passwd -l`.
+//!   The path to `passwd` is provided at build time via the `PATH_PASSWD`
+//!   environment variable (see `libazureinit/build.rs`).
+//!
+//! Notes
+//! - The reference binary `azure-init` does not set passwords; it constructs a
+//!   `User` without calling `with_password`, which results in account locking.
+//!   External consumers of `libazureinit` can opt-in to password usage by
+//!   calling `User::with_password`.
+//!
+//! Example (library consumer)
+//! ```ignore
+//! use libazureinit::{Provision, User};
+//! use libazureinit::config::Config;
+//!
+//! let user = User::new("azureuser", vec![]).with_password("s3cr3t");
+//! let config = Config::default();
+//! let _ = Provision::new("host", user, config, true).provision();
+//! ```
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use tracing::instrument;
 
@@ -21,30 +48,48 @@ impl PasswordProvisioner {
 
 /// Manages the user's password during provisioning.
 ///
-/// By default, `azure-init` does not support provisioning users with passwords.
-/// This function ensures that password-based login is disabled for the provisioned
-/// user by locking the account's password using `passwd -l`.
+/// This function supports two modes of operation:
+/// - If a password is provided in the `User` object, it sets the password securely 
+///   using the `chpasswd` utility via stdin to avoid exposing secrets.
+/// - If no password is provided, it disables password-based login by locking the 
+///   account's password using `passwd -l`.
 ///
-/// If the `User` object contains a password, this function will return a
-/// `NonEmptyPassword` error, as provisioning with a password is not a
-/// supported feature.
+/// Note: While `libazureinit` supports password provisioning, the reference 
+/// `azure-init` binary does not use this feature and only creates locked accounts.
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
-    let path_passwd = env!("PATH_PASSWD");
+    if let Some(ref password) = user.password {
+        // Set password securely via chpasswd using piped stdin to avoid exposing secrets
+        let input = format!("{}:{}", user.name, password);
+        let mut child = Command::new("chpasswd")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()?;
 
-    if user.password.is_none() {
-        tracing::info!(
-            target = "libazureinit::password::lock",
-            "Locking password for user '{}' to disable password-based login.",
-            user.name
-        );
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes())?;
+        }
+
+        let status = child.wait()?;
+        if !status.success() {
+            tracing::error!(username = %user.name, ?status, "chpasswd failed to set password");
+            return Err(Error::SubprocessFailed {
+                command: "chpasswd".to_string(),
+                status,
+            });
+        }
+        tracing::info!(target: "libazureinit::password::status", username = %user.name, "Successfully set password via chpasswd");
+    } else {
+        // No password provided; lock the account
+        let path_passwd = env!("PATH_PASSWD");
         let mut command = Command::new(path_passwd);
         command.arg("-l").arg(&user.name);
-        crate::run(command)?;
-    } else {
-        // creating user with a non-empty password is not allowed.
-        tracing::error!("Attempted to provision user with a password, which is not supported.");
-        return Err(Error::NonEmptyPassword);
+        crate::run(command).map_err(|e| {
+            tracing::error!(username = %user.name, error = ?e, "Failed to lock account via passwd -l");
+            e
+        })?;
+        tracing::info!(target: "libazureinit::password::status", username = %user.name, "Locked account via passwd -l");
     }
 
     Ok(())
@@ -53,12 +98,10 @@ fn passwd(user: &User) -> Result<(), Error> {
 #[instrument(skip_all)]
 #[cfg(test)]
 fn mock_passwd(user: &User) -> Result<(), Error> {
-    if user.password.is_none() {
-        Ok(())
-    } else {
-        // creating user with a non-empty password is not allowed.
-        return Err(Error::NonEmptyPassword);
-    }
+    // In tests, simulate success for both setting a password and locking
+    // (no external command execution).
+    let _ = user;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -79,15 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn test_passwd_with_password_returns_error() {
-        // Test that passwd function returns Error::NonEmptyPassword error when user has a password
+    fn test_passwd_with_password_succeeds() {
+        // Test that passwd mock function succeeds when user has a password
         let user = User::new("azureuser", []).with_password("somepassword");
         assert!(user.password.is_some());
 
         let result = mock_passwd(&user);
 
-        // Should return NonEmptyPassword error
-        assert!(matches!(result, Err(Error::NonEmptyPassword)));
+        // Should succeed
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -110,7 +153,7 @@ mod tests {
 
         let result = provisioner.set(&user);
 
-        // Should return NonEmptyPassword error
-        assert!(matches!(result, Err(Error::NonEmptyPassword)));
+        // Should succeed with FakePasswd backend
+        assert!(result.is_ok());
     }
 }
