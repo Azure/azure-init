@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     libnss-systemd \
     passwd \
     adduser \
+    openssh-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Disable systemd's unnecessary units for containers
@@ -30,6 +31,9 @@ RUN mkdir -p /var/lib/hyperv && \
 
 # Create the sudoers directory
 RUN mkdir -p /etc/sudoers.d
+
+# Create the SSHD directory
+RUN mkdir -p /etc/ssh
 
 # Copy your binary and service file
 COPY target/debug/azure-init /usr/bin/azure-init
