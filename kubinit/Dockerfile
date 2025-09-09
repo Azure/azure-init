@@ -12,11 +12,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     util-linux \
-    libpam-modules \
-    libnss3 \
-    libnss-systemd \
-    passwd \
-    adduser \
     openssh-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
