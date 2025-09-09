@@ -28,6 +28,9 @@ RUN systemctl mask dev-hugepages.mount sys-fs-fuse-connections.mount \
 RUN mkdir -p /var/lib/hyperv && \
     touch /var/lib/hyperv/.kvp_pool_1
 
+# Create the sudoers directory
+RUN mkdir -p /etc/sudoers.d
+
 # Copy your binary and service file
 COPY target/debug/azure-init /usr/bin/azure-init
 RUN chmod +x /usr/bin/azure-init
