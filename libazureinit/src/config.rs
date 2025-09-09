@@ -128,7 +128,7 @@ impl Default for PasswordProvisioners {
 /// IMDS (Instance Metadata Service) configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Instance Metadata Service.
-pub const DEFAULT_IMDS_CONNECTION_TIMEOUT_SECS: f64 = 2.0;
+pub const DEFAULT_IMDS_CONNECTION_TIMEOUT_SECS: f64 = 30.0;
 pub const DEFAULT_IMDS_REQUEST_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_IMDS_RETRY_INTERVAL_SECS: f64 = 2.0;
 pub const DEFAULT_IMDS_TOTAL_RETRY_TIMEOUT_SECS: f64 = 300.0;
@@ -900,7 +900,7 @@ mod tests {
         );
 
         tracing::debug!("Verifying default IMDS configuration...");
-        assert_eq!(config.imds.connection_timeout_secs, 2.0);
+        assert_eq!(config.imds.connection_timeout_secs, 30.0);
         assert_eq!(config.imds.request_timeout_secs, 60.0);
         assert_eq!(config.imds.retry_interval_secs, 2.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
