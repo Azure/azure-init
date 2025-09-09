@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     util-linux \
+    libpam-modules \
+    libnss3 \
+    libnss-systemd \
+    passwd \
+    adduser \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Disable systemd's unnecessary units for containers
