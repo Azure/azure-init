@@ -78,7 +78,7 @@ jobs:
 
       - name: Print testing server logs
         run: |
-          cd testing-server
+          cd kubinit/testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
           cd ..
 
