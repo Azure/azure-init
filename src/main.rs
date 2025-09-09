@@ -71,15 +71,31 @@ enum Command {
     },
 }
 
+/// Attempts to find and parse provisioning data from an OVF environment.
+///
+/// This function iterates through available block devices,
+/// searching for an OVF environment file (`ovf-env.xml`). This file contains
+/// provisioning parameters such as username, SSH keys, and hostname.
+///
+/// This is one of two primary sources for provisioning data, the other being
+/// the Azure Instance Metadata Service (IMDS). The agent prioritizes IMDS
+/// when available for most data, but can use OVF as a fallback for the username.
 #[instrument]
 fn get_environment() -> Result<Environment, anyhow::Error> {
+    tracing::debug!("Searching for OVF environment on local block devices.");
     let ovf_devices = get_mount_device(None)?;
     let mut environment: Option<Environment> = None;
 
     // loop until it finds a correct device.
     for dev in ovf_devices {
         environment = match mount_parse_ovf_env(dev) {
-            Ok(env) => Some(env),
+            Ok(env) => {
+                tracing::info!(
+                    target = "libazureinit::media::success",
+                    "Successfully parsed OVF environment."
+                );
+                Some(env)
+            }
             Err(_) => continue,
         }
     }
@@ -96,19 +112,22 @@ fn get_username(
     environment: Option<&Environment>,
 ) -> Result<String, anyhow::Error> {
     if let Some(metadata) = instance_metadata {
+        tracing::debug!("Using username from IMDS.");
         return Ok(metadata.compute.os_profile.admin_username.clone());
     }
 
     // Read username from OVF environment via mounted local device.
+    tracing::debug!("IMDS metadata not available, attempting to get username from OVF environment.");
     environment
         .map(|env| {
+            tracing::debug!("Using username from OVF environment.");
             env.clone()
                 .provisioning_section
                 .linux_prov_conf_set
                 .username
         })
         .ok_or_else(|| {
-            tracing::error!("Username Failure");
+            tracing::error!("Username Failure: Could not determine username from IMDS or OVF environment.");
             LibError::UsernameFailure.into()
         })
 }
@@ -401,6 +420,9 @@ async fn provision(
 
     let environment = get_environment().ok();
 
+    // The username is required for provisioning. This attempts to get the username
+    // first from the IMDS metadata, falling back to the OVF environment if
+    // IMDS is unavailable. If neither source can provide a username, provisioning fails.
     let username =
         get_username(instance_metadata.as_ref(), environment.as_ref())?;
 
@@ -410,6 +432,9 @@ async fn provision(
         .clone()
         .ok_or::<LibError>(LibError::InstanceMetadataFailure)?;
 
+    // Create the user with the public SSH keys provided in the IMDS metadata.
+    // The `disable_password_authentication` flag from IMDS controls whether
+    // password-based SSH authentication is disabled in the sshd_config.
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
