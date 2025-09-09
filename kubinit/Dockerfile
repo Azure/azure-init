@@ -19,6 +19,10 @@ RUN systemctl mask dev-hugepages.mount sys-fs-fuse-connections.mount \
     systemd-remount-fs.service \
     && systemctl set-default multi-user.target
 
+# Create Hyper-V KVP directory and file for provisioning agent
+RUN mkdir -p /var/lib/hyperv && \
+    touch /var/lib/hyperv/.kvp_pool_1
+
 # Copy your binary and service file
 COPY target/debug/azure-init /usr/bin/azure-init
 RUN chmod +x /usr/bin/azure-init
