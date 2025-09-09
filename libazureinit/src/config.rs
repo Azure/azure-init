@@ -128,25 +128,34 @@ impl Default for PasswordProvisioners {
 /// IMDS (Instance Metadata Service) configuration struct.
 ///
 /// Holds timeout settings for connecting to and reading from the Instance Metadata Service.
+pub const DEFAULT_IMDS_CONNECTION_TIMEOUT_SECS: f64 = 30.0;
+pub const DEFAULT_IMDS_REQUEST_TIMEOUT_SECS: f64 = 60.0;
+pub const DEFAULT_IMDS_RETRY_INTERVAL_SECS: f64 = 2.0;
+pub const DEFAULT_IMDS_TOTAL_RETRY_TIMEOUT_SECS: f64 = 300.0;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Imds {
     /// Timeout in seconds for establishing a connection to the IMDS.
     pub connection_timeout_secs: f64,
 
-    /// Timeout in seconds for reading data from the IMDS.
-    pub read_timeout_secs: f64,
+    /// Timeout for a single HTTP request to IMDS.
+    pub request_timeout_secs: f64,
 
-    /// Total retry timeout in seconds for IMDS requests.
+    /// The time to wait between failed IMDS request attempts.
+    pub retry_interval_secs: f64,
+
+    /// The total time allowed for all IMDS request attempts.
     pub total_retry_timeout_secs: f64,
 }
 
 impl Default for Imds {
     fn default() -> Self {
         Self {
-            connection_timeout_secs: 2.0,
-            read_timeout_secs: 60.0,
-            total_retry_timeout_secs: 300.0,
+            connection_timeout_secs: DEFAULT_IMDS_CONNECTION_TIMEOUT_SECS,
+            request_timeout_secs: DEFAULT_IMDS_REQUEST_TIMEOUT_SECS,
+            retry_interval_secs: DEFAULT_IMDS_RETRY_INTERVAL_SECS,
+            total_retry_timeout_secs: DEFAULT_IMDS_TOTAL_RETRY_TIMEOUT_SECS,
         }
     }
 }
@@ -682,20 +691,42 @@ mod tests {
             vec![PasswordProvisioner::Passwd]
         );
 
-        assert_eq!(config.imds.connection_timeout_secs, 2.0);
-        assert_eq!(config.imds.read_timeout_secs, 60.0);
-        assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
+        assert_eq!(
+            config.imds.connection_timeout_secs,
+            DEFAULT_IMDS_CONNECTION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.imds.request_timeout_secs,
+            DEFAULT_IMDS_REQUEST_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.imds.retry_interval_secs,
+            DEFAULT_IMDS_RETRY_INTERVAL_SECS
+        );
+        assert_eq!(
+            config.imds.total_retry_timeout_secs,
+            DEFAULT_IMDS_TOTAL_RETRY_TIMEOUT_SECS
+        );
 
         assert!(config.provisioning_media.enable);
 
         assert!(config.azure_proxy_agent.enable);
 
-        assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
-        assert_eq!(config.wireserver.read_timeout_secs, 60.0);
-        assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
+        assert_eq!(
+            config.wireserver.connection_timeout_secs,
+            DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.wireserver.read_timeout_secs,
+            DEFAULT_WIRESERVER_READ_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.wireserver.total_retry_timeout_secs,
+            DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS
+        );
         assert_eq!(
             config.wireserver.health_endpoint,
-            "http://168.63.129.16/provisioning/health",
+            DEFAULT_WIRESERVER_HEALTH_ENDPOINT,
         );
 
         assert!(config.telemetry.kvp_diagnostics);
@@ -737,7 +768,8 @@ mod tests {
         backends = ["passwd"]
         [imds]
         connection_timeout_secs = 5.0
-        read_timeout_secs = 120.0
+        request_timeout_secs = 120.0
+        retry_interval_secs = 1.0
         [provisioning_media]
         enable = false
         [azure_proxy_agent]
@@ -793,7 +825,8 @@ mod tests {
 
         tracing::debug!("Verifying merged IMDS configuration...");
         assert_eq!(config.imds.connection_timeout_secs, 5.0);
-        assert_eq!(config.imds.read_timeout_secs, 120.0);
+        assert_eq!(config.imds.request_timeout_secs, 120.0);
+        assert_eq!(config.imds.retry_interval_secs, 1.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
 
         tracing::debug!("Verifying merged provisioning media configuration...");
@@ -867,8 +900,9 @@ mod tests {
         );
 
         tracing::debug!("Verifying default IMDS configuration...");
-        assert_eq!(config.imds.connection_timeout_secs, 2.0);
-        assert_eq!(config.imds.read_timeout_secs, 60.0);
+        assert_eq!(config.imds.connection_timeout_secs, 30.0);
+        assert_eq!(config.imds.request_timeout_secs, 60.0);
+        assert_eq!(config.imds.retry_interval_secs, 2.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
 
         tracing::debug!(
@@ -880,12 +914,21 @@ mod tests {
         assert!(config.azure_proxy_agent.enable);
 
         tracing::debug!("Verifying default wireserver configuration...");
-        assert_eq!(config.wireserver.connection_timeout_secs, 60.0);
-        assert_eq!(config.wireserver.read_timeout_secs, 60.0);
-        assert_eq!(config.wireserver.total_retry_timeout_secs, 1200.0);
+        assert_eq!(
+            config.wireserver.connection_timeout_secs,
+            DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.wireserver.read_timeout_secs,
+            DEFAULT_WIRESERVER_READ_TIMEOUT_SECS
+        );
+        assert_eq!(
+            config.wireserver.total_retry_timeout_secs,
+            DEFAULT_WIRESERVER_TOTAL_RETRY_TIMEOUT_SECS
+        );
         assert_eq!(
             config.wireserver.health_endpoint,
-            "http://168.63.129.16/provisioning/health",
+            DEFAULT_WIRESERVER_HEALTH_ENDPOINT,
         );
 
         tracing::debug!("Verifying default telemetry configuration...");
@@ -929,7 +972,8 @@ mod tests {
         backends = ["passwd"]
         [imds]
         connection_timeout_secs = 5.0
-        read_timeout_secs = 120.0
+        request_timeout_secs = 120.0
+        retry_interval_secs = 1.0
         [provisioning_media]
         enable = false
         [azure_proxy_agent]
@@ -977,7 +1021,8 @@ mod tests {
         );
 
         assert_eq!(config.imds.connection_timeout_secs, 5.0);
-        assert_eq!(config.imds.read_timeout_secs, 120.0);
+        assert_eq!(config.imds.request_timeout_secs, 120.0);
+        assert_eq!(config.imds.retry_interval_secs, 1.0);
         assert_eq!(config.imds.total_retry_timeout_secs, 300.0);
 
         assert!(!config.provisioning_media.enable);

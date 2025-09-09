@@ -400,7 +400,9 @@ async fn provision(
     let user_agent = header::HeaderValue::from_str(user_agent.as_str())?;
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs_f64(
+            config.imds.connection_timeout_secs,
+        ))
         .default_headers(default_headers)
         .build()?;
 
@@ -411,8 +413,7 @@ async fn provision(
     // get_environment().
     let instance_metadata = query(
         &client,
-        Duration::from_secs_f64(clone_config.imds.connection_timeout_secs),
-        Duration::from_secs_f64(clone_config.imds.total_retry_timeout_secs),
+        Some(&clone_config),
         None, // default IMDS URL
     )
     .await
