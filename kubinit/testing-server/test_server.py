@@ -36,7 +36,7 @@ MOCK_INSTANCE_METADATA = {
         "name": "test-vm",
         "offer": "UbuntuServer",
         "osProfile": {
-            "adminUsername": "azureuser",
+            "adminUsername": "userforazure",
             "computerName": "test-vm",
             "disablePasswordAuthentication": "true"
         },

@@ -137,7 +137,7 @@ fn user_exists(username: &str) -> Result<bool, Error> {
     Ok(output.status.success())
 }
 
-#[instrument(skip_all)]
+//#[instrument(skip_all)]
 fn useradd(user: &User) -> Result<(), Error> {
     if user_exists(&user.name)? {
         tracing::info!(
