@@ -49,12 +49,12 @@ impl PasswordProvisioner {
 /// Manages the user's password during provisioning.
 ///
 /// This function supports two modes of operation:
-/// - If a password is provided in the `User` object, it sets the password securely 
+/// - If a password is provided in the `User` object, it sets the password securely
 ///   using the `chpasswd` utility via stdin to avoid exposing secrets.
-/// - If no password is provided, it disables password-based login by locking the 
+/// - If no password is provided, it disables password-based login by locking the
 ///   account's password using `passwd -l`.
 ///
-/// Note: While `libazureinit` supports password provisioning, the reference 
+/// Note: While `libazureinit` supports password provisioning, the reference
 /// `azure-init` binary does not use this feature and only creates locked accounts.
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
