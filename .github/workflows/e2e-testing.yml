@@ -72,9 +72,9 @@ jobs:
           # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
           docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
           cat provisioning_agent_logs.txt
-          # Fail the step if the logs contain both "azure-init" and "failed"/"failure" (case-insensitive).
-          if grep -qi 'azure-init' provisioning_agent_logs.txt && grep -Ei 'failed|failure' provisioning_agent_logs.txt; then
-            echo "ERROR: provisioning-agent logs contain 'azure-init' and failure indicators."
+          # Fail only if a single line contains both "azure-init" and "failed"/"failure" (case-insensitive).
+          if grep -i 'azure-init' provisioning_agent_logs.txt | grep -Ei 'failed|failure' >/dev/null; then
+            echo "ERROR: provisioning-agent logs contain a line with 'azure-init' and failure indicators."
             exit 1
           fi
 
