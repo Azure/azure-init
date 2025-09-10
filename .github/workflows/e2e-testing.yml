@@ -38,11 +38,11 @@ jobs:
         uses: docker/setup-buildx-action@v3
       
       - name: Make start-all.sh executable
-        run: chmod +x kubinit/start-all.sh kubinit/stop-all.sh
+        run: chmod +x testinit/start-all.sh testinit/stop-all.sh
       
       - name: Run E2E tests
         run: |
-          cd kubinit
+          cd testinit
           ls
           echo "Starting E2E test environment..."
           ./start-all.sh
@@ -69,12 +69,12 @@ jobs:
 
       - name: Print provisioning agent logs
         run: |
-          cd kubinit
+          cd testinit
           docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
 
       - name: Print testing server logs
         run: |
-          cd kubinit/testing-server
+          cd testinit/testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
           cd ..
 
@@ -84,7 +84,7 @@ jobs:
 
       - name: Cleanup - Stop all services
         if: always()
-        working-directory: kubinit
+        working-directory: testinit
         run: |
           echo "Cleaning up services..."
           ./stop-all.sh || echo "Cleanup completed"

@@ -1,0 +1,3 @@
+# Python dependencies for the provisioning agent test server
+pytest>=7.0.0
+requests>=2.25.0
