@@ -147,7 +147,7 @@ trap cleanup SIGINT SIGTERM
 echo -e "${CYAN}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
-║              Azure Provisioning Agent Test Server            ║
+║                    Azure-Init Test Server                    ║
 ║                        (Docker Mode)                         ║
 ║                                                              ║
 ║  This server mocks Azure IMDS and WireServer endpoints       ║

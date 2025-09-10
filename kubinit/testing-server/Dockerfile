@@ -27,8 +27,7 @@ COPY . /app/
 # Make scripts executable
 RUN chmod +x start_server_docker.sh 
 
-# Load dummy kernel module (if available)
-# Note: This may not work in all Docker environments
+# Load dummy kernel module
 RUN modprobe dummy 2>/dev/null || echo "Dummy module not available - will be handled by script"
 
 # Expose the ports used by IMDS and WireServer

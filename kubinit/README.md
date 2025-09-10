@@ -1,4 +1,4 @@
-# Azure Init - Kubinit Project
+# Azure-Init - Kubinit Project
 
 A containerized Azure provisioning agent that simulates Azure Instance Metadata Service (IMDS) and WireServer for testing and development environments.
 

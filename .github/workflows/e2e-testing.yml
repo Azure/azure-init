@@ -66,10 +66,6 @@ jobs:
           echo "Testing WireServer endpoint from within provisioning agent container..."
           # Test if the WireServer endpoint is accessible from within the container and show response
           docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine || echo "WireServer endpoint test completed"
-        
-      - name: Test journalctl
-        run: |
-          docker exec azureinit-provisioning-agent journalctl
 
       - name: Print provisioning agent logs
         run: |
@@ -92,11 +88,3 @@ jobs:
         run: |
           echo "Cleaning up services..."
           ./stop-all.sh || echo "Cleanup completed"
-          
-      - name: Show final Docker state
-        if: always()
-        run: |
-          echo "Final Docker containers state:"
-          docker ps -a
-          echo "Final Docker networks state:"
-          docker network ls
