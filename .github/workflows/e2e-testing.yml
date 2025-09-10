@@ -69,7 +69,14 @@ jobs:
       - name: Print provisioning agent logs
         run: |
           cd testinit
-          docker compose logs provisioning-agent || echo "No provisioning-agent logs yet"
+          # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
+          docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
+          cat provisioning_agent_logs.txt
+          # Fail the step if the logs contain both "azure-init" and "failed"/"failure" (case-insensitive).
+          if grep -qi 'azure-init' provisioning_agent_logs.txt && grep -Ei 'failed|failure' provisioning_agent_logs.txt; then
+            echo "ERROR: provisioning-agent logs contain 'azure-init' and failure indicators."
+            exit 1
+          fi
 
       - name: Print testing server logs
         run: |
