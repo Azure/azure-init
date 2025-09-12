@@ -114,6 +114,28 @@ impl User {
 }
 
 impl UserProvisioner {
+    /// Create the specified user using this provisioner.
+    ///
+    /// Behavior by backend:
+    /// - `Useradd`: Attempts to create the user on the system (or update group
+    ///   membership if the user already exists) by invoking the platform
+    ///   useradd logic. After successfully creating the user,
+    ///   a sudoers fragment is written to `/etc/sudoers.d/azure-init-user` to
+    ///   grant the user passwordless sudo access.
+    /// - `FakeUseradd` (only available under `#[cfg(test)]`): A test-only no-op
+    ///   implementation that always succeeds.
+    ///
+    /// Returns `Ok(())` when the operation completes successfully. If any step
+    /// fails (for example, running the underlying system commands or writing the
+    /// sudoers file), an appropriate `Err(Error)` is returned.
+    /// 
+    /// # Example
+    ///
+    /// ```
+    /// # use libazureinit::{User, config::UserProvisioner};
+    /// let user = User::new("azureuser", vec![]).with_groups(vec!["wheel".to_string()]);
+    /// UserProvisioner::Useradd.create(&user)?;
+    /// ```
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
         match self {
             Self::Useradd => {
