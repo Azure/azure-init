@@ -128,14 +128,6 @@ impl UserProvisioner {
     /// Returns `Ok(())` when the operation completes successfully. If any step
     /// fails (for example, running the underlying system commands or writing the
     /// sudoers file), an appropriate `Err(Error)` is returned.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use libazureinit::{User, config::UserProvisioner};
-    /// let user = User::new("azureuser", vec![]).with_groups(vec!["wheel".to_string()]);
-    /// UserProvisioner::Useradd.create(&user)?;
-    /// ```
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
         match self {
             Self::Useradd => {
