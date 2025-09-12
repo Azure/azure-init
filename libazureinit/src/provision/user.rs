@@ -128,7 +128,7 @@ impl UserProvisioner {
     /// Returns `Ok(())` when the operation completes successfully. If any step
     /// fails (for example, running the underlying system commands or writing the
     /// sudoers file), an appropriate `Err(Error)` is returned.
-    /// 
+    ///
     /// # Example
     ///
     /// ```
