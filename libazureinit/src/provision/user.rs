@@ -114,6 +114,20 @@ impl User {
 }
 
 impl UserProvisioner {
+    /// Create the specified user using this provisioner.
+    ///
+    /// Behavior by backend:
+    /// - `Useradd`: Attempts to create the user on the system (or update group
+    ///   membership if the user already exists) by invoking the platform
+    ///   useradd logic. After successfully creating the user,
+    ///   a sudoers fragment is written to `/etc/sudoers.d/azure-init-user` to
+    ///   grant the user passwordless sudo access.
+    /// - `FakeUseradd` (only available under `#[cfg(test)]`): A test-only no-op
+    ///   implementation that always succeeds.
+    ///
+    /// Returns `Ok(())` when the operation completes successfully. If any step
+    /// fails (for example, running the underlying system commands or writing the
+    /// sudoers file), an appropriate `Err(Error)` is returned.
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
         match self {
             Self::Useradd => {
@@ -127,6 +141,9 @@ impl UserProvisioner {
     }
 }
 
+/// Check if a user exists on the system using `getent passwd`.
+///
+/// Returns `true` if the user exists, `false` otherwise.
 #[instrument(skip_all)]
 fn user_exists(username: &str) -> Result<bool, Error> {
     let output = Command::new("getent")
@@ -137,6 +154,10 @@ fn user_exists(username: &str) -> Result<bool, Error> {
     Ok(output.status.success())
 }
 
+/// Create a new user or update an existing user's group memberships.
+///
+/// If the user exists, adds them to the specified groups using `usermod -aG`.
+/// If the user doesn't exist, creates them with the specified groups using `useradd`.
 #[instrument(skip_all)]
 fn useradd(user: &User) -> Result<(), Error> {
     if user_exists(&user.name)? {
@@ -175,6 +196,10 @@ fn useradd(user: &User) -> Result<(), Error> {
     crate::run(command)
 }
 
+/// Create a sudoers file granting passwordless sudo access to the specified user.
+///
+/// Creates a file at the given path with mode 0o600 containing a rule that allows
+/// the user to execute any command without a password prompt.
 fn add_user_for_passwordless_sudo(
     username: &str,
     path: &str,
