@@ -24,7 +24,9 @@ opentelemetry = "0.30"
 opentelemetry_sdk = "0.30"
 tracing-opentelemetry = "0.31"
 tokio-util = "0.7"
-sysinfo = "0.36"
+# Pin sysinfo to <=0.36 for MSRV issues with Rust < 1.85.0.
+# This should be unpinned around 2026-02-17 if we continue with our ~1 year MSRV policy
+sysinfo = "=0.36"
 anyhow = "1"
 fstab = "0.4.0"
 toml = "0.9"
