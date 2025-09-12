@@ -227,7 +227,7 @@ The functional tests verify that azure-init correctly:
 
 ### Common Issues
 
-1. **Azure CLI not authenticated**
+1. **Azure CLI Not Authenticated**
    - Run `az login` before running tests
 
 2. **Missing SUBSCRIPTION_ID**
