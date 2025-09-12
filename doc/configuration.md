@@ -1,4 +1,28 @@
-# Custom Configuration Design for azure-init
+# Custom Configuration for Azure-init
+
+## Quick Start
+
+Getting started with azure-init configuration is simple. Here are the basic steps:
+
+1. **Default Configuration**: With no configuration file, azure-init uses sensible defaults
+2. **Basic Configuration**: Create a file at `/etc/azure-init/azure-init.toml` with your settings
+3. **Modular Configuration**: Add specialized configuration files to `/etc/azure-init/azure-init.toml.d/`
+
+**Example: Basic SSH Configuration**
+```toml
+# /etc/azure-init/azure-init.toml
+[ssh]
+query_sshd_config = true
+authorized_keys_path = "/etc/ssh/authorized_keys"
+```
+
+**Example: Modular Configuration**
+```toml
+# /etc/azure-init/azure-init.toml.d/01-timeouts.toml
+[imds]
+connection_timeout_secs = 5.0
+read_timeout_secs = 30
+```
 
 ## Objective
 
@@ -87,6 +111,54 @@ azure-init --config /path/to/custom-config-directory
    - `99-overrides.toml`
 4. Applies any CLI overrides, either from a file or a directory.
 
+## Configuration Options
+
+Below are the key configuration sections and their options:
+
+### SSH Configuration
+```toml
+[ssh]
+authorized_keys_path = ".ssh/authorized_keys"  # Path for storing SSH authorized keys
+query_sshd_config = true  # Whether to query sshd for config paths
+```
+
+### User Provisioning
+```toml
+[hostname_provisioners]
+backends = ["hostnamectl"]  # List of backends for hostname provisioning
+
+[user_provisioners]
+backends = ["useradd"]  # List of backends for user creation
+
+[password_provisioners]
+backends = ["passwd"]  # List of backends for password management
+```
+
+### Network Configuration
+```toml
+[imds]
+connection_timeout_secs = 2.0  # Timeout for initial IMDS connection
+read_timeout_secs = 60  # Timeout for reading data from IMDS
+total_retry_timeout_secs = 300  # Total time to retry IMDS connections
+
+[wireserver]
+connection_timeout_secs = 2.0  # Timeout for wireserver connection
+read_timeout_secs = 60  # Timeout for reading data from wireserver
+total_retry_timeout_secs = 1200  # Total time to retry wireserver connections
+```
+
+### Feature Toggles
+```toml
+[provisioning_media]
+enable = true  # Enable provisioning media processing
+
+[azure_proxy_agent]
+enable = true  # Enable Azure proxy agent
+
+[telemetry]
+kvp_diagnostics = true  # Enable KVP diagnostics telemetry
+```
+
 ## Validation and Deserialization Process
 
 Azure Init uses strict validation on configuration fields to ensure they match expected types and values. If a configuration includes an unsupported value or incorrect type, deserialization will fail.
@@ -101,7 +173,7 @@ Azure Init uses strict validation on configuration fields to ensure they match e
 
 ### Example of an Unsupported Value
 
-Here’s an example configuration with an invalid value for `query_sshd_config`. This field expects a boolean (`true` or `false`), but in this case, an unsupported string value `"not_a_boolean"` is provided.
+Here's an example configuration with an invalid value for `query_sshd_config`. This field expects a boolean (`true` or `false`), but in this case, an unsupported string value `"not_a_boolean"` is provided.
 
 ```toml
 # Invalid value for query_sshd_config (not a boolean)
@@ -109,7 +181,7 @@ Here’s an example configuration with an invalid value for `query_sshd_config`.
 query_sshd_config = "not_a_boolean" # This will cause a validation failure
 ```
 
-## Sample of Valid Configuration File
+## Complete Configuration Example
 
 ```toml
 [ssh]
@@ -147,7 +219,7 @@ kvp_diagnostics = true
 
 ## Behavior of `azure-init` on Invalid Configuration
 
-`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue. Here’s how it responds to different types of problems:
+`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue. Here's how it responds to different types of problems:
 
 ### 1. Invalid Configuration
 
@@ -165,7 +237,37 @@ kvp_diagnostics = true
 
 ### 3. Handling of Provisioners in `azure-init`
 
-The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error  and halts provisioning.
+The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error and halts provisioning.
+
+## Troubleshooting Configuration Issues
+
+### Common Configuration Problems
+
+1. **Syntax Errors in TOML**
+   - **Symptom**: Azure-init fails to start with "failed to parse configuration" error
+   - **Solution**: Validate your TOML syntax with a TOML validator
+
+2. **Incorrect Value Types**
+   - **Symptom**: Error message about type mismatch (e.g., "expected boolean, found string")
+   - **Solution**: Ensure the configuration value matches the expected type (e.g., `true` instead of `"true"`)
+
+3. **Missing Directories**
+   - **Symptom**: Configuration files aren't being loaded
+   - **Solution**: Verify that `/etc/azure-init/` directory exists and has proper permissions
+
+4. **Configuration File Ordering Issues**
+   - **Symptom**: Expected configuration values aren't taking effect
+   - **Solution**: Check the lexicographical ordering of your .toml files in the .d directory
+
+### Debugging Configuration Loading
+
+To verify which configuration files are being loaded and in what order, you can enable DEBUG level logging:
+
+```bash
+RUST_LOG=debug azure-init
+```
+
+This will output detailed information about each configuration file as it's loaded and processed.
 
 ## Package Considerations
 
