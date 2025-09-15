@@ -29,8 +29,8 @@ This allows it to run in the early stages of the boot process when initializing 
 
 Azure-init consists of two main components:
 
-1. **azure-init** - The main provisioning agent run on Azure VMs
-2. **libazureinit** - A library that provides core functionality for accessing provisioning functionality and Azure services
+1. **azure-init** - The main provisioning agent run on Azure VMs.
+2. **libazureinit** - A library that provides core functionality for accessing provisioning functionality and Azure services.
 
 The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
 
