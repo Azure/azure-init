@@ -24,6 +24,7 @@ This allows it to run in the early stages of the boot process when initializing 
 - **Early boot compatibility**: Can run in very early boot stages
 - **Azure-specific**: Tailored for the Azure environment
 - **Configurable**: Allows customization through configuration files
+- **Telemetry**: Provides KVP telemetry for the provisioning process
 
 ## Architecture
 
@@ -87,8 +88,8 @@ From the root directory of the repository, run:
 cargo test --verbose --all-features --workspace
 ```
 
-This will run the unit tests for every library in the repository, not just for azure-init.
-Doing so ensures your testing will match what is run in the CI pipeline.
+This command runs unit tests across all libraries in the repository — not just for azure-init.
+Running the full suite ensures your local testing environment mirrors what’s executed in the CI pipeline.
 
 ### Running End-to-End (e2e) Tests
 Please refer to [E2E_TESTING.md](doc/E2E_TESTING.md) for end-to-end testing.
