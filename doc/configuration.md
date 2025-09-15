@@ -27,7 +27,15 @@ read_timeout_secs = 30
 ## Objective
 
 The azure-init custom configuration architecture enables flexible management of various settings for virtual machines provisioned with the agent.
-Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry.
+Customizable settings include:
+- SSH
+- IMDS 
+- Provisioning Media 
+- Azure Proxy Agent
+- Wireserver Endpoint
+- Data Directory
+- Log Path
+- Telemetry
 
 ## Design
 
