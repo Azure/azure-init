@@ -138,14 +138,16 @@ backends = ["passwd"]  # List of backends for password management
 ### Network Configuration
 ```toml
 [imds]
-connection_timeout_secs = 2.0  # Timeout for initial IMDS connection
-read_timeout_secs = 60  # Timeout for reading data from IMDS
-total_retry_timeout_secs = 300  # Total time to retry IMDS connections
+connection_timeout_secs = 30 # Timeout in seconds for establishing a connection to the IMDS.
+request_timeout_secs =  60 # Timeout for a single HTTP request to IMDS.
+retry_interval_secs = 2 # The time to wait between failed IMDS request attempts.
+total_retry_timeout_secs = 300  # The total time allowed for all IMDS request attempts.
 
 [wireserver]
-connection_timeout_secs = 2.0  # Timeout for wireserver connection
-read_timeout_secs = 60  # Timeout for reading data from wireserver
-total_retry_timeout_secs = 1200  # Total time to retry wireserver connections
+connection_timeout_secs = 2.0  # Timeout in seconds for establishing a connection to the wire server.
+read_timeout_secs = 60  # Timeout in seconds for reading data from the wire server.
+total_retry_timeout_secs = 1200  # Total retry timeout in seconds for wire server requests.
+health_endpoint = "http://168.63.129.16/provisioning/health" # URL to POST provisioning health updates to.
 ```
 
 ### Feature Toggles
