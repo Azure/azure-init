@@ -280,6 +280,6 @@ This will output detailed information about each configuration file as it's load
 
 ## Package Considerations
 
-To ensure smooth operation and compatibility across distributions, `azure-init`, should be packaged with a consistent configuration setup.
+To ensure smooth operation and compatibility across distributions, azure-init should be packaged with a consistent configuration setup.
 
-- Distributions packaging `azure-init` are expected to maintain the base configuration file at `/etc/azure-init/azure-init.toml`, with necessary overrides applied from a `.d` subdirectory.
+- Distributions packaging azure-init are expected to maintain the base configuration file at `/etc/azure-init/azure-init.toml`, with necessary overrides applied from a `.d` subdirectory.
