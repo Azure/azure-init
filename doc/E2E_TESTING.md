@@ -152,19 +152,6 @@ The functional tests verify that azure-init correctly:
    - Check the resource group (default: `testgalleryazinitrg`) for error details
    - If the image fails to create, the resource group is preserved for debugging
 
-### Advanced Configuration
-
-For more granular control over testing, you can set these environment variables:
-
-- `SUBSCRIPTION_ID`: Your Azure subscription ID
-- `RG`: Resource group name (default: `e2etest-azinit-<timestamp>`)
-- `LOCATION`: Azure region (default: `eastus`)
-- `VM_NAME`: Base name for test VMs
-- `VM_SIZE`: VM size (default: `Standard_D2lds_v5`)
-- `VM_ADMIN_USERNAME`: Admin username (default: `azureuser`)
-- `VM_IMAGE`: Image to use (URN or image ID)
-- `VM_SECURITY_TYPE`: Security type (default: `TrustedLaunch`)
-
 ## SIG Image Testing (Advanced)
 
 For more advanced testing scenarios, you can create a custom Shared Image Gallery (SIG) image with azure-init pre-installed.
@@ -233,6 +220,19 @@ When testing is done, clean up the SIG resource group:
 ```bash
 az group delete --resource-group testgalleryazinitrg
 ```
+
+### Advanced Configuration
+
+For more granular control over testing, you can set these environment variables:
+
+- `SUBSCRIPTION_ID`: Your Azure subscription ID
+- `RG`: Resource group name (default: `e2etest-azinit-<timestamp>`)
+- `LOCATION`: Azure region (default: `eastus`)
+- `VM_NAME`: Base name for test VMs
+- `VM_SIZE`: VM size (default: `Standard_D2lds_v5`)
+- `VM_ADMIN_USERNAME`: Admin username (default: `azureuser`)
+- `VM_IMAGE`: Image to use (URN or image ID)
+- `VM_SECURITY_TYPE`: Security type (default: `TrustedLaunch`)
 
 ## Comparison of Testing Approaches
 
