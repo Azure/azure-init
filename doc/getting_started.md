@@ -11,13 +11,15 @@ This guide provides step-by-step instructions to get started with azure-init for
 
 ### Basic Usage
 
-Azure-init is typically pre-installed and configured in Linux VM images that are Azure-optimized. If you're using such an image, azure-init will automatically run during the boot process and handle VM initialization.
+Azure-init typically needs to be pre-installed and configured in Linux VM images that are Azure-optimized, since the agent is not currently run on Azure Linux VMs by default.
+At the moment, adding azure-init to a Linux image requires following the process found in the [SIG image testing guide](E2E_TESTING.md#about-sig-image-testing).
+If you're using such an image, azure-init will automatically run during the boot process and handle VM initialization.
 
 ### Verifying Azure-init Operation
 
 To check that azure-init is working properly on your VM:
 
-1. Connect to your VM via SSH
+1. Connect to your SIG VM via SSH
 2. Check the azure-init service status:
 
 ```bash
@@ -67,10 +69,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 ```
 
-2. **Clone the repository:**
+2. **Fork and Clone the Repository:**
 
 ```bash
-git clone https://github.com/Azure/azure-init.git
+git clone https://github.com/{your-fork}/azure-init.git
 cd azure-init
 ```
 
@@ -121,31 +123,13 @@ cargo test
 
 3. **Test with a local configuration:**
 
-```bash
-cargo run --bin azure-init -- --config /path/to/your/config.toml
-```
-
-4. **For more thorough testing, use E2E tests** (see [E2E Testing Guide](E2E_TESTING.md))
+**Warning**: Avoid running the `azure-init` binary locally, as this runs the risk of modifying your local system.
+To test your changes, it is highly advised to use the [E2E Testing Guide](E2E_TESTING.md).
 
 ### Debugging
 
-1. **Enable debug logging:**
-
-```bash
-RUST_LOG=debug cargo run --bin azure-init
-```
-
-2. **Test with mock data:**
-
-Create a file with mock Azure metadata and use it for testing:
-
-```bash
-# Create a mock IMDS response
-echo '{"compute":{"name":"testvm"}}' > /tmp/mock-imds.json
-
-# Use the mock data
-AZURE_INIT_MOCK_IMDS_FILE=/tmp/mock-imds.json cargo run --bin azure-init
-```
+If these changes are part of a PR to the main Azure-Init repo, the CI pipeline will run a mock IMDS server and the azure-init binary in two separate Docker containers.
+Both containers will output all logs they have access to in order to better debug where failures are taking place.
 
 ## Next Steps
 
