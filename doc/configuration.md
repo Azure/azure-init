@@ -158,8 +158,15 @@ enable = true  # Enable provisioning media processing
 [azure_proxy_agent]
 enable = true  # Enable Azure proxy agent
 
+[azure_init_data_dir]
+path = "/var/lib/azure-init/"  # Directory for storing azure-init data and state files 
+
+[azure_init_log_path]
+path = "/var/log/azure-init.log"  # Path and file to place logs in
+ 
 [telemetry]
 kvp_diagnostics = true  # Enable KVP diagnostics telemetry
+kvp_filter = "info"  # Level (and higher) of KVP to emit
 ```
 
 ## Validation and Deserialization Process
@@ -206,8 +213,9 @@ backends = ["useradd"]
 backends = ["passwd"]
 
 [imds]
-connection_timeout_secs = 2.0
+connection_timeout_secs = 30.0
 read_timeout_secs = 60
+retry_interval_secs = 2
 total_retry_timeout_secs = 300
 
 [provisioning_media]
@@ -217,12 +225,20 @@ enable = true
 enable = true
 
 [wireserver]
-connection_timeout_secs = 2.0
+connection_timeout_secs = 30
 read_timeout_secs = 60
 total_retry_timeout_secs = 1200
+health_endpoint = "http://168.63.129.16/provisioning/health"
+
+[azure_init_data_dir]
+path = "/var/lib/azure-init/"
+
+[azure_init_log_path]
+path = "/var/log/azure-init.log"
 
 [telemetry]
 kvp_diagnostics = true
+kvp_filter = "info"
 ```
 
 ## Behavior of Azure-init on Invalid Configuration
@@ -275,7 +291,7 @@ If `backends` are specified but do not contain a valid provisioner, azure-init l
 To verify which configuration files are being loaded and in what order, you can enable `DEBUG` level logging:
 
 ```bash
-RUST_LOG=debug azure-init
+AZURE_INIT_LOG=debug azure-init
 ```
 
 This will output detailed information about each configuration file as it's loaded and processed.
