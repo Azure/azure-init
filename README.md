@@ -6,7 +6,8 @@ A reference implementation for provisioning Linux VMs on Azure.
 
 ## What is Azure-init?
 
-Azure-init is a lightweight provisioning agent that configures Linux virtual machines using Azure metadata. Unlike complex guest configuration systems (such as cloud-init), azure-init focuses exclusively on the essential initialization tasks for Azure VMs:
+Azure-init is a lightweight provisioning agent that configures Linux virtual machines using Azure metadata.
+Unlike complex guest configuration systems (such as cloud-init), azure-init focuses exclusively on the essential initialization tasks for Azure VMs:
 
 - Setting up user accounts
 - Configuring SSH keys for authentication
@@ -14,7 +15,8 @@ Azure-init is a lightweight provisioning agent that configures Linux virtual mac
 - Managing passwords
 - Processing VM provisioning metadata
 
-Azure-init is designed to be minimal, fast, and reliable, with very few dependencies. This allows it to run in the early stages of the boot process when initializing Linux VMs in Azure.
+Azure-init is designed to be minimal, fast, and reliable, with very few dependencies.
+This allows it to run in the early stages of the boot process when initializing Linux VMs in Azure.
 
 ## Key Features
 
@@ -50,10 +52,9 @@ To install Rust see here: https://www.rust-lang.org/tools/install.
 
 ### Building the Project
 
-Building this project can be done by going to the base of the repository in the command line and entering the command
-`cargo build --all`. This project contains two binaries, the main provisioning agent and the functional testing binary,
-so this command builds both. These binaries are quite small, but you can build only one by entering
-`cargo build --bin <binary_name>` and indicating either `azure-init` or `functional_tests`.
+Building this project can be done by going to the base of the repository in the command line and entering the command `cargo build --all`.
+This project contains two binaries, the main provisioning agent and the functional testing binary, so this command builds both.
+These binaries are quite small, but you can build only one by entering `cargo build --bin <binary_name>` and indicating either `azure-init` or `functional_tests`.
 
 To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
 
@@ -72,7 +73,8 @@ Azure-init includes comprehensive documentation to help you understand, configur
 
 ## Configuration
 
-Azure-init supports customization through configuration files. The default configuration path is `/etc/azure-init/azure-init.toml`, but additional configuration can be provided in the `/etc/azure-init/azure-init.toml.d/` directory.
+Azure-init supports customization through configuration files.
+The default configuration path is `/etc/azure-init/azure-init.toml`, but additional configuration can be provided in the `/etc/azure-init/azure-init.toml.d/` directory.
 
 For detailed information about configuration options and structure, see [configuration.md](doc/configuration.md).
 
@@ -88,8 +90,8 @@ From the root directory of the repository, run:
 cargo test --verbose --all-features --workspace
 ```
 
-This will run the unit tests for every library in the repository, not just for azure-init. 
-Doing so ensures your testing will match what is run in the CI pipeline. 
+This will run the unit tests for every library in the repository, not just for azure-init.
+Doing so ensures your testing will match what is run in the CI pipeline.
 
 ### Running End-to-End (e2e) Tests
 Please refer to [E2E_TESTING.md](doc/E2E_TESTING.md) for end-to-end testing.
