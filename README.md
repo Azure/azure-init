@@ -12,7 +12,6 @@ Unlike complex guest configuration systems (such as cloud-init), azure-init focu
 - Setting up user accounts
 - Configuring SSH keys for authentication
 - Setting the hostname
-- Managing passwords
 - Processing VM provisioning metadata
 
 Azure-init is designed to be minimal, fast, and reliable, with very few dependencies.
@@ -30,8 +29,8 @@ This allows it to run in the early stages of the boot process when initializing 
 
 Azure-init consists of two main components:
 
-1. **azure-init** - The main provisioning agent binary
-2. **libazureinit** - A library that provides core functionality for accessing Azure services
+1. **azure-init** - The main provisioning agent for Azure VMs
+2. **libazureinit** - A library that provides core functionality for accessing Azure services and provisioning
 
 The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
 
@@ -76,7 +75,7 @@ Azure-init includes comprehensive documentation to help you understand, configur
 Azure-init supports customization through configuration files.
 The default configuration path is `/etc/azure-init/azure-init.toml`, but additional configuration can be provided in the `/etc/azure-init/azure-init.toml.d/` directory.
 
-For detailed information about configuration options and structure, see [configuration.md](doc/configuration.md).
+For detailed information about configuration options and structure, see [Configuration Documentation](doc/configuration.md).
 
 ## Testing
 

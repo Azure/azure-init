@@ -26,7 +26,8 @@ read_timeout_secs = 30
 
 ## Objective
 
-The azure-init custom configuration architecture enables dynamic and flexible management of various settings for virtual machines provisioned with the light-weight agent. Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry.
+The azure-init custom configuration architecture enables dynamic and flexible management of various settings for virtual machines provisioned with the light-weight agent.
+Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry.
 
 ## Design
 
@@ -161,15 +162,19 @@ kvp_diagnostics = true  # Enable KVP diagnostics telemetry
 
 ## Validation and Deserialization Process
 
-Azure Init uses strict validation on configuration fields to ensure they match expected types and values. If a configuration includes an unsupported value or incorrect type, deserialization will fail.
+Azure Init uses strict validation on configuration fields to ensure they match expected types and values.
+If a configuration includes an unsupported value or incorrect type, deserialization will fail.
 
 ### Error Handling During Deserialization
 
-- When a configuration file is loaded, its contents are parsed and converted from `.toml` into structured data. If a field in the file contains an invalid value (e.g., `query_sshd_config` is set to `"not_a_boolean"` instead of `true` or `false`), the parsing process will fail with a deserialization error due to the mismatched type.
+- When a configuration file is loaded, its contents are parsed and converted from `.toml` into structured data.
+If a field in the file contains an invalid value (e.g., `query_sshd_config` is set to `"not_a_boolean"` instead of `true` or `false`), the parsing process will fail with a deserialization error due to the mismatched type.
 
 ### Propagation of Deserialization Errors
 
-- When deserialization fails, an error is logged to indicate that the configuration file could not be parsed correctly. This error propagates through the application, causing the provisioning process to fail. The application will not proceed with provisioning if the configuration is invalid.
+- When deserialization fails, an error is logged to indicate that the configuration file could not be parsed correctly. 
+This error propagates through the application, causing the provisioning process to fail.
+The application will not proceed with provisioning if the configuration is invalid.
 
 ### Example of an Unsupported Value
 
@@ -219,11 +224,13 @@ kvp_diagnostics = true
 
 ## Behavior of `azure-init` on Invalid Configuration
 
-`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue. Here's how it responds to different types of problems:
+`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue.
+Here's how it responds to different types of problems:
 
 ### 1. Invalid Configuration
 
-- If a configuration file contains syntax errors (e.g., malformed TOML) or unsupported values for fields (e.g., invalid enums),  `azure-init` logs the error and terminates. The provisioning process does not proceed when configuration parsing fails.
+- If a configuration file contains syntax errors (e.g., malformed TOML) or unsupported values for fields (e.g., invalid enums), `azure-init` logs the error and terminates.
+The provisioning process does not proceed when configuration parsing fails.
 
 ### 2. Missing or Invalid SSH Configuration
 
@@ -237,7 +244,8 @@ kvp_diagnostics = true
 
 ### 3. Handling of Provisioners in `azure-init`
 
-The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error and halts provisioning.
+The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. 
+If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error and halts provisioning.
 
 ## Troubleshooting Configuration Issues
 

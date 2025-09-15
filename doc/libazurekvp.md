@@ -2,7 +2,9 @@
 
 ## Overview
 
-Azure-init implements a comprehensive tracing system that captures detailed information about the provisioning process. This information is crucial for monitoring, debugging, and troubleshooting VM provisioning issues in Azure environments. The tracing system is built on a multi-layered architecture that provides flexibility and robustness.
+Azure-init implements a comprehensive tracing system that captures detailed information about the provisioning process.
+This information is crucial for monitoring, debugging, and troubleshooting VM provisioning issues in Azure environments.
+The tracing system is built on a multi-layered architecture that provides flexibility and robustness.
 
 ## Architecture
 
