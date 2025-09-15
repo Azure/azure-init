@@ -122,20 +122,18 @@ fn configure_ssh_keys(user: &str, keys: &[String]) {
 The tracing system must be initialized at application startup:
 
 ```rust
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Registry;
-
+use libazureinit::config::Config;
+use libazureinit::logging::setup_layers;
+use tokio_util::sync::CancellationToken;
 fn main() {
-    // Initialize the tracing system with all layers
-    let subscriber = Registry::default()
-        .with(EmitKVPLayer::new())
-        .with(OpenTelemetryLayer::new())
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr));
-    
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set global default subscriber");
-    
-    // Application code
+   let vm_id = "00000000-0000-0000-0000-000000000000"; // Obtain from environment or libazureinit::get_vm_id()
+   let config = Config::load(None).expect("load config");
+   let graceful_shutdown = CancellationToken::new();
+   let (subscriber, _kvp_writer) =
+       setup_layers(vm_id, &config, graceful_shutdown.clone()).expect("setup layers");
+   tracing::subscriber::set_global_default(subscriber)
+       .expect("Failed to set global default subscriber");
+// Application code...
 }
 ```
 
