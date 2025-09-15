@@ -26,7 +26,7 @@ read_timeout_secs = 30
 
 ## Objective
 
-The azure-init custom configuration architecture enables dynamic and flexible management of various settings for virtual machines provisioned with the light-weight agent.
+The azure-init custom configuration architecture enables flexible management of various settings for virtual machines provisioned with the agent.
 Customizable settings include SSH, IMDS, provisioning media, azure proxy agent, wireserver, and telemetry.
 
 ## Design
@@ -162,7 +162,7 @@ kvp_diagnostics = true  # Enable KVP diagnostics telemetry
 
 ## Validation and Deserialization Process
 
-Azure Init uses strict validation on configuration fields to ensure they match expected types and values.
+Azure-init uses strict validation on configuration fields to ensure they match expected types and values.
 If a configuration includes an unsupported value or incorrect type, deserialization will fail.
 
 ### Error Handling During Deserialization
@@ -178,7 +178,8 @@ The application will not proceed with provisioning if the configuration is inval
 
 ### Example of an Unsupported Value
 
-Here's an example configuration with an invalid value for `query_sshd_config`. This field expects a boolean (`true` or `false`), but in this case, an unsupported string value `"not_a_boolean"` is provided.
+Here's an example configuration with an invalid value for `query_sshd_config`.
+This field expects a boolean (`true` or `false`), but in this case, an unsupported string value `"not_a_boolean"` is provided.
 
 ```toml
 # Invalid value for query_sshd_config (not a boolean)
@@ -222,30 +223,30 @@ total_retry_timeout_secs = 1200
 kvp_diagnostics = true
 ```
 
-## Behavior of `azure-init` on Invalid Configuration
+## Behavior of Azure-init on Invalid Configuration
 
-`azure-init` handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue.
+Azure-init handles configuration issues by logging errors and either using default values or halting functionality, depending on the severity of the issue.
 Here's how it responds to different types of problems:
 
 ### 1. Invalid Configuration
 
-- If a configuration file contains syntax errors (e.g., malformed TOML) or unsupported values for fields (e.g., invalid enums), `azure-init` logs the error and terminates.
+- If a configuration file contains syntax errors (e.g., malformed TOML) or unsupported values for fields (e.g., invalid enums), azure-init logs the error and terminates.
 The provisioning process does not proceed when configuration parsing fails.
 
 ### 2. Missing or Invalid SSH Configuration
 
 - `query_sshd_config = true`:
-  - `azure-init` attempts to dynamically query the authorized keys path using the `sshd -G` command.
+  - Azure-init attempts to dynamically query the authorized keys path using the `sshd -G` command.
   - If `sshd -G` succeeds: The dynamically queried path is used for the authorized keys.
   - If `sshd -G` fails: The failure is logged, but azure-init continues using the fallback path specified in authorized_keys_path (default: `.ssh/authorized_keys`).
 - `query_sshd_config = false`:
   - `azure-init` skips querying `sshd -G` entirely
   - The value in `authorized_keys_path` is used directly, without any dynamic path detection.
 
-### 3. Handling of Provisioners in `azure-init`
+### 3. Handling of Provisioners in Azure-init
 
-The `azure-init` configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. 
-If `backends` are specified but do not contain a valid provisioner, `azure-init` logs an error and halts provisioning.
+The azure-init configuration allows for custom settings of hostnames, user creation, and password setup through the use of provisioners. 
+If `backends` are specified but do not contain a valid provisioner, azure-init logs an error and halts provisioning.
 
 ## Troubleshooting Configuration Issues
 
