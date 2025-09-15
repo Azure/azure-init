@@ -156,6 +156,8 @@ The functional tests verify that azure-init correctly:
 
 For more advanced testing scenarios, you can create a custom Shared Image Gallery (SIG) image with azure-init pre-installed.
 
+Those internal to Microsoft should also review the [internal testing documentation](aka.ms/azure-init/testing).
+
 ### About SIG Image Testing
 
 This approach provides a more complete end-to-end test because:
