@@ -270,7 +270,7 @@ If `backends` are specified but do not contain a valid provisioner, azure-init l
 
 ### Debugging Configuration Loading
 
-To verify which configuration files are being loaded and in what order, you can enable DEBUG level logging:
+To verify which configuration files are being loaded and in what order, you can enable `DEBUG` level logging:
 
 ```bash
 RUST_LOG=debug azure-init

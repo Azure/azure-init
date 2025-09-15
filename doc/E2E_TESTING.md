@@ -1,6 +1,7 @@
 # Azure-init End-to-end Testing
 
-End-to-end tests validate the integration of azure-init in a real Azure VM environment. These tests verify that azure-init can properly provision Linux VMs according to Azure metadata.
+End-to-end tests validate the integration of azure-init in a real Azure VM environment.
+These tests verify that azure-init can properly provision Linux VMs according to Azure metadata.
 
 ## Prerequisites
 
@@ -33,7 +34,8 @@ This approach works by:
 4. Running the tests on the VM to validate functionality
 5. Automatically deleting the VM and resource group after testing
 
-The entire process happens in your Azure cloud subscription, but the test is controlled from your local machine. This approach is faster because it skips the image creation process, but it may not test the actual VM provisioning with azure-init since azure-init is not pre-installed in the standard image.
+The entire process happens in your Azure cloud subscription, but the test is controlled from your local machine.
+This approach is faster because it skips the image creation process, but it may not test the actual VM provisioning with azure-init since the agent is not pre-installed in the standard image.
 
 ### Quickstart
 
@@ -141,14 +143,9 @@ The functional tests verify that azure-init correctly:
    - If you see `version GLIBC_X.XX not found` errors, it means your build environment has a newer glibc than the target VM
    - Options to resolve:
      - Build on a matching OS version (same as the target VM)
-     - Use Docker to build in a compatible environment
      - Configure static linking in your Rust build
 
-6. **Docker Not Running**
-   - Ensure Docker daemon is running before executing `make e2e-test`
-   - If Docker is not available, you may need to install it or start the service
-
-7. **Image Creation Failures**
+6. **Image Creation Failures**
    - Check the resource group (default: `testgalleryazinitrg`) for error details
    - If the image fails to create, the resource group is preserved for debugging
 
@@ -215,6 +212,8 @@ After creating your SIG image, run the tests with:
 VM_IMAGE="$(az sig image-definition list --resource-group testgalleryazinitrg --gallery-name testgalleryazinit | jq -r .[].id)" make e2e-test
 ```
 
+This will allocate a VM of your given image type (with Azure-init installed) and later run the `functional_test` binary after provisioning.
+
 ### Cleanup After SIG Testing
 
 When testing is done, clean up the SIG resource group:
@@ -222,6 +221,8 @@ When testing is done, clean up the SIG resource group:
 ```bash
 az group delete --resource-group testgalleryazinitrg
 ```
+
+This helps to avoid your subscription getting charged for resources you no longer use.
 
 ### Advanced Configuration
 
