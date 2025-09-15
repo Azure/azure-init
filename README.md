@@ -67,7 +67,7 @@ Azure-init includes comprehensive documentation to help you understand, configur
 | [Architecture Overview](doc/architecture.md) | High-level system design and component interactions |
 | [Configuration Guide](doc/configuration.md) | Detailed configuration options and file structure |
 | [Tracing System](doc/libazurekvp.md) | Understanding the telemetry and tracing capabilities |
-| [End-to-End Testing](docs/E2E_TESTING.md) | How to perform comprehensive system testing |
+| [End-to-End Testing](doc/E2E_TESTING.md) | How to perform comprehensive system testing |
 | [Library Documentation](libazureinit/README.md) | Documentation for the libazureinit library |
 
 ## Configuration
@@ -92,7 +92,7 @@ This will run the unit tests for every library in the repository, not just for a
 Doing so ensures your testing will match what is run in the CI pipeline. 
 
 ### Running End-to-End (e2e) Tests
-Please refer to [E2E_TESTING.md](docs/E2E_TESTING.md) for end-to-end testing.
+Please refer to [E2E_TESTING.md](doc/E2E_TESTING.md) for end-to-end testing.
 
 ## Contributing
 

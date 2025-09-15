@@ -116,4 +116,4 @@ Azure-init is optimized for:
 
 - [Configuration Documentation](configuration.md)
 - [Tracing System](libazurekvp.md)
-Comment view- [End-to-End Testing](../docs/E2E_TESTING.md)
+- [End-to-End Testing](/E2E_TESTING.md)

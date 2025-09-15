@@ -16,65 +16,11 @@ Before running end-to-end tests, ensure you have:
 
 There are two ways to run end-to-end tests for azure-init, both of which involve creating resources in your Azure cloud subscription:
 
-1. **Direct VM Testing (Simplest)** - Creates a VM using a standard Ubuntu image and runs functional tests directly
-2. **SIG Image Testing (Advanced)** - Creates a custom SIG image with azure-init pre-installed, then tests with that image
+1. **Direct VM Testing (Simplest)** - Creates a VM using a standard Ubuntu image and runs the `functional_tests` binary directly.
+2. **SIG Image Testing (Advanced)** - Creates a custom SIG image with azure-init pre-installed and enabled via a systemd service, then allocates a VM with that image.
 
 For most users, the **Direct VM Testing** approach is recommended as it's simpler and faster.
-
-## Important: Binary Compatibility Between Build and Target Environments
-
-When running end-to-end tests, an important consideration is the binary compatibility between your build environment (where the `functional_tests` binary is compiled) and the target environment (the Azure VM where the tests will run).
-
-### Understanding the Issue
-
-The `functional_tests` binary is:
-1. Built on your local system
-2. Copied to an Azure VM via SSH
-3. Executed on the VM to test azure-init functionality
-
-If your build environment has newer libraries (especially glibc) than the target VM, you may encounter compatibility errors like:
-
-```
-./functional_tests: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_X.XX' not found
-```
-
-This occurs because your local build is dynamically linked against a newer version of glibc than what's available on the standard Ubuntu VM image in Azure.
-
-### General Solutions
-
-There are several approaches to solve this binary compatibility issue:
-
-1. **Build on a matching environment**: Ensure your build environment matches the target VM OS version/distribution
-2. **Use static linking**: Configure Rust to statically link the binary (may increase binary size)
-3. **Cross-compilation**: Use cross-compilation tools to build for the target environment
-4. **Containerization**: Use Docker or another container platform to build in an environment matching the target
-5. **Target older glibc**: Configure the linker to target an older glibc version
-
-### Example: Using Docker to Build Compatible Binaries
-
-One approach is to use Docker to build the binary in an environment that matches the target VM:
-
-```yaml
-# Example docker-compose.yml
-version: '3'
-
-services:
-  build-functional-tests:
-    image: ubuntu:22.04  # Match the Azure VM image OS version
-    volumes:
-      - .:/azure-init
-    working_dir: /azure-init
-    command: >
-      bash -c "
-        apt-get update && 
-        apt-get install -y curl build-essential pkg-config libssl-dev git &&
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
-        . $$HOME/.cargo/env &&
-        cargo build --bin functional_tests
-      "
-```
-
-This approach ensures the binary is built in an environment that matches the target VM OS version and libraries.
+However, SIG testing should be done later on to ensure proper provisioning flow.
 
 ## Direct VM Testing (Recommended)
 
@@ -114,7 +60,37 @@ You can customize the VM creation with environment variables:
 RG="mytest-azinit" LOCATION="westus2" VM_SIZE="Standard_D2s_v3" make e2e-test
 ```
 
-## Advanced SIG Image Testing
+#### Binary Compatibility Between Build and Target Environments
+
+When running end-to-end tests, an important consideration is the binary compatibility between your build environment (where the `functional_tests` binary is compiled) and the target environment (the Azure VM where the tests will run).
+
+#### Understanding the Issue
+
+The `functional_tests` binary is:
+1. Built on your local system
+2. Copied to an Azure VM via SSH
+3. Executed on the VM to test azure-init functionality
+
+If your build environment has newer libraries (especially glibc) than the target VM, you may encounter compatibility errors like:
+
+```
+./functional_tests: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_X.XX' not found
+```
+
+This occurs because your local build is dynamically linked against a newer version of glibc than what's available on the standard Ubuntu VM image in Azure.
+
+#### General Solutions
+
+There are several approaches to solve this binary compatibility issue:
+
+1. **Build on a matching environment**: Ensure your build environment matches the target VM OS version/distribution
+2. **Use static linking**: Configure Rust to statically link the binary (may increase binary size)
+3. **Cross-compilation**: Use cross-compilation tools to build for the target environment
+4. **Target older glibc**: Configure the linker to target an older glibc version
+
+This approach helps ensure the binary is built in an environment that matches the target VM OS version and libraries.
+
+## SIG Image Testing (Advanced)
 
 For more advanced testing scenarios, you can create a custom Shared Image Gallery (SIG) image with azure-init pre-installed.
 
@@ -134,8 +110,6 @@ This approach is more thorough but takes significantly longer (30+ minutes for i
 6. Running tests on the second VM
 
 All of these steps happen in your Azure cloud subscription, controlled from your local machine.
-
-**Note**: When using SIG image testing, you should still use the Docker-built binary to ensure compatibility with the target VM environment.
 
 ### What is a Shared Image Gallery (SIG)?
 

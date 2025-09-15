@@ -125,7 +125,7 @@ cargo test
 cargo run --bin azure-init -- --config /path/to/your/config.toml
 ```
 
-4. **For more thorough testing, use E2E tests** (see [E2E Testing Guide](../docs/E2E_TESTING.md))
+4. **For more thorough testing, use E2E tests** (see [E2E Testing Guide](E2E_TESTING.md))
 
 ### Debugging
 
@@ -152,4 +152,4 @@ AZURE_INIT_MOCK_IMDS_FILE=/tmp/mock-imds.json cargo run --bin azure-init
 - Review the [Configuration Guide](configuration.md) for detailed configuration options
 - Learn about the [Architecture](architecture.md) of azure-init
 - Understand the [Tracing System](libazurekvp.md) for monitoring and debugging
-- Explore [End-to-End Testing](../docs/E2E_TESTING.md) for comprehensive testing
+- Explore [End-to-End Testing](E2E_TESTING.md) for comprehensive testing
