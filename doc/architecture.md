@@ -2,7 +2,8 @@
 
 ## Overview
 
-Azure-init is a lightweight provisioning agent designed to initialize Linux virtual machines in Azure. This document provides a high-level architectural overview of the system.
+Azure-init is a lightweight provisioning agent designed to initialize Linux virtual machines in Azure.
+This document provides a high-level architectural overview of the system.
 
 ## System Architecture
 
@@ -17,8 +18,8 @@ flowchart TD
         Backends --> Telemetry
     end
     
-    IMDS["Azure Instance\nMetadata Service"] <--> Engine
-    SystemState <--> LinuxSystem["Linux System\nComponents"]
+    IMDS["Azure Instance Metadata Service"] <--> Engine
+    SystemState <--> LinuxSystem["Linux System Components"]
     
     classDef azure fill:#0072C6,stroke:#0072C6,color:white;
     classDef azureInit fill:#e6f3ff,stroke:#0072C6;

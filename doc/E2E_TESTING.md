@@ -64,7 +64,7 @@ RG="mytest-azinit" LOCATION="westus2" VM_SIZE="Standard_D2s_v3" make e2e-test
 
 When running end-to-end tests, an important consideration is the binary compatibility between your build environment (where the `functional_tests` binary is compiled) and the target environment (the Azure VM where the tests will run).
 
-#### Understanding the Issue
+**Understanding the Issue**
 
 The `functional_tests` binary is:
 1. Built on your local system
@@ -90,84 +90,6 @@ There are several approaches to solve this binary compatibility issue:
 
 This approach helps ensure the binary is built in an environment that matches the target VM OS version and libraries.
 
-## SIG Image Testing (Advanced)
-
-For more advanced testing scenarios, you can create a custom Shared Image Gallery (SIG) image with azure-init pre-installed.
-
-### About SIG Image Testing
-
-This approach provides a more complete end-to-end test because:
-1. It creates a custom VM image with azure-init pre-installed and properly configured
-2. The VM provisioning process actually uses azure-init during boot
-3. It allows testing of the full provisioning flow from VM creation to user setup
-
-This approach is more thorough but takes significantly longer (30+ minutes for image creation) as it involves:
-1. Creating a base VM
-2. Installing azure-init on that VM
-3. Generalizing the VM
-4. Capturing it as a SIG image
-5. Creating a second VM from that image
-6. Running tests on the second VM
-
-All of these steps happen in your Azure cloud subscription, controlled from your local machine.
-
-### What is a Shared Image Gallery (SIG)?
-
-Azure Shared Image Gallery is a service that helps you build structure and organization around your custom VM images. In our testing, we can use SIG to create a custom VM image with azure-init pre-installed, allowing us to test the provisioning process in a controlled environment.
-
-The SIG is created only within your own Azure subscription and is not publicly accessible.
-
-### Step 1: Preparation of Azure SIG image
-
-To create an Azure SIG image for end-to-end testing:
-
-```bash
-demo/image_creation.sh
-```
-
-This script:
-
-1. Creates an Azure resource group and storage account
-2. Deploys a virtual machine with a base image
-3. Installs and configures azure-init on the VM
-4. Generalizes the VM and captures it as a SIG image
-5. Publishes the SIG image for testing
-
-You can customize the image creation with environment variables:
-
-```bash
-RG="mytest-azinit" LOCATION="westeurope" VM_SIZE="Standard_D2ds_v5" BASE_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest" demo/image_creation.sh
-```
-
-**Note**: The `BASE_IMAGE` should be a Debian derivative like Ubuntu. When the build host OS differs from the target host OS, the `functional_test` binary might not run due to package version mismatches (e.g., glibc).
-
-### Step 2: Testing with the SIG image
-
-After creating your SIG image, run the tests with:
-
-```bash
-VM_IMAGE="$(az sig image-definition list --resource-group testgalleryazinitrg --gallery-name testgalleryazinit | jq -r .[].id)" make e2e-test
-```
-
-### Cleanup After SIG Testing
-
-When testing is done, clean up the SIG resource group:
-
-```bash
-az group delete --resource-group testgalleryazinitrg
-```
-
-## Comparison of Testing Approaches
-
-| Feature | Direct VM Testing | SIG Image Testing |
-|---------|------------------|-------------------|
-| **Speed** | Faster (5-10 minutes) | Slower (30+ minutes) |
-| **Completeness** | Tests functionality only | Tests full provisioning flow |
-| **Resources Created** | Single VM | Multiple VMs + SIG resources |
-| **Costs** | Lower Azure costs | Higher Azure costs |
-| **Complexity** | Simple, one command | Multiple steps |
-| **Tests azure-init Integration** | No (uses existing VM) | Yes (tests VM with azure-init) |
-
 ## How the E2E Testing Works
 
 1. **Build Process**:
@@ -187,7 +109,7 @@ az group delete --resource-group testgalleryazinitrg
 4. **Cleanup**:
    - The script automatically deletes the resource group to clean up all resources
 
-## What the Tests Actually Validate
+### What the Tests Actually Validate
 
 The functional tests verify that azure-init correctly:
 
@@ -197,9 +119,9 @@ The functional tests verify that azure-init correctly:
 4. Sets the hostname according to Azure VM specifications
 5. Handles password configuration properly
 
-## Troubleshooting
+### Troubleshooting
 
-### Common Issues
+#### Common Issues
 
 1. **Azure CLI Not Authenticated**
    - Run `az login` before running tests
@@ -242,3 +164,83 @@ For more granular control over testing, you can set these environment variables:
 - `VM_ADMIN_USERNAME`: Admin username (default: `azureuser`)
 - `VM_IMAGE`: Image to use (URN or image ID)
 - `VM_SECURITY_TYPE`: Security type (default: `TrustedLaunch`)
+
+## SIG Image Testing (Advanced)
+
+For more advanced testing scenarios, you can create a custom Shared Image Gallery (SIG) image with azure-init pre-installed.
+
+### About SIG Image Testing
+
+This approach provides a more complete end-to-end test because:
+1. It creates a custom VM image with azure-init pre-installed and properly configured
+2. The VM provisioning process actually uses azure-init during boot
+3. It allows testing of the full provisioning flow from VM creation to user setup
+
+This approach is more thorough but takes significantly longer (30+ minutes for image creation) as it involves:
+1. Creating a base VM
+2. Installing azure-init on that VM
+3. Generalizing the VM
+4. Capturing it as a SIG image
+5. Creating a second VM from that image
+6. Running tests on the second VM
+
+All of these steps happen in your Azure cloud subscription, controlled from your local machine.
+
+### What is a Shared Image Gallery (SIG)?
+
+Azure Shared Image Gallery is a service that helps you build structure and organization around your custom VM images.
+In our testing, we can use SIG to create a custom VM image with azure-init pre-installed, allowing us to test the provisioning process in a controlled environment.
+
+The SIG is created only within your own Azure subscription and is not publicly accessible.
+
+### Step 1: Preparation of Azure SIG image
+
+To create an Azure SIG image for end-to-end testing:
+
+```bash
+demo/image_creation.sh
+```
+
+This script:
+
+1. Creates an Azure resource group and storage account
+2. Deploys a virtual machine with a base image
+3. Installs and configures azure-init on the VM
+4. Generalizes the VM and captures it as a SIG image
+5. Publishes the SIG image for testing
+
+You can customize the image creation with environment variables:
+
+```bash
+RG="mytest-azinit" LOCATION="westeurope" VM_SIZE="Standard_D2ds_v5" BASE_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest" demo/image_creation.sh
+```
+
+**Note**: The `BASE_IMAGE` should be a Debian derivative like Ubuntu.
+When the build host OS differs from the target host OS, the `functional_test` binary might not run due to package version mismatches (e.g., glibc).
+
+### Step 2: Testing with the SIG image
+
+After creating your SIG image, run the tests with:
+
+```bash
+VM_IMAGE="$(az sig image-definition list --resource-group testgalleryazinitrg --gallery-name testgalleryazinit | jq -r .[].id)" make e2e-test
+```
+
+### Cleanup After SIG Testing
+
+When testing is done, clean up the SIG resource group:
+
+```bash
+az group delete --resource-group testgalleryazinitrg
+```
+
+## Comparison of Testing Approaches
+
+| Feature | Direct VM Testing | SIG Image Testing |
+|---------|------------------|-------------------|
+| **Speed** | Faster (5-10 minutes) | Slower (30+ minutes) |
+| **Completeness** | Tests functionality only | Tests full provisioning flow |
+| **Resources Created** | Single VM | Multiple VMs + SIG resources |
+| **Costs** | Lower Azure costs | Higher Azure costs |
+| **Complexity** | Simple, one command | Multiple steps |
+| **Tests Azure-init Integration** | No (uses existing VM) | Yes (tests VM with azure-init) |

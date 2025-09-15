@@ -29,8 +29,8 @@ This allows it to run in the early stages of the boot process when initializing 
 
 Azure-init consists of two main components:
 
-1. **azure-init** - The main provisioning agent for Azure VMs
-2. **libazureinit** - A library that provides core functionality for accessing Azure services and provisioning
+1. **azure-init** - The main provisioning agent run on Azure VMs
+2. **libazureinit** - A library that provides core functionality for accessing provisioning functionality and Azure services
 
 The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
 
@@ -49,7 +49,7 @@ For step-by-step instructions on installing, configuring, and using azure-init, 
 
 To install Rust see here: https://www.rust-lang.org/tools/install.
 
-### Building the Project
+## Building the Project
 
 Building this project can be done by going to the base of the repository in the command line and entering the command `cargo build --all`.
 This project contains two binaries, the main provisioning agent and the functional testing binary, so this command builds both.
@@ -58,8 +58,6 @@ These binaries are quite small, but you can build only one by entering `cargo bu
 To run the program, you must enter the command `cargo run --bin <binary_name>` and indicating the correct binary.
 
 ## Documentation
-
-Azure-init includes comprehensive documentation to help you understand, configure, and test the system:
 
 | Document | Description |
 |----------|-------------|
