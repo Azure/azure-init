@@ -15,19 +15,12 @@ services:
         ipv4_address: 169.254.169.254
       wireserver-network:
         ipv4_address: 168.63.129.16
-    environment:
-      - RUNNING_IN_DOCKER=true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/metadata/instance?api-version=2021-02-01"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 networks:
   agent-network:
