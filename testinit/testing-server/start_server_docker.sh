@@ -31,14 +31,8 @@ print_error() {
     echo -e "${RED}[$(date '+%H:%M:%S')]${NC} $1"
 }
 
-# Check if running in Docker
-if [[ "$RUNNING_IN_DOCKER" == "true" ]]; then
-    print_info "Running in Docker container mode"
-    USE_SUDO=""
-else
-    print_info "Running in host mode"
-    USE_SUDO="sudo"
-fi
+print_info "Running in Docker container mode"
+USE_SUDO=""
 
 # Check for required permissions
 check_permissions() {
@@ -50,29 +44,6 @@ check_permissions() {
         print_error "This script requires root privileges"
         echo "Please run with: sudo $0"
         exit 1
-    fi
-}
-
-# Check if dummy module is available
-check_dummy_support() {
-    print_info "Checking dummy interface support..."
-    
-    if ${USE_SUDO} ip link add test_check_dummy type dummy 2>/dev/null; then
-        ${USE_SUDO} ip link delete test_check_dummy 2>/dev/null || true
-        print_status "Dummy interface support confirmed"
-    else
-        print_warning "Dummy interface creation failed. Attempting to load dummy module..."
-        ${USE_SUDO} modprobe dummy 2>/dev/null || {
-            print_error "Failed to load dummy kernel module"
-            if [[ "$RUNNING_IN_DOCKER" == "true" ]]; then
-                print_warning "Note: Some Docker environments don't support kernel modules"
-                print_warning "The server will attempt to continue but may fail when creating interfaces"
-            else
-                print_error "Please ensure the dummy module is available"
-                exit 1
-            fi
-        }
-        print_status "Dummy module loaded"
     fi
 }
 
@@ -93,18 +64,6 @@ check_dependencies() {
     
     if [ ${#missing_deps[@]} -ne 0 ]; then
         print_error "Missing Python dependencies: ${missing_deps[*]}"
-        if [[ "$RUNNING_IN_DOCKER" == "true" ]]; then
-            print_info "Attempting to install missing dependencies..."
-            pip3 install requests || {
-                print_error "Failed to install dependencies in Docker container"
-                print_error "This suggests an issue with the Docker build process"
-                exit 1
-            }
-            print_status "Dependencies installed successfully"
-        else
-            print_error "Please install missing dependencies with: pip3 install -r requirements.txt"
-            exit 1
-        fi
     else
         print_status "Python dependencies available"
     fi
@@ -160,7 +119,6 @@ echo -e "${NC}"
 print_info "Running pre-flight checks..."
 check_permissions
 check_server_file
-check_dummy_support
 check_dependencies
 
 echo ""
@@ -180,7 +138,7 @@ sleep 2
 
 # Check if server is still running
 if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    print_error "✗ Server failed to start"
+    print_error "Server failed to start"
     exit 1
 fi
 
