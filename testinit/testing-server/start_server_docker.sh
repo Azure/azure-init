@@ -32,7 +32,6 @@ print_error() {
 }
 
 print_info "Running in Docker container mode"
-USE_SUDO=""
 
 # Check for required permissions
 check_permissions() {
@@ -91,9 +90,9 @@ cleanup() {
     
     # Clean up network interfaces manually
     print_info "Cleaning up network interfaces..."
-    ${USE_SUDO} ip route del 169.254.169.254 dev dummy0 2>/dev/null || true
-    ${USE_SUDO} ip route del 168.63.129.16 dev dummy0 2>/dev/null || true
-    ${USE_SUDO} ip link delete dummy0 2>/dev/null || true
+    ip route del 169.254.169.254 dev dummy0 2>/dev/null || true
+    ip route del 168.63.129.16 dev dummy0 2>/dev/null || true
+    ip link delete dummy0 2>/dev/null || true
     
     print_status "Cleanup completed"
     exit 0
