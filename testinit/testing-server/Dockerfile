@@ -27,14 +27,8 @@ COPY . /app/
 # Make scripts executable
 RUN chmod +x start_server_docker.sh 
 
-# Load dummy kernel module
-RUN modprobe dummy 2>/dev/null || echo "Dummy module not available - will be handled by script"
-
 # Expose the ports used by IMDS and WireServer
 EXPOSE 80
-
-# Set environment variable to indicate we're running in Docker
-ENV RUNNING_IN_DOCKER=true
 
 # Add virtual environment to PATH
 ENV PATH="/app/venv/bin:$PATH"
