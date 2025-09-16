@@ -11,7 +11,5 @@ updates:
     ignore:
       - dependency-name: "idna_adapter"
         # stay with <= 1.2.0 for Rust 1.78
-      - dependency-name: "litemap"
-        # stay with <= 0.7.4 for Rust 1.76
-      - dependency-name: "zerofrom"
-        # stay with <= 0.1.5 for Rust 1.76
+      - dependency-name: "sysinfo"
+        # stay with <= 0.36 for Rust < 1.85
