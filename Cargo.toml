@@ -16,9 +16,12 @@ anyhow = "1.0.81"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.40"
 clap = { version = "4.5.21", features = ["derive", "cargo", "env"] }
-sysinfo = "0.36"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tokio-util = "0.7" 
+
+# Pin sysinfo to <=0.36 for MSRV issues with Rust < 1.85.0.
+# This should be unpinned around 2026-02-17 if we continue with our ~1 year MSRV policy
+sysinfo = "=0.36"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
