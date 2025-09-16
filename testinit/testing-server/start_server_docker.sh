@@ -31,14 +31,10 @@ print_error() {
     echo -e "${RED}[$(date '+%H:%M:%S')]${NC} $1"
 }
 
-print_info "Running in Docker container mode"
-
 # Check for required permissions
 check_permissions() {
     if [[ $EUID -eq 0 ]]; then
         print_status "Running as root"
-    elif [[ "$RUNNING_IN_DOCKER" == "true" ]]; then
-        print_status "Running in Docker with appropriate privileges"
     else
         print_error "This script requires root privileges"
         echo "Please run with: sudo $0"
