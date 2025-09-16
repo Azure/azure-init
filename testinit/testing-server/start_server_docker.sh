@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Docker-optimized script to start the provisioning agent test server
-# This version is specifically designed to run in a Docker container
-
 set -e
 
 # Colors for better output
