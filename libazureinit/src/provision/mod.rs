@@ -133,6 +133,17 @@ impl Provision {
 }
 
 #[cfg(test)]
+impl Provision {
+    fn update_sshd_config(&self) -> bool {
+        self.config
+            .password_provisioners
+            .backends
+            .first()
+            .is_some_and(|b| matches!(b, PasswordProvisioner::Passwd))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{Config, Provision};
     use crate::config::{
@@ -165,5 +176,51 @@ mod tests {
         )
         .provision()
         .unwrap();
+    }
+
+    #[test]
+    fn test_update_sshd_false_with_fake_password_backend() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+        let p = Provision::new(
+            "host",
+            User::new("user", vec![]),
+            mock_config,
+            true,
+        );
+        assert!(!p.update_sshd_config());
+    }
+
+    #[test]
+    fn test_update_sshd_true_with_real_password_backend() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::Passwd],
+            },
+            ..Config::default()
+        };
+        let p = Provision::new(
+            "host",
+            User::new("user", vec![]),
+            mock_config,
+            true,
+        );
+        assert!(p.update_sshd_config());
     }
 }

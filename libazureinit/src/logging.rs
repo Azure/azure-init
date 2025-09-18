@@ -47,6 +47,7 @@ fn default_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
             "libazureinit::status::retrieved_vm_id",
             "libazureinit::health::status",
             "libazureinit::health::report",
+            "libazureinit::password::status",
         ]
         .join(","),
     )?)
