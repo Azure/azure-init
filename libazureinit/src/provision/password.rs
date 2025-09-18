@@ -54,8 +54,11 @@ impl PasswordProvisioner {
 /// - If no password is provided, it disables password-based login by locking the
 ///   account's password using `passwd -l`.
 ///
-/// Note: While `libazureinit` supports password provisioning, the reference
-/// `azure-init` binary does not use this feature and only creates locked accounts.
+/// Reference `azure-init` behavior: it never calls `User::with_password`.
+/// Therefore `user.password` is `None`, and this function always locks the
+/// account via `passwd -l` (there is no alternate locking path). Library
+/// consumers that want a password must explicitly call `User::with_password`.
+/// See `doc/azure_init_behavior.md` for details.
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     if let Some(ref password) = user.password {
