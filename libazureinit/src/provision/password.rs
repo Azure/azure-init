@@ -58,6 +58,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use tracing::instrument;
+use zeroize::Zeroize;
 
 use crate::{error::Error, User};
 
@@ -88,7 +89,8 @@ impl PasswordProvisioner {
 ///
 /// # Security
 /// The password is passed securely to `chpasswd` via stdin to avoid
-/// exposing secrets in process arguments or logs.
+/// exposing secrets in process arguments or logs. The password is also
+/// securely cleared from memory after use using zeroization.
 #[instrument(skip_all)]
 pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
     // Basic input validation
@@ -103,7 +105,7 @@ pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
         });
     }
 
-    let input = format!("{user}:{password}");
+    let mut input = format!("{user}:{password}");
     let mut child = Command::new("chpasswd")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -112,7 +114,11 @@ pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(input.as_bytes())?;
+        // Close stdin to signal EOF to chpasswd
+        drop(stdin);
     }
+
+    input.zeroize();
 
     let status = child.wait()?;
     if !status.success() {
@@ -181,10 +187,9 @@ fn passwd(user: &User) -> Result<(), Error> {
 
 #[instrument(skip_all)]
 #[cfg(test)]
-fn mock_passwd(user: &User) -> Result<(), Error> {
+fn mock_passwd(_user: &User) -> Result<(), Error> {
     // In tests, simulate success for both setting a password and locking
     // (no external command execution).
-    let _ = user;
     Ok(())
 }
 
