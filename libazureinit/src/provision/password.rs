@@ -3,21 +3,40 @@
 //!
 //! Password provisioning behavior for `libazureinit`.
 //!
-//! - If `User.password` is present, the password is set securely using the
-//!   `chpasswd` utility. The input format is `"username:password"` written to
-//!   stdin. Stdout is discarded and stderr is inherited. Secrets are not
-//!   included in argv or logs.
-//! - If `User.password` is absent, the account is locked using `passwd -l`.
-//!   The path to `passwd` is provided at build time via the `PATH_PASSWD`
-//!   environment variable (see `libazureinit/build.rs`).
+//! This module provides both low-level building block functions and higher-level
+//! provisioning interfaces for managing user passwords and account locking.
 //!
-//! Notes
-//! - The reference binary `azure-init` does not set passwords; it constructs a
-//!   `User` without calling `with_password`, which results in account locking.
-//!   External consumers of `libazureinit` can opt-in to password usage by
-//!   calling `User::with_password`.
+//! ## Building Block Functions
 //!
-//! Example (library consumer)
+//! - [`set_user_password`] - Sets a password for a user using `chpasswd`. The password
+//!   is passed securely via stdin to avoid exposing secrets in process arguments or logs.
+//! - [`lock_user`] - Locks a user account using `passwd -l`. The path to `passwd` is
+//!   provided at build time via the `PATH_PASSWD` environment variable.
+//!
+//! These functions are decoupled and perform only their specific task - they do not
+//! modify SSH configuration or perform other side effects.
+//!
+//! ## Higher-Level Provisioning Interface
+//!
+//! The [`PasswordProvisioner`] provides the traditional provisioning interface that
+//! works with [`User`] structs:
+//! - If `User.password` is present, it calls [`set_user_password`]
+//! - If `User.password` is absent, it calls [`lock_user`]
+//!
+//! ## Usage Examples
+//!
+//! ### Direct API Usage (Building Blocks)
+//! ```ignore
+//! use libazureinit::{set_user_password, lock_user};
+//!
+//! // Set a password for a specific user
+//! set_user_password("azureuser", "s3cr3t")?;
+//!
+//! // Lock a user account  
+//! lock_user("azureuser")?;
+//! ```
+//!
+//! ### Traditional Provisioning Interface
 //! ```ignore
 //! use libazureinit::{Provision, User};
 //! use libazureinit::config::Config;
@@ -26,6 +45,14 @@
 //! let config = Config::default();
 //! let _ = Provision::new("host", user, config, true).provision();
 //! ```
+//!
+//! ## Notes
+//!
+//! - The reference binary `azure-init` does not set passwords; it constructs a
+//!   `User` without calling `with_password`, which results in account locking.
+//! - External consumers can use either the building block functions for fine-grained
+//!   control or the traditional provisioning interface for convenience.
+//! - SSH configuration is handled separately and is not modified by these functions.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -46,56 +73,110 @@ impl PasswordProvisioner {
     }
 }
 
-/// Manages the user's password during provisioning.
+/// Set a password for the specified user.
+///
+/// This function only sets the password using `chpasswd` - it does not
+/// modify SSH configuration or perform any other actions.
+///
+/// # Arguments
+/// * `user` - The username to set the password for
+/// * `password` - The password to set
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(Error)` if the password setting fails
+///
+/// # Security
+/// The password is passed securely to `chpasswd` via stdin to avoid
+/// exposing secrets in process arguments or logs.
+#[instrument(skip_all)]
+pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
+    // Basic input validation
+    if user.is_empty() {
+        return Err(Error::UnhandledError {
+            details: "Username cannot be empty".to_string(),
+        });
+    }
+    if password.is_empty() {
+        return Err(Error::UnhandledError {
+            details: "Password cannot be empty".to_string(),
+        });
+    }
+
+    let input = format!("{user}:{password}");
+    let mut child = Command::new("chpasswd")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        tracing::error!(username = %user, ?status, "chpasswd failed to set password");
+        return Err(Error::SubprocessFailed {
+            command: "chpasswd".to_string(),
+            status,
+        });
+    }
+    tracing::info!(target: "libazureinit::password::status", username = %user, "Successfully set password via chpasswd");
+    Ok(())
+}
+
+/// Lock the specified user account.
+///
+/// This function only locks the user account using `passwd -l` - it does not
+/// modify SSH configuration or perform any other actions.
+///
+/// # Arguments  
+/// * `user` - The username to lock
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(Error)` if the account locking fails
+#[instrument(skip_all)]
+pub fn lock_user(user: &str) -> Result<(), Error> {
+    if user.is_empty() {
+        return Err(Error::UnhandledError {
+            details: "Username cannot be empty".to_string(),
+        });
+    }
+
+    let path_passwd = env!("PATH_PASSWD");
+    let mut command = Command::new(path_passwd);
+    command.arg("-l").arg(user);
+    crate::run(command).map_err(|e| {
+        tracing::error!(username = %user, error = ?e, "Failed to lock account via passwd -l");
+        e
+    })?;
+    tracing::info!(target: "libazureinit::password::status", username = %user, "Locked account via passwd -l");
+    Ok(())
+}
+
+/// Manages the user's password during provisioning using the building block functions.
 ///
 /// This function supports two modes of operation:
-/// - If a password is provided in the `User` object, it sets the password securely
-///   using the `chpasswd` utility via stdin to avoid exposing secrets.
-/// - If no password is provided, it disables password-based login by locking the
-///   account's password using `passwd -l`.
+/// - If a password is provided in the `User` object, it calls [`set_user_password`]
+/// - If no password is provided, it calls [`lock_user`]
+///
+/// This function serves as a bridge between the traditional `User`-based provisioning
+/// interface and the new decoupled password management functions.
 ///
 /// Reference `azure-init` behavior: it never calls `User::with_password`.
-/// Therefore `user.password` is `None`, and this function always locks the
-/// account via `passwd -l` (there is no alternate locking path). Library
-/// consumers that want a password must explicitly call `User::with_password`.
+/// Therefore `user.password` is `None`, and this function always calls [`lock_user`]
+/// (there is no alternate locking path). Library consumers that want a password
+/// must explicitly call `User::with_password`.
 /// See `doc/azure_init_behavior.md` for details.
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     if let Some(ref password) = user.password {
-        // Set password securely via chpasswd using piped stdin to avoid exposing secrets
-        let input = format!("{}:{}", user.name, password);
-        let mut child = Command::new("chpasswd")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(input.as_bytes())?;
-        }
-
-        let status = child.wait()?;
-        if !status.success() {
-            tracing::error!(username = %user.name, ?status, "chpasswd failed to set password");
-            return Err(Error::SubprocessFailed {
-                command: "chpasswd".to_string(),
-                status,
-            });
-        }
-        tracing::info!(target: "libazureinit::password::status", username = %user.name, "Successfully set password via chpasswd");
+        set_user_password(&user.name, password)
     } else {
-        // No password provided; lock the account
-        let path_passwd = env!("PATH_PASSWD");
-        let mut command = Command::new(path_passwd);
-        command.arg("-l").arg(&user.name);
-        crate::run(command).map_err(|e| {
-            tracing::error!(username = %user.name, error = ?e, "Failed to lock account via passwd -l");
-            e
-        })?;
-        tracing::info!(target: "libazureinit::password::status", username = %user.name, "Locked account via passwd -l");
+        lock_user(&user.name)
     }
-
-    Ok(())
 }
 
 #[instrument(skip_all)]
@@ -158,5 +239,53 @@ mod tests {
 
         // Should succeed with FakePasswd backend
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_set_user_password_function_exists() {
+        // Test that the function compiles and has the expected signature
+        // In a real environment, this would require mocking chpasswd
+        let _fn_ptr: fn(&str, &str) -> Result<(), crate::error::Error> =
+            set_user_password;
+    }
+
+    #[test]
+    fn test_lock_user_function_exists() {
+        // Test that the function compiles and has the expected signature
+        // In a real environment, this would require mocking passwd
+        let _fn_ptr: fn(&str) -> Result<(), crate::error::Error> = lock_user;
+    }
+
+    #[test]
+    fn test_set_user_password_empty_username() {
+        let result = set_user_password("", "password123");
+        assert!(result.is_err());
+        if let Err(crate::error::Error::UnhandledError { details }) = result {
+            assert!(details.contains("Username cannot be empty"));
+        } else {
+            panic!("Expected UnhandledError for empty username");
+        }
+    }
+
+    #[test]
+    fn test_set_user_password_empty_password() {
+        let result = set_user_password("testuser", "");
+        assert!(result.is_err());
+        if let Err(crate::error::Error::UnhandledError { details }) = result {
+            assert!(details.contains("Password cannot be empty"));
+        } else {
+            panic!("Expected UnhandledError for empty password");
+        }
+    }
+
+    #[test]
+    fn test_lock_user_empty_username() {
+        let result = lock_user("");
+        assert!(result.is_err());
+        if let Err(crate::error::Error::UnhandledError { details }) = result {
+            assert!(details.contains("Username cannot be empty"));
+        } else {
+            panic!("Expected UnhandledError for empty username");
+        }
     }
 }

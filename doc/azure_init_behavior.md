@@ -8,6 +8,51 @@ This document describes the behavior of the reference `azure-init` binary with r
 - Library consumers may opt in to password provisioning by calling `User::with_password(...)`, which sets the password using `chpasswd` via stdin.
 - `sshd_config` `PasswordAuthentication` is set according to IMDS `disablePasswordAuthentication` only when the real password backend is active (default backend is `passwd`).
 
+## Decoupled Password API
+
+`libazureinit` provides decoupled password management building blocks:
+
+- **`set_user_password(user, password)`** - Sets a password for the specified user via `chpasswd`, with no side effects
+- **`lock_user(user)`** - Locks the specified user account via `passwd -l`, with no side effects
+
+These functions are exported in the public API and can be used independently by external consumers for fine-grained password management without coupling to other behaviors.
+
+### Direct API Usage Examples
+
+```rust
+use libazureinit::{set_user_password, lock_user};
+
+// Set a password for a specific user
+set_user_password("azureuser", "s3cr3t")?;
+
+// Lock a user account
+lock_user("azureuser")?;
+```
+
+### Traditional vs. Building Block Approaches
+
+**Traditional approach (still supported):**
+```rust
+use libazureinit::{Provision, User, Config};
+
+let user = User::new("azureuser", vec![]).with_password("s3cr3t");
+let config = Config::default();
+Provision::new("hostname", user, config, true).provision()?;
+```
+
+**Building block approach:**
+```rust
+use libazureinit::{set_user_password, lock_user};
+
+// External consumers can now manage passwords independently
+if user_needs_password {
+    set_user_password("azureuser", "s3cr3t")?;
+} else {
+    lock_user("azureuser")?;
+}
+// Handle SSH config separately if needed
+```
+
 ## User and password behavior
 
 - The password provisioner has two modes:
@@ -49,24 +94,20 @@ async fn provision(
 
 ### How passwords/locking are applied
 
-- The password provisioner executes one of the following based on `User.password`:
+- The password provisioner executes one of the following based on `User.password`, now using the decoupled building block functions internally:
 
-```49:96:libazureinit/src/provision/password.rs
+```156:162:libazureinit/src/provision/password.rs
 #[instrument(skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     if let Some(ref password) = user.password {
-        // Set password via chpasswd (stdin)
-        // ...
+        set_user_password(&user.name, password)
     } else {
-        // No password provided; lock the account
-        let path_passwd = env!("PATH_PASSWD");
-        let mut command = Command::new(path_passwd);
-        command.arg("-l").arg(&user.name);
-        crate::run(command)?;
+        lock_user(&user.name)
     }
-    Ok(())
 }
 ```
+
+The internal implementation now delegates to the building block functions `set_user_password()` and `lock_user()`, which handle the actual `chpasswd` and `passwd -l` operations respectively.
 
 ## SSH PasswordAuthentication
 
