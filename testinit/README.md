@@ -4,7 +4,7 @@ A containerized Azure provisioning agent that simulates Azure Instance Metadata 
 
 > **Warning**
 > Running the ./start-all.sh script will modify your local machine due to how systemd in Docker works!
-> Whenever possible, do not run this system on your personal machine as it compeletes the full provisioning run found in azure-init.
+> Whenever possible, do not run this system on your personal machine as it completes the full provisioning run found in azure-init.
 > This may affect your local hostname, ssh keys, users, or more.
 > Exercise caution running this system locally!
 

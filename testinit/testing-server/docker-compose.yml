@@ -16,7 +16,7 @@ services:
       wireserver-network:
         ipv4_address: 168.63.129.16
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/metadata/instance?api-version=2021-02-01"]
+      test: ["CMD", "curl", "-f", "-H", "Metadata: true", "http://localhost:80/metadata/instance?api-version=2021-02-01"]
       interval: 30s
       timeout: 10s
       retries: 3
