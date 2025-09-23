@@ -25,7 +25,7 @@ use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
 // These should be set during the build process
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use libazureinit::VERSION;
 const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 
 /// Minimal provisioning agent for Azure

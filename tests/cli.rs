@@ -3,11 +3,10 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 
+use libazureinit::VERSION;
 use std::fs::{self, File};
 use std::io::Write;
 use tempfile::tempdir;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Assert help text includes the --groups flag
 #[test]

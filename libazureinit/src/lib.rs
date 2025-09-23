@@ -1,5 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
+/// The version of the azure-init package
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
