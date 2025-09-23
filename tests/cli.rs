@@ -7,6 +7,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use tempfile::tempdir;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Assert help text includes the --groups flag
 #[test]
 fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,6 +18,32 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicate::str::contains("-g, --groups <GROUPS>"));
+
+    Ok(())
+}
+
+// Assert that the --version flag works and outputs the version
+#[test]
+fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--version");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(VERSION));
+
+    Ok(())
+}
+
+// Assert that the -V flag works and outputs the version
+#[test]
+fn version_flag_short() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("-V");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(VERSION));
 
     Ok(())
 }

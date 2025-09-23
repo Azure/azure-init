@@ -36,6 +36,7 @@ const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 /// Arguments provided via command-line arguments override any arguments provided
 /// via environment variables.
 #[derive(Parser, Debug)]
+#[command(version = VERSION)]
 struct Cli {
     /// List of supplementary groups of the provisioned user account.
     ///
