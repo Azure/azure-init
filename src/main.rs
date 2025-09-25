@@ -24,8 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
-// These should be set during the build process
-use libazureinit::VERSION;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 
 /// Minimal provisioning agent for Azure
