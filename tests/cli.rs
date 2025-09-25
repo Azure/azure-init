@@ -3,7 +3,6 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 
-use libazureinit::VERSION;
 use std::fs::{self, File};
 use std::io::Write;
 use tempfile::tempdir;
@@ -29,7 +28,7 @@ fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
     command
         .assert()
         .success()
-        .stdout(predicate::str::contains(VERSION));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 
     Ok(())
 }
@@ -42,7 +41,7 @@ fn version_flag_short() -> Result<(), Box<dyn std::error::Error>> {
     command
         .assert()
         .success()
-        .stdout(predicate::str::contains(VERSION));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 
     Ok(())
 }
