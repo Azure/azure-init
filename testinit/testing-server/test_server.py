@@ -27,6 +27,8 @@ IMDS_PORT = 80
 WIRESERVER_PORT = 80
 
 # Server configuration
+IMDS_GET_DELAY = int(os.getenv('IMDS_GET_DELAY', '0'))  # In seconds
+WIRESERVER_GET_DELAY = int(os.getenv('WIRESERVER_GET_DELAY', '0'))  # In seconds
 IMDS_GET_TIMEOUT = os.getenv('IMDS_GET_TIMEOUT') if os.getenv('IMDS_GET_TIMEOUT') else False
 WIRESERVER_GET_TIMEOUT = os.getenv('WIRESERVER_GET_TIMEOUT') if os.getenv('WIRESERVER_GET_TIMEOUT') else False
 
