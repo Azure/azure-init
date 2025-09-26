@@ -7,12 +7,13 @@ A reference implementation for provisioning Linux VMs on Azure.
 ## What is Azure-init?
 
 Azure-init is a lightweight provisioning agent that configures Linux virtual machines using Azure metadata.
-Unlike complex guest configuration systems (such as cloud-init), azure-init focuses exclusively on the essential initialization tasks for Azure VMs:
+Azure-init is suitable for systems which do not require the full feature set that cloud-init provides. 
+It is a modern, rust-based replacement for the WALinuxAgent provisioning agent to:
 
-- Setting up user accounts
-- Configuring SSH keys for authentication
-- Setting the hostname
-- Processing VM provisioning metadata
+- Configure admin user account
+- Write SSH keys for authentication
+- Set the hostname
+- Report ready to Azure wireserver
 
 Azure-init is designed to be minimal, fast, and reliable, with very few dependencies.
 This allows it to run in the early stages of the boot process when initializing Linux VMs in Azure.
