@@ -29,8 +29,8 @@ WIRESERVER_PORT = 80
 # Server configuration
 IMDS_GET_DELAY = int(os.getenv('IMDS_GET_DELAY', '0'))  # In seconds
 WIRESERVER_GET_DELAY = int(os.getenv('WIRESERVER_GET_DELAY', '0'))  # In seconds
-IMDS_GET_TIMEOUT = os.getenv('IMDS_GET_TIMEOUT') if os.getenv('IMDS_GET_TIMEOUT') else False
-WIRESERVER_GET_TIMEOUT = os.getenv('WIRESERVER_GET_TIMEOUT') if os.getenv('WIRESERVER_GET_TIMEOUT') else False
+IMDS_GET_TIMEOUT = True if os.getenv('IMDS_GET_TIMEOUT').to_lower() == "true" else False
+WIRESERVER_GET_TIMEOUT = True if os.getenv('WIRESERVER_GET_TIMEOUT').to_lower() == "true" else False
 
 # Mock metadata responses
 MOCK_INSTANCE_METADATA = {
@@ -176,6 +176,9 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info(f"IMDS GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
         
+        if IMDS_GET_TIMEOUT:
+            return
+
         if IMDS_GET_DELAY != 0:
             logger.info(f"Adding GET request delay of {IMDS_GET_DELAY} seconds")
             time.sleep(IMDS_GET_DELAY)
@@ -232,6 +235,9 @@ class WireServerHandler(BaseHTTPRequestHandler):
         """Handle GET requests to WireServer endpoints."""
         logger.info(f"WireServer GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
+
+        if WIRESERVER_GET_TIMEOUT:
+            return
 
         if WIRESERVER_GET_DELAY != 0:
             logger.info(f"Adding GET request delay of {WIRESERVER_GET_DELAY} seconds")

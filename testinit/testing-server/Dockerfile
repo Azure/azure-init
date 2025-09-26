@@ -34,8 +34,10 @@ EXPOSE 80
 ENV PATH="/app/venv/bin:$PATH"
 
 # Add potential delays to the mocked servers
-ENV WIRESERVER_GET_DELAY=5
-ENV IMDS_GET_DELAY=5
+# ENV WIRESERVER_GET_DELAY=5
+# ENV IMDS_GET_DELAY=5
+ENV IMDS_GET_TIMEOUT=True
+ENV WIRESERVER_GET_TIMEOUT=True
 
 # Use the Docker-optimized script as the entrypoint
 CMD ["./start_server_docker.sh"]
