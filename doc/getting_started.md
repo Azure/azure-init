@@ -12,7 +12,7 @@ This guide provides step-by-step instructions to get started with azure-init for
 ### Basic Usage
 
 Azure-init typically needs to be pre-installed and configured in Linux VM images that are Azure-optimized, since the agent is not currently run on Azure Linux VMs by default.
-At the moment, adding azure-init to a Linux image requires following the process found in the [SIG image testing guide](E2E_TESTING.md#about-sig-image-testing).
+At the moment, adding azure-init to a Linux image requires following the process found in the [SIG image testing guide](e2e_testing.md#about-sig-image-testing).
 If you're using such an image, azure-init will automatically run during the boot process and handle VM initialization.
 
 ### Verifying Azure-init Operation
@@ -124,7 +124,7 @@ cargo test
 3. **Test with a local configuration:**
 
 **Warning**: Avoid running the `azure-init` binary locally, as this runs the risk of modifying your local system.
-To test your changes, it is highly advised to use the [E2E Testing Guide](E2E_TESTING.md).
+To test your changes, it is highly advised to use the [E2E Testing Guide](e2e_testing.md).
 
 ### Debugging
 
@@ -136,4 +136,4 @@ Both containers will output all logs they have access to in order to better debu
 - Review the [Configuration Guide](configuration.md) for detailed configuration options
 - Learn about the [Architecture](architecture.md) of azure-init
 - Understand the [Tracing System](libazurekvp.md) for monitoring and debugging
-- Explore [End-to-End Testing](E2E_TESTING.md) for comprehensive testing
+- Explore [End-to-End Testing](e2e_testing.md) for comprehensive testing
