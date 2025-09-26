@@ -177,10 +177,11 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info(f"Headers: {dict(self.headers)}")
         
         if IMDS_GET_TIMEOUT:
+            logger.info(f"Adding IDMS GET timeout from ENV variable")
             return
 
         if IMDS_GET_DELAY != 0:
-            logger.info(f"Adding GET request delay of {IMDS_GET_DELAY} seconds")
+            logger.info(f"Adding IMDS GET request delay of {IMDS_GET_DELAY} seconds")
             time.sleep(IMDS_GET_DELAY)
 
         # Check for required Metadata header
@@ -237,10 +238,11 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info(f"Headers: {dict(self.headers)}")
 
         if WIRESERVER_GET_TIMEOUT:
+            logger.info(f"Adding wireserver GET timeout from ENV variable")
             return
 
         if WIRESERVER_GET_DELAY != 0:
-            logger.info(f"Adding GET request delay of {WIRESERVER_GET_DELAY} seconds")
+            logger.info(f"Adding wireserver GET request delay of {WIRESERVER_GET_DELAY} seconds")
             time.sleep(WIRESERVER_GET_DELAY)
         
         if self.path.startswith('/machine'):

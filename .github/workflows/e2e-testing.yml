@@ -67,6 +67,7 @@ jobs:
           docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine || echo "WireServer endpoint test completed"
 
       - name: Print provisioning agent logs
+        if: always()
         run: |
           cd testinit
           # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
@@ -79,12 +80,14 @@ jobs:
           fi
 
       - name: Print testing server logs
+        if: always()
         run: |
           cd testinit/testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
           cd ..
 
       - name: Output KVP telemetry
+        if: always()
         run: |
           docker exec azureinit-provisioning-agent cat /var/lib/hyperv/.kvp_pool_1
 
