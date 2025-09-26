@@ -29,8 +29,8 @@ WIRESERVER_PORT = 80
 # Server configuration
 IMDS_GET_DELAY = int(os.getenv('IMDS_GET_DELAY', '0'))  # In seconds
 WIRESERVER_GET_DELAY = int(os.getenv('WIRESERVER_GET_DELAY', '0'))  # In seconds
-IMDS_GET_TIMEOUT = True if os.getenv('IMDS_GET_TIMEOUT').to_lower() == "true" else False
-WIRESERVER_GET_TIMEOUT = True if os.getenv('WIRESERVER_GET_TIMEOUT').to_lower() == "true" else False
+IMDS_GET_TIMEOUT = True if os.getenv('IMDS_GET_TIMEOUT').lower() == "true" else False
+WIRESERVER_GET_TIMEOUT = True if os.getenv('WIRESERVER_GET_TIMEOUT').lower() == "true" else False
 
 # Mock metadata responses
 MOCK_INSTANCE_METADATA = {
