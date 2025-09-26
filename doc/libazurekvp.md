@@ -137,14 +137,6 @@ fn main() {
 }
 ```
 
-## Key Benefits
-
-- **Comprehensive Visibility**: Capture the entire flow of execution with detailed context
-- **Structured Data**: Events include rich metadata for filtering and analysis
-- **Azure Integration**: Direct integration with Azure monitoring via Hyper-V KVP
-- **Standard Compatibility**: OpenTelemetry support enables integration with industry-standard tools
-- **Debugging Support**: Immediate output to stderr assists in troubleshooting
-
 ## Reference Documentation
 
 For more details on how the Hyper-V Data Exchange Service works, refer to the official documentation:
