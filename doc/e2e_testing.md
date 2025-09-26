@@ -82,13 +82,6 @@ If your build environment has newer libraries (especially glibc) than the target
 This occurs because your local build is dynamically linked against a newer version of glibc than what's available on the standard Ubuntu VM image in Azure.
 Be sure to build azure-init in the same environment as the target OS.
 
-#### General Solutions
-
-There are several approaches to solve this binary compatibility issue:
-
-1. **Build on a matching environment**: Ensure your build environment matches the target VM OS version/distribution
-2. **Use static linking**: Configure Rust to statically link the binary (may increase binary size)
-
 ## How the E2E Testing Works
 
 1. **Build Process**:
