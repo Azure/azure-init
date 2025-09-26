@@ -8,6 +8,7 @@ import subprocess
 import json
 import threading
 import time
+import os
 import signal
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,6 +25,10 @@ WIRESERVER_IP = "168.63.129.16"
 DUMMY_IFACE = "dummy0"
 IMDS_PORT = 80
 WIRESERVER_PORT = 80
+
+# Server configuration
+IMDS_GET_TIMEOUT = os.getenv('IMDS_GET_TIMEOUT') if os.getenv('IMDS_GET_TIMEOUT') else False
+WIRESERVER_GET_TIMEOUT = os.getenv('WIRESERVER_GET_TIMEOUT') if os.getenv('WIRESERVER_GET_TIMEOUT') else False
 
 # Mock metadata responses
 MOCK_INSTANCE_METADATA = {
@@ -169,6 +174,10 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info(f"IMDS GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
         
+        if IMDS_GET_DELAY != 0:
+            logger.info(f"Adding GET request delay of {IMDS_GET_DELAY} seconds")
+            time.sleep(IMDS_GET_DELAY)
+
         # Check for required Metadata header
         if self.headers.get('Metadata') != 'true':
             self.send_response(400)
@@ -221,6 +230,10 @@ class WireServerHandler(BaseHTTPRequestHandler):
         """Handle GET requests to WireServer endpoints."""
         logger.info(f"WireServer GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
+
+        if WIRESERVER_GET_DELAY != 0:
+            logger.info(f"Adding GET request delay of {WIRESERVER_GET_DELAY} seconds")
+            time.sleep(WIRESERVER_GET_DELAY)
         
         if self.path.startswith('/machine'):
             # Mock machine configuration endpoint
