@@ -36,7 +36,7 @@ Additionally, events emitted with a `health_report` field are written as special
 - Exports standardized trace data to compatible backends
 - Enables integration with broader monitoring ecosystems
 
-### 3. stderr_layer
+### 3. StdErrLayer
 
 **Purpose**: Formats and logs trace data to stderr.
 
@@ -45,7 +45,7 @@ Additionally, events emitted with a `health_report` field are written as special
 - Supports debugging during development
 - Captures trace events even when other layers might fail
 
-### 4. File layer
+### 4. File Layer
 
 **Purpose**: Writes formatted logs to a file (default path: `/var/log/azure-init.log`).
 
