@@ -117,26 +117,6 @@ fn configure_ssh_keys(user: &str, keys: &[String]) {
 }
 ```
 
-### Initializing the Tracing System
-
-The tracing system must be initialized at application startup:
-
-```rust
-use libazureinit::config::Config;
-use libazureinit::logging::setup_layers;
-use tokio_util::sync::CancellationToken;
-fn main() {
-   let vm_id = "00000000-0000-0000-0000-000000000000"; // Obtain from environment or libazureinit::get_vm_id()
-   let config = Config::load(None).expect("load config");
-   let graceful_shutdown = CancellationToken::new();
-   let (subscriber, _kvp_writer) =
-       setup_layers(vm_id, &config, graceful_shutdown.clone()).expect("setup layers");
-   tracing::subscriber::set_global_default(subscriber)
-       .expect("Failed to set global default subscriber");
-// Application code...
-}
-```
-
 ## Reference Documentation
 
 For more details on how the Hyper-V Data Exchange Service works, refer to the official documentation:
