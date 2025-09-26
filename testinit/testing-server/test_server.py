@@ -27,10 +27,10 @@ IMDS_PORT = 80
 WIRESERVER_PORT = 80
 
 # Server configuration
-IMDS_GET_DELAY = int(os.getenv('IMDS_GET_DELAY', '0'))  # In seconds
-WIRESERVER_GET_DELAY = int(os.getenv('WIRESERVER_GET_DELAY', '0'))  # In seconds
-IMDS_GET_TIMEOUT = True if os.getenv('IMDS_GET_TIMEOUT').lower() == "true" else False
-WIRESERVER_GET_TIMEOUT = True if os.getenv('WIRESERVER_GET_TIMEOUT').lower() == "true" else False
+IMDS_GET_DELAY = int(os.getenv("IMDS_GET_DELAY", "0"))  # In seconds
+WIRESERVER_GET_DELAY = int(os.getenv("WIRESERVER_GET_DELAY", "0"))  # In seconds
+IMDS_GET_TIMEOUT = True if os.getenv("IMDS_GET_TIMEOUT", "False").lower() == "true" else False
+WIRESERVER_GET_TIMEOUT = True if os.getenv("WIRESERVER_GET_TIMEOUT", "False").lower() == "true" else False
 
 # Mock metadata responses
 MOCK_INSTANCE_METADATA = {
@@ -185,22 +185,22 @@ class IMDSHandler(BaseHTTPRequestHandler):
             time.sleep(IMDS_GET_DELAY)
 
         # Check for required Metadata header
-        if self.headers.get('Metadata') != 'true':
+        if self.headers.get("Metadata") != "true":
             self.send_response(400)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             error_response = {"error": "Bad Request", "message": "Metadata header not found"}
             self.wfile.write(json.dumps(error_response).encode())
             return
         
         # Handle different IMDS endpoints
-        if parsed_url.path == '/metadata/instance':
+        if parsed_url.path == "/metadata/instance":
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(MOCK_INSTANCE_METADATA).encode())
         
-        elif parsed_url.path == '/metadata/identity/oauth2/token':
+        elif parsed_url.path == "/metadata/identity/oauth2/token":
             # Mock managed identity token endpoint
             mock_token = {
                 "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6IjdkRC1nZWNOZ1gxWmY3R0xrT3ZwT0IyZGNWQSIsImtpZCI6IjdkRC1nZWNOZ1gxWmY3R0xrT3ZwT0IyZGNWQSJ9.eyJhdWQiOiJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tLyIsImlzcyI6Imh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzEyMzQ1Njc4LTkwYWItY2RlZi0xMjM0LTU2Nzg5MGFiY2RlZi8iLCJpYXQiOjE2MjQ5NzQwMDAsIm5iZiI6MTYyNDk3NDAwMCwiZXhwIjoxNjI0OTc3NjAwLCJvaWQiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYiLCJzdWIiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYiLCJ0aWQiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYifQ.fake_signature",
@@ -213,13 +213,13 @@ class IMDSHandler(BaseHTTPRequestHandler):
                 "token_type": "Bearer"
             }
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(mock_token).encode())
         
         else:
             self.send_response(404)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             error_response = {"error": "Not Found", "message": f"Endpoint {parsed_url.path} not found"}
             self.wfile.write(json.dumps(error_response).encode())
@@ -245,10 +245,10 @@ class WireServerHandler(BaseHTTPRequestHandler):
             logger.info(f"Adding wireserver GET request delay of {WIRESERVER_GET_DELAY} seconds")
             time.sleep(WIRESERVER_GET_DELAY)
         
-        if self.path.startswith('/machine'):
+        if self.path.startswith("/machine"):
             # Mock machine configuration endpoint
             self.send_response(200)
-            self.send_header('Content-Type', 'application/xml')
+            self.send_header("Content-Type", "application/xml")
             self.end_headers()
             xml_response = '''<?xml version="1.0" encoding="utf-8"?>
 <GoalState xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="goalstate10.xsd">
@@ -277,23 +277,23 @@ class WireServerHandler(BaseHTTPRequestHandler):
             self.wfile.write(xml_response.encode())
         else:
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(MOCK_WIRESERVER_CONFIG).encode())
     
     def do_POST(self):
         """Handle POST requests to WireServer endpoints."""
-        content_length = int(self.headers.get('Content-Length', 0))
+        content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
         
         logger.info(f"WireServer POST request: {self.path}")
-        logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
+        logger.info(f"POST data: {post_data.decode("utf-8", errors="ignore")}")
         
         # Mock successful response for any POST
         self.send_response(200)
-        self.send_header('Content-Type', 'application/xml')
+        self.send_header("Content-Type", "application/xml")
         self.end_headers()
-        response = '<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>'
+        response = "<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>"
         self.wfile.write(response.encode())
 
 
