@@ -63,7 +63,7 @@ Despite operating independently, these layers collaborate to provide comprehensi
 3. **Complementary Functions**: Each layer serves a specific purpose in the tracing ecosystem:
    - `EmitKVPLayer` focuses on Azure Hyper-V integration
    - `OpenTelemetryLayer` handles standardized tracing and exports
-   - `stderr_layer` provides immediate visibility for debugging
+   - `Stderr Layer` provides immediate visibility for debugging
 
 ### Configuration
 
