@@ -140,23 +140,6 @@ class IMDSHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(MOCK_INSTANCE_METADATA).encode())
         
-        elif parsed_url.path == '/metadata/identity/oauth2/token':
-            # Mock managed identity token endpoint
-            mock_token = {
-                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6IjdkRC1nZWNOZ1gxWmY3R0xrT3ZwT0IyZGNWQSIsImtpZCI6IjdkRC1nZWNOZ1gxWmY3R0xrT3ZwT0IyZGNWQSJ9.eyJhdWQiOiJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tLyIsImlzcyI6Imh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzEyMzQ1Njc4LTkwYWItY2RlZi0xMjM0LTU2Nzg5MGFiY2RlZi8iLCJpYXQiOjE2MjQ5NzQwMDAsIm5iZiI6MTYyNDk3NDAwMCwiZXhwIjoxNjI0OTc3NjAwLCJvaWQiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYiLCJzdWIiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYiLCJ0aWQiOiIxMjM0NTY3OC05MGFiLWNkZWYtMTIzNC01Njc4OTBhYmNkZWYifQ.fake_signature",
-                "client_id": "12345678-90ab-cdef-1234-567890abcdef",
-                "expires_in": "3600",
-                "expires_on": "1624977600",
-                "ext_expires_in": "3600",
-                "not_before": "1624974000",
-                "resource": "https://management.azure.com/",
-                "token_type": "Bearer"
-            }
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(mock_token).encode())
-        
         else:
             self.send_response(404)
             self.send_header('Content-Type', 'application/json')
