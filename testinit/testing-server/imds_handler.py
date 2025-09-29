@@ -103,8 +103,10 @@ MOCK_INSTANCE_METADATA = {
 
 class IMDSHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure Instance Metadata Service requests."""
-    self.imds_get_delay = IMDS_GET_DELAY
-    self.imds_get_timeout = IMDS_GET_TIMEOUT
+        
+    def __init__(self):
+        self.imds_get_delay = IMDS_GET_DELAY
+        self.imds_get_timeout = IMDS_GET_TIMEOUT
     
     def log_message(self, format, *args):
         """Override to use our logger."""

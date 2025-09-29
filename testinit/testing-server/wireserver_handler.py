@@ -27,8 +27,9 @@ MOCK_WIRESERVER_CONFIG = {
 
 class WireServerHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure WireServer requests."""
-    self.wireserver_get_delay = WIRESERVER_GET_DELAY
-    self.wireserver_get_timeout = WIRESERVER_GET_TIMEOUT
+    def __init__(self):
+        self.wireserver_get_delay = WIRESERVER_GET_DELAY
+        self.wireserver_get_timeout = WIRESERVER_GET_TIMEOUT
 
     def log_message(self, format, *args):
         """Override to use our logger."""
