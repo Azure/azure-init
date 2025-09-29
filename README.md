@@ -25,7 +25,7 @@ This allows it to run in the early stages of the boot process when initializing 
 - **Early boot compatibility**: Can run in very early boot stages
 - **Azure-specific**: Tailored for the Azure environment
 - **Configurable**: Allows customization through configuration files
-- **Telemetry**: Provides KVP telemetry for the provisioning process
+- **Telemetry**: Provides KVP-based telemetry for the provisioning process which is used to report detailed errors for some classes of provisioning failures, such as networking failures
 
 ## Architecture
 

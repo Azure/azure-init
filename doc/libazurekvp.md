@@ -36,7 +36,7 @@ Additionally, events emitted with a `health_report` field are written as special
 - Exports standardized trace data to compatible backends
 - Enables integration with broader monitoring ecosystems
 
-### 3. StdErrLayer
+### 3. Stderr Layer
 
 **Purpose**: Formats and logs trace data to stderr.
 
@@ -67,7 +67,7 @@ Despite operating independently, these layers collaborate to provide comprehensi
 
 ### Configuration
 
-The tracing system's behavior is controlled through configuration files and environment variables, allowing morecontrol over what data is captured and where it's sent:
+The tracing system's behavior is controlled through configuration files and environment variables, allowing more control over what data is captured and where it's sent:
 
 - `telemetry.kvp_diagnostics` (config): Enables/disables KVP emission. Default: `true`.
 - `telemetry.kvp_filter` (config): Optional `EnvFilter`-style directives to select which spans/events go to KVP.
