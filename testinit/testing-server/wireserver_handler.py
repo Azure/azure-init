@@ -40,13 +40,13 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info(f"WireServer GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
 
-        if self.wireserver_get_timeout:
+        if WIRESERVER_GET_TIMEOUT:
             logger.info(f"Adding wireserver GET timeout from ENV variable")
             return
 
-        if self.wireserver_get_delay != 0:
-            logger.info(f"Adding wireserver GET request delay of {self.wireserver_get_delay} seconds")
-            time.sleep(self.wireserver_get_delay)
+        if WIRESERVER_GET_DELAY != 0:
+            logger.info(f"Adding wireserver GET request delay of {WIRESERVER_GET_DELAY} seconds")
+            time.sleep(WIRESERVER_GET_DELAY)
         
         if self.path.startswith('/machine'):
             # Mock machine configuration endpoint

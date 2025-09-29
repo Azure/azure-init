@@ -103,10 +103,6 @@ MOCK_INSTANCE_METADATA = {
 
 class IMDSHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure Instance Metadata Service requests."""
-        
-    def __init__(self):
-        self.imds_get_delay = IMDS_GET_DELAY
-        self.imds_get_timeout = IMDS_GET_TIMEOUT
     
     def log_message(self, format, *args):
         """Override to use our logger."""
@@ -120,13 +116,13 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info(f"IMDS GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
         
-        if self.imds_get_timeout:
+        if IMDS_GET_TIMEOUT:
             logger.info(f"Adding IDMS GET timeout from ENV variable")
             return
 
-        if self.imds_get_delay != 0:
-            logger.info(f"Adding IMDS GET request delay of {self.imds_get_delay} seconds")
-            time.sleep(self.imds_get_delay)
+        if IMDS_GET_DELAY != 0:
+            logger.info(f"Adding IMDS GET request delay of {IMDS_GET_DELAY} seconds")
+            time.sleep(IMDS_GET_DELAY)
 
         # Check for required Metadata header
         if self.headers.get('Metadata') != 'true':
