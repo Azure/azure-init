@@ -5,6 +5,7 @@ import signal
 import sys
 from http.server import HTTPServer
 
+from config import WIRESERVER_IP, WIRESERVER_PORT, IMDS_IP, IMDS_PORT, DUMMY_IFACE
 from utils import logger, run_cmd
 
 from wireserver_handler import WireServerHandler
