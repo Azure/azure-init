@@ -20,6 +20,18 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Ensure no password-related flags are exposed by the CLI
+#[test]
+fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--help");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match("(?i)password").unwrap().not());
+    Ok(())
+}
+
 // Helper function to set up the log and provision files for cleaning
 fn setup_clean_test() -> Result<
     (

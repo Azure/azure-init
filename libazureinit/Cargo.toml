@@ -36,6 +36,7 @@ figment = { version = "0.10", features = ["toml"] }
 uuid = { version = "1.3", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
+zeroize = "1.8"
 
 [dev-dependencies]
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
