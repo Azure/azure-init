@@ -5,8 +5,15 @@ use vergen_gitcl::GitclBuilder;
 fn main() {
     // Re-run if the packaging version override changes
     println!("cargo:rerun-if-env-changed=AZURE_INIT_VERSION");
+    // Re-run when git state changes (affects dirty detection)
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
 
-    let git = GitclBuilder::all_git().ok();
+    let mut gitcl_builder = GitclBuilder::default();
+    // Parameters: use_tag=true, dirty=true, pattern=None
+    gitcl_builder.describe(true, true, None);
+    let git = gitcl_builder.build().ok();
+
     let mut emitter = Emitter::default();
     if let Some(g) = git.as_ref() {
         let _ = emitter.add_instructions(g);

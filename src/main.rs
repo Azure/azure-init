@@ -30,14 +30,15 @@ fn version_string() -> String {
     if let Some(v) = option_env!("AZURE_INIT_VERSION") {
         return v.to_string();
     }
+
     if let Some(desc) = option_env!("VERGEN_GIT_DESCRIBE") {
-        return format!("{PKG_VERSION}-{desc}");
-    }
-    if let Some(sha) = option_env!("VERGEN_GIT_SHA") {
+        format!("{PKG_VERSION}-{desc}")
+    } else if let Some(sha) = option_env!("VERGEN_GIT_SHA") {
         let short = &sha[..std::cmp::min(7, sha.len())];
-        return format!("{PKG_VERSION}-{short}");
+        format!("{PKG_VERSION}-{short}")
+    } else {
+        PKG_VERSION.to_string()
     }
-    PKG_VERSION.to_string()
 }
 
 /// Minimal provisioning agent for Azure
