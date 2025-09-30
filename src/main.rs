@@ -24,8 +24,21 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn version_string() -> String {
+    if let Some(v) = option_env!("AZURE_INIT_VERSION") {
+        return v.to_string();
+    }
+    if let Some(desc) = option_env!("VERGEN_GIT_DESCRIBE") {
+        return format!("{PKG_VERSION}-{desc}");
+    }
+    if let Some(sha) = option_env!("VERGEN_GIT_SHA") {
+        let short = &sha[..std::cmp::min(7, sha.len())];
+        return format!("{PKG_VERSION}-{short}");
+    }
+    PKG_VERSION.to_string()
+}
 
 /// Minimal provisioning agent for Azure
 ///
@@ -35,7 +48,7 @@ const COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 /// Arguments provided via command-line arguments override any arguments provided
 /// via environment variables.
 #[derive(Parser, Debug)]
-#[command(version = VERSION)]
+#[command(disable_version_flag = true)]
 struct Cli {
     /// List of supplementary groups of the provisioned user account.
     ///
@@ -55,6 +68,10 @@ struct Cli {
         env = "AZURE_INIT_CONFIG"
     )]
     config: Option<PathBuf>,
+
+    /// Print version information and exit
+    #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
+    show_version: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -223,7 +240,13 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
 async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
+
     let opts = Cli::parse();
+    if opts.show_version {
+        println!("azure-init {}", version_string());
+        return ExitCode::SUCCESS;
+    }
+
     let graceful_shutdown = CancellationToken::new();
 
     let temp_layer = tracing_subscriber::fmt::layer()
@@ -382,21 +405,19 @@ async fn provision(
     let os_version =
         System::os_version().unwrap_or("Unknown OS Version".to_string());
 
+    let build_version = version_string();
+
     tracing::info!(
         "Kernel Version: {}, OS Version: {}, Azure-Init Version: {}",
         kernel_version,
         os_version,
-        VERSION
+        build_version
     );
 
     let clone_config = config.clone();
 
     let mut default_headers = header::HeaderMap::new();
-    let user_agent = if cfg!(debug_assertions) {
-        format!("azure-init v{VERSION}-{COMMIT_HASH}")
-    } else {
-        format!("azure-init v{VERSION}")
-    };
+    let user_agent = format!("azure-init v{build_version}");
     let user_agent = header::HeaderValue::from_str(user_agent.as_str())?;
     default_headers.insert(header::USER_AGENT, user_agent);
     let client = Client::builder()

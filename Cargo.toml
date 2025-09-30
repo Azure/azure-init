@@ -61,3 +61,8 @@ useradd = []
 systemd_linux = ["passwd", "hostnamectl", "useradd"]
 
 default = ["systemd_linux"]
+
+[build-dependencies]
+# Use vergen to emit build, cargo, rustc, sysinfo, and git metadata
+vergen = { version = "9.0.6", features = ["build", "cargo", "rustc", "si"] }
+vergen-gitcl = "1"
