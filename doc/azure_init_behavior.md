@@ -12,8 +12,8 @@ This document describes the behavior of the reference `azure-init` binary with r
 
 `libazureinit` provides decoupled password management building blocks:
 
-- **`set_user_password(user, password)`** - Sets a password for the specified user via `chpasswd`, with no side effects
-- **`lock_user(user)`** - Locks the specified user account via `passwd -l`, with no side effects
+- **`set_user_password(username, password)`** - Sets a password for the specified user via `chpasswd`, with no side effects
+- **`lock_user(username)`** - Locks the specified user account via `passwd -l`, with no side effects
 
 These functions are exported in the public API and can be used independently by external consumers for fine-grained password management without coupling to other behaviors.
 

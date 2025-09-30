@@ -80,7 +80,7 @@ impl PasswordProvisioner {
 /// modify SSH configuration or perform any other actions.
 ///
 /// # Arguments
-/// * `user` - The username to set the password for
+/// * `username` - The username to set the password for
 /// * `password` - The password to set
 ///
 /// # Returns
@@ -92,9 +92,9 @@ impl PasswordProvisioner {
 /// exposing secrets in process arguments or logs. The password is also
 /// securely cleared from memory after use using zeroization.
 #[instrument(skip_all)]
-pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
+pub fn set_user_password(username: &str, password: &str) -> Result<(), Error> {
     // Basic input validation
-    if user.is_empty() {
+    if username.is_empty() {
         return Err(Error::UnhandledError {
             details: "Username cannot be empty".to_string(),
         });
@@ -104,8 +104,7 @@ pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
             details: "Password cannot be empty".to_string(),
         });
     }
-
-    let mut input = format!("{user}:{password}");
+    let mut input = format!("{username}:{password}");
     let mut child = Command::new("chpasswd")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -122,13 +121,13 @@ pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
 
     let status = child.wait()?;
     if !status.success() {
-        tracing::error!(username = %user, ?status, "chpasswd failed to set password");
+        tracing::error!(username = %username, ?status, "chpasswd failed to set password");
         return Err(Error::SubprocessFailed {
             command: "chpasswd".to_string(),
             status,
         });
     }
-    tracing::info!(target: "libazureinit::password::status", username = %user, "Successfully set password via chpasswd");
+    tracing::info!(target: "libazureinit::password::status", username = %username, "Successfully set password via chpasswd");
     Ok(())
 }
 
@@ -138,14 +137,14 @@ pub fn set_user_password(user: &str, password: &str) -> Result<(), Error> {
 /// modify SSH configuration or perform any other actions.
 ///
 /// # Arguments  
-/// * `user` - The username to lock
+/// * `username` - The username to lock
 ///
 /// # Returns
 /// * `Ok(())` on success
 /// * `Err(Error)` if the account locking fails
 #[instrument(skip_all)]
-pub fn lock_user(user: &str) -> Result<(), Error> {
-    if user.is_empty() {
+pub fn lock_user(username: &str) -> Result<(), Error> {
+    if username.is_empty() {
         return Err(Error::UnhandledError {
             details: "Username cannot be empty".to_string(),
         });
@@ -153,12 +152,12 @@ pub fn lock_user(user: &str) -> Result<(), Error> {
 
     let path_passwd = env!("PATH_PASSWD");
     let mut command = Command::new(path_passwd);
-    command.arg("-l").arg(user);
+    command.arg("-l").arg(username);
     crate::run(command).map_err(|e| {
-        tracing::error!(username = %user, error = ?e, "Failed to lock account via passwd -l");
+        tracing::error!(username = %username, error = ?e, "Failed to lock account via passwd -l");
         e
     })?;
-    tracing::info!(target: "libazureinit::password::status", username = %user, "Locked account via passwd -l");
+    tracing::info!(target: "libazureinit::password::status", username = %username, "Locked account via passwd -l");
     Ok(())
 }
 
