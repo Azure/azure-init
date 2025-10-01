@@ -53,6 +53,8 @@ pub enum Error {
     UserMissing { user: String },
     #[error("failed to get username from IMDS or local OVF files")]
     UsernameFailure,
+    #[error("failed to get hostname from IMDS or local OVF files")]
+    HostnameFailure,
     #[error("failed to get instance metadata from IMDS")]
     InstanceMetadataFailure,
     #[error("Provisioning a user with a non-empty password is not supported")]
