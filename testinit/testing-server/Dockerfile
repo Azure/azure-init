@@ -1,6 +1,5 @@
 FROM ubuntu:24.04
 
-# Install required packages
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -24,20 +23,16 @@ WORKDIR /app
 # Copy all application files
 COPY . /app/
 
-# Make scripts executable
 RUN chmod +x start_server_docker.sh 
 
-# Expose the ports used by IMDS and WireServer
 EXPOSE 80
 
-# Add virtual environment to PATH
 ENV PATH="/app/venv/bin:$PATH"
 
-# Add potential delays to the mocked servers
+# Add potential delays/timeouts to the mocked servers here with env vars
 # ENV WIRESERVER_GET_DELAY=5
 # ENV IMDS_GET_DELAY=5
 # ENV IMDS_GET_TIMEOUT=True
 # ENV WIRESERVER_GET_TIMEOUT=True
 
-# Use the Docker-optimized script as the entrypoint
 CMD ["./start_server_docker.sh"]

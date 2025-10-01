@@ -24,7 +24,7 @@ The setup creates two Docker networks with Azure-like IP addresses:
 
 - Docker and Docker Compose
 - WSL2 or Linux environment
-- Build tools for the `azure-init` binary (located in `target/debug/`)
+- The `azure-init` binary and service file
 
 ## Quick Start
 
@@ -37,9 +37,9 @@ Run the start script to launch both services:
 ```
 
 This will:
-1. Start the testing server first (creates networks with Azure IP addresses)
+1. Start the testing server container first (creates networks with Azure IP addresses)
 2. Wait for the testing server to be ready
-3. Start the provisioning agent (connects to existing networks)
+3. Start the provisioning agent
 
 ### Stopping Services
 
@@ -50,8 +50,8 @@ Stop all services and clean up:
 ```
 
 This will:
-1. Stop the provisioning agent
-2. Stop the testing server
+1. Stop the provisioning agent container
+2. Stop the testing server container
 3. Remove orphaned containers
 4. Clean up Docker networks
 
@@ -63,7 +63,7 @@ This will:
 - **Image**: Built from local Dockerfile
 - **Service**: systemd-based `azure-init.service`
 - **Privileges**: Runs with `privileged: true` for systemd support
-- **Binary Location**: `/usr/local/bin/azure-init`
+- **Binary Location**: In the container, located at `/usr/local/bin/azure-init`
 
 ### Testing Server
 
@@ -72,7 +72,6 @@ This will:
   - IMDS: `http://169.254.169.254/metadata/instance`
   - WireServer: `http://168.63.129.16/machine`
 - **Port**: 80 (mapped to host)
-- **Health Check**: Validates IMDS endpoint availability
 
 ## Monitoring and Debugging
 

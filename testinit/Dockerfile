@@ -5,7 +5,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 VOLUME [ "/sys/fs/cgroup" ]
 
-# Install required packages
 RUN apt-get update && apt-get install -y \
     systemd \
     dbus \
@@ -29,7 +28,6 @@ RUN mkdir -p /etc/sudoers.d
 # Create the SSHD directory
 RUN mkdir -p /etc/ssh
 
-# Copy the Azure-Init binary and service file
 COPY target/debug/azure-init /usr/bin/azure-init
 RUN chmod +x /usr/bin/azure-init
 

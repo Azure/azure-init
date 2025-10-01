@@ -130,7 +130,6 @@ if __name__ == "__main__":
     # Set up signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Create and start the test server
     server = TestServer()
     try:
         server.start()

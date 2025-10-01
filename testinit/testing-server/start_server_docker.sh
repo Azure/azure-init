@@ -10,7 +10,6 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Function to print colored output
 print_status() {
     echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"
 }
@@ -27,7 +26,6 @@ print_error() {
     echo -e "${RED}[$(date '+%H:%M:%S')]${NC} $1"
 }
 
-# Check for required permissions
 check_permissions() {
     if [[ $EUID -eq 0 ]]; then
         print_status "Running as root"
@@ -38,11 +36,9 @@ check_permissions() {
     fi
 }
 
-# Check if Python dependencies are installed
 check_dependencies() {
     print_info "Checking Python dependencies..."
     
-    # Check each dependency individually for better error reporting
     local missing_deps=()
     
     python3 -c "import requests" 2>/dev/null || missing_deps+=("requests")
@@ -54,7 +50,6 @@ check_dependencies() {
     fi
 }
 
-# Check if test_server.py exists
 check_server_file() {
     if [[ ! -f "test_server.py" ]]; then
         print_error "test_server.py not found in current directory"
@@ -84,15 +79,12 @@ cleanup() {
     exit 0
 }
 
-# Set up signal handlers
 trap cleanup SIGINT SIGTERM
 
-# Print banner
 echo -e "${CYAN}"
 cat << "EOF"
 ╔══════════════════════════════════════════════════════════════╗
 ║                    Azure-Init Test Server                    ║
-║                        (Docker Mode)                         ║
 ║                                                              ║
 ║  This server mocks Azure IMDS and WireServer endpoints       ║
 ║  Press Ctrl+C to stop the server and clean up                ║
@@ -100,8 +92,6 @@ cat << "EOF"
 EOF
 echo -e "${NC}"
 
-# Run pre-flight checks
-print_info "Running pre-flight checks..."
 check_permissions
 check_server_file
 check_dependencies
