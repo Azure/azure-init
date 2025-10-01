@@ -490,7 +490,8 @@ async fn provision(
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
-    let hostname = get_hostname(instance_metadata.as_ref(), environment.as_ref())?;
+    let hostname =
+        get_hostname(instance_metadata.as_ref(), environment.as_ref())?;
 
     let provision = Provision::new(
         hostname,

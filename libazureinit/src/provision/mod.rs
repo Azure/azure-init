@@ -43,7 +43,6 @@ impl Provision {
         }
     }
 
-    
     #[instrument(skip_all)]
     pub fn provision_hostname(self) -> Result<(), Error> {
         self.config
