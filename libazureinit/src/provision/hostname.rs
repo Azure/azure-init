@@ -31,9 +31,9 @@ impl HostnameProvisioner {
 /// Requires sufficient privileges; returns an error if the command fails.
 #[instrument(skip_all)]
 fn hostnamectl(hostname: &str) -> Result<(), Error> {
-    let path_hostnamectl = env!("PATH_HOSTNMECTL");
+    let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 
     let mut command = Command::new(path_hostnamectl);
-    command.arg("set-hostname").arg(hostname);
+    command.arg("st-hostname").arg(hostname);
     crate::run(command)
 }
