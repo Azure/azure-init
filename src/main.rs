@@ -74,6 +74,9 @@ struct Cli {
     #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
     show_version: bool,
 
+    #[arg(long = "hostname", help = "Write the hostname to the hostname file", default_value = "True")]
+    set_hostname: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -245,6 +248,11 @@ async fn main() -> ExitCode {
     let opts = Cli::parse();
     if opts.show_version {
         println!("azure-init {}", version_string());
+        return ExitCode::SUCCESS;
+    }
+
+    if opts.set_hostname { 
+        println!("Going to set the hostname. It is here:");
         return ExitCode::SUCCESS;
     }
 
