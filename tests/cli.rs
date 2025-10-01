@@ -20,6 +20,32 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Assert that the --version flag works and outputs the version
+#[test]
+fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--version");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+
+    Ok(())
+}
+
+// Assert that the -V flag works and outputs the version
+#[test]
+fn version_flag_short() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("-V");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+
+    Ok(())
+}
+
 // Helper function to set up the log and provision files for cleaning
 fn setup_clean_test() -> Result<
     (
