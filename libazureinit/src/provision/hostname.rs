@@ -34,6 +34,6 @@ fn hostnamectl(hostname: &str) -> Result<(), Error> {
     let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 
     let mut command = Command::new(path_hostnamectl);
-    command.arg("st-hostname").arg(hostname);
+    command.arg("set-hostname").arg(hostname);
     crate::run(command)
 }
