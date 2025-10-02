@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 import json
-from urllib.parse import urlparse, parse_qs
+import time
 
 from config import WIRESERVER_GET_DELAY, WIRESERVER_GET_TIMEOUT
 from utils import logger
@@ -27,10 +27,6 @@ MOCK_WIRESERVER_CONFIG = {
 
 class WireServerHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure WireServer requests."""
-    
-    def log_message(self, format, *args):
-        """Override to use our logger."""
-        logger.info(f"WireServer: {format % args}")
     
     def do_GET(self):
         """Handle GET requests to WireServer endpoints."""

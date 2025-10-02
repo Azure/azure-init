@@ -58,7 +58,6 @@ check_server_file() {
     print_status "test_server.py found"
 }
 
-# Cleanup function
 cleanup() {
     print_warning "\nShutdown signal received. Cleaning up..."
     

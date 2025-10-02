@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 import json
-from urllib.parse import urlparse, parse_qs
+import time
+from urllib.parse import urlparse
 
 from config import IMDS_GET_DELAY, IMDS_GET_TIMEOUT
 from utils import logger
@@ -104,14 +105,9 @@ MOCK_INSTANCE_METADATA = {
 class IMDSHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure Instance Metadata Service requests."""
     
-    def log_message(self, format, *args):
-        """Override to use our logger."""
-        logger.info(f"IMDS: {format % args}")
-    
     def do_GET(self):
         """Handle GET requests to IMDS endpoints."""
         parsed_url = urlparse(self.path)
-        query_params = parse_qs(parsed_url.query)
         
         logger.info(f"IMDS GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")

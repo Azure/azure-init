@@ -17,10 +17,8 @@ RUN python3 -m venv /app/venv && \
     /app/venv/bin/pip install --upgrade pip && \
     /app/venv/bin/pip install -r /app/requirements.txt
 
-# Create app directory
 WORKDIR /app
 
-# Copy all application files
 COPY . /app/
 
 RUN chmod +x start_server_docker.sh 
