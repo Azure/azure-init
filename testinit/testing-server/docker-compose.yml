@@ -11,7 +11,7 @@ services:
     ports:
       - "80:80"
     networks:
-      agent-network:
+      imds-network:
         ipv4_address: 169.254.169.254
       wireserver-network:
         ipv4_address: 168.63.129.16
@@ -23,7 +23,7 @@ services:
       start_period: 40s
 
 networks:
-  agent-network:
+  imds-network:
     driver: bridge
     name: imds-network
     ipam:

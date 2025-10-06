@@ -19,11 +19,11 @@ services:
     environment:
       - PATH_HOSTNAMECTL=/usr/bin/hostnamectl
     networks:
-      - agent-network
+      - imds-network
       - wireserver-network
 
 networks:
-  agent-network:
+  imds-network:
     external: true
     name: imds-network
 
