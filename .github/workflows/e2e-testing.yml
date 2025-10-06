@@ -60,11 +60,11 @@ jobs:
         run: |
           echo "Testing IMDS endpoint from within provisioning agent container..."
           # Test if the IMDS endpoint is accessible from within the container and show response
-          docker exec azureinit-provisioning-agent curl -f http://169.254.169.254/metadata/instance -H "Metadata: true" || echo "IMDS endpoint test completed"
+          docker exec azureinit-provisioning-agent curl -f http://169.254.169.254/metadata/instance -H "Metadata: true" && echo "IMDS endpoint test completed"
           
           echo "Testing WireServer endpoint from within provisioning agent container..."
           # Test if the WireServer endpoint is accessible from within the container and show response
-          docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine || echo "WireServer endpoint test completed"
+          docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine && echo "WireServer endpoint test completed"
 
       - name: Print provisioning agent logs
         if: always()
@@ -96,4 +96,4 @@ jobs:
         working-directory: testinit
         run: |
           echo "Cleaning up services..."
-          ./stop-all.sh || echo "Cleanup completed"
+          ./stop-all.sh && echo "Cleanup completed"
