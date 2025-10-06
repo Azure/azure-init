@@ -6,9 +6,6 @@ docker compose up -d --build
 
 popd
 
-echo "Waiting for testing-server to be ready..."
-sleep 10
-
 echo "Starting provisioning-agent (connects to existing networks)..."
 docker compose up -d --build
 
