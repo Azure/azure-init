@@ -1,0 +1,98 @@
+name: "E2E Testing"
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+jobs:
+  e2e-test:
+    name: End-to-End Testing with Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libudev-dev
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      
+      - name: Build azure-init binary
+        run: |
+          cargo build --verbose
+          # Create target/debug directory structure that Dockerfile expects
+          mkdir -p target/debug
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Make start-all.sh executable
+        run: chmod +x testinit/start-all.sh testinit/stop-all.sh
+      
+      - name: Run E2E tests
+        run: |
+          pushd testinit
+          echo "Starting E2E test environment..."
+          ./start-all.sh
+        
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for services to fully initialize..."
+          sleep 5
+      
+      - name: Check service health
+        run: |
+          echo "Checking if services are running..."
+          docker ps -a
+      
+      - name: Test Azure service endpoints
+        run: |
+          echo "Testing IMDS endpoint from within provisioning agent container..."
+          # Test if the IMDS endpoint is accessible from within the container and show response
+          docker exec azureinit-provisioning-agent curl -f http://169.254.169.254/metadata/instance -H "Metadata: true" && echo "IMDS endpoint test completed"
+          
+          echo "Testing WireServer endpoint from within provisioning agent container..."
+          # Test if the WireServer endpoint is accessible from within the container and show response
+          docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine && echo "WireServer endpoint test completed"
+
+      - name: Print provisioning agent logs
+        if: always()
+        run: |
+          pushd testinit
+          # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
+          docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
+          cat provisioning_agent_logs.txt
+          # Fail only if a single line contains both "azure-init" and "failed"/"failure" (case-insensitive).
+          if grep -i 'azure-init' provisioning_agent_logs.txt | grep -Ei 'failed|failure' >/dev/null; then
+            echo "ERROR: provisioning-agent logs contain a line with 'azure-init' and failure indicators."
+            exit 1
+          fi
+
+      - name: Print testing server logs
+        if: always()
+        run: |
+          pushd testinit/testing-server
+          docker compose logs testing-server || echo "No testing-server logs yet"
+          popd
+
+      - name: Output KVP telemetry
+        if: always()
+        run: |
+          docker exec azureinit-provisioning-agent cat /var/lib/hyperv/.kvp_pool_1
+
+      - name: Cleanup - Stop all services
+        if: always()
+        working-directory: testinit
+        run: |
+          echo "Cleaning up services..."
+          ./stop-all.sh && echo "Cleanup completed"

@@ -1,0 +1,32 @@
+services:
+  provisioning-agent:
+    build:
+      context: ../
+      dockerfile: ./testinit/Dockerfile
+    privileged: true
+    cgroup: host
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
+    stdin_open: true
+    tty: true
+    container_name: azureinit-provisioning-agent
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - PATH_HOSTNAMECTL=/usr/bin/hostnamectl
+    networks:
+      - imds-network
+      - wireserver-network
+
+networks:
+  imds-network:
+    external: true
+    name: imds-network
+
+  wireserver-network:
+    external: true
+    name: wireserver-network
