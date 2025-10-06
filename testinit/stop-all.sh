@@ -4,9 +4,9 @@ echo "Stopping provisioning-agent..."
 docker compose down
 
 echo "Stopping testing-server and cleaning up networks..."
-cd testing-server
+pushd testing-server
 docker compose down
-cd ..
+popd
 
 echo "Removing any orphaned containers..."
 docker container prune -f

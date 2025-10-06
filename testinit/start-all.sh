@@ -1,10 +1,10 @@
 #!/bin/bash
 
 echo "Starting testing-server first (creates networks with Azure IP addresses)..."
-cd testing-server
+pushd testing-server
 docker compose up -d --build
 
-cd ..
+popd
 
 echo "Waiting for testing-server to be ready..."
 sleep 10
@@ -12,7 +12,6 @@ sleep 10
 echo "Starting provisioning-agent (connects to existing networks)..."
 docker compose up -d --build
 
-echo "Both services should now be running (unless you see bright red errors)"
 echo "Testing-server is available at the Azure service endpoints:"
 echo "  IMDS: http://169.254.169.254/metadata/instance"
 echo "  WireServer: http://168.63.129.16/machine"

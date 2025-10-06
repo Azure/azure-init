@@ -41,8 +41,7 @@ jobs:
       
       - name: Run E2E tests
         run: |
-          cd testinit
-          ls
+          pushd testinit
           echo "Starting E2E test environment..."
           ./start-all.sh
         
@@ -69,7 +68,7 @@ jobs:
       - name: Print provisioning agent logs
         if: always()
         run: |
-          cd testinit
+          pushd testinit
           # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
           docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
           cat provisioning_agent_logs.txt
@@ -82,9 +81,9 @@ jobs:
       - name: Print testing server logs
         if: always()
         run: |
-          cd testinit/testing-server
+          pushd testinit/testing-server
           docker compose logs testing-server || echo "No testing-server logs yet"
-          cd ..
+          popd
 
       - name: Output KVP telemetry
         if: always()
