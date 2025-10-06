@@ -29,7 +29,10 @@ fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicate::str::is_match("(?i)password").unwrap().not());
-  
+
+    Ok(())
+}
+
 // Assert that the --version flag works and outputs the version
 #[test]
 fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
