@@ -23,7 +23,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 # Pin to 0.30 for tracing-opentelemetry 0.31 compatibility
 opentelemetry = "=0.30.0"
 opentelemetry_sdk = "=0.30.0"
-tracing-opentelemetry = "0.31"
+tracing-opentelemetry = "0.32"
 tokio-util = "0.7"
 # Pin sysinfo to <=0.36 for MSRV issues with Rust < 1.85.0.
 # This should be unpinned around 2026-02-17 if we continue with our ~1 year MSRV policy
