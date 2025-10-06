@@ -110,11 +110,9 @@ class TestServer:
         """Stop the test server and clean up."""
         logger.info("Stopping test server...")
         self.running = False
-        
-        if self.imds_server:
-            self.imds_server.shutdown()
-        if self.wireserver_server:
-            self.wireserver_server.shutdown()
+
+        self.imds_server.shutdown()
+        self.wireserver_server.shutdown()
         
         self.cleanup_network_interface()
         logger.info("Test server stopped")
