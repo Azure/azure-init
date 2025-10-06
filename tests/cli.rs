@@ -20,6 +20,19 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Ensure no password-related flags are exposed by the CLI
+#[test]
+fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--help");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match("(?i)password").unwrap().not());
+
+    Ok(())
+}
+
 // Assert that the --version flag works and outputs the version
 #[test]
 fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
