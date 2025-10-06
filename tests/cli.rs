@@ -29,6 +29,30 @@ fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicate::str::is_match("(?i)password").unwrap().not());
+  
+// Assert that the --version flag works and outputs the version
+#[test]
+fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--version");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+
+    Ok(())
+}
+
+// Assert that the -V flag works and outputs the version
+#[test]
+fn version_flag_short() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("-V");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+
     Ok(())
 }
 
