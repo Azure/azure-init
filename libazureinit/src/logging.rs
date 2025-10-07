@@ -28,8 +28,6 @@ fn initialize_tracing() -> sdktrace::Tracer {
         .with_sampler(Sampler::AlwaysOn)
         .build();
 
-    // Create the tracer before installing the provider globally, since
-    // `set_tracer_provider` consumes the provider in newer versions.
     let tracer = provider.tracer("azure-kvp");
     global::set_tracer_provider(provider);
     tracer
