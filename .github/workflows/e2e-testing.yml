@@ -48,7 +48,7 @@ jobs:
       - name: Wait for services to be ready
         run: |
           echo "Waiting for services to fully initialize..."
-          sleep 5
+          sleep 15
       
       - name: Check service health
         run: |
