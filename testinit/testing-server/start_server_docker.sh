@@ -104,7 +104,7 @@ print_info "Press Ctrl+C to stop the server"
 echo ""
 
 # Start the server and capture its PID
-python3 test_server.py --imds-responses ./api-responses/imds/internal-error-500.json &
+python3 test_server.py --imds-responses ./api-responses/imds/one-bad-then-correct.json &
 SERVER_PID=$!
 
 # Give the server a moment to start
