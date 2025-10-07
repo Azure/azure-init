@@ -69,6 +69,7 @@ class TestServer:
         """Start the IMDS HTTP server."""
         if self.imds_responses_file:
             IMDSHandler.set_response_file_path(self.imds_responses_file)
+            IMDSHandler.load_responses()
             logger.info(f"IMDS handler will load responses from: {self.imds_responses_file}")
 
         logger.info(f"Starting IMDS server on {IMDS_IP}:{IMDS_PORT}")
