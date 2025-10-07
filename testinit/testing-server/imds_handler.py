@@ -123,7 +123,6 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info("Cade, here is the json from responses")
         logger.info(json.dumps(cls._responses))
 
-    @classmethod
     def write_custom_response(self):
         responses_list = self._responses
             
