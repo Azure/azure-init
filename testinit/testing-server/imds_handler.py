@@ -170,7 +170,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
 
         if parsed_url.path == '/metadata/instance':
             # If we have custom responses from a file, we should use them.
-            if self.responses is not None:
+            if self._responses is not None:
                 self.write_custom_response()
                 return 
             
