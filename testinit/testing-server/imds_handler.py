@@ -143,7 +143,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(response_body).encode())
         
         self.response_position += 1
-        logger.info(f"Sent custom response {self._response_position - 1}, next position: {self._response_position}")
+        logger.info(f"Sent custom response {self.response_position - 1}, next position: {self.response_position}")
         return
 
     def do_GET(self):
