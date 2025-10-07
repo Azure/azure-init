@@ -120,13 +120,11 @@ class IMDSHandler(BaseHTTPRequestHandler):
 
         cls._responses = cls._responses['responses']
 
-        logger.info("Cade, here is the json from responses")
         logger.info(json.dumps(cls._responses))
 
     def write_custom_response(self):
         responses_list = self._responses
             
-        # Ensure we don't go out of bounds
         if self.__class__._response_position >= len(responses_list):
             self.__class__._response_position = 0
         
@@ -176,7 +174,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
                 self.write_custom_response()
                 return 
             
-            # If we have no custom responses, we are good to 
+            # If we have no custom responses, just use the default JSON above
             else:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
