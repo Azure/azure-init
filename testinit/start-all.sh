@@ -10,12 +10,15 @@ echo "Starting azureinit-provisioning-agent (connects to existing networks)..."
 docker compose up -d --build
 
 while true; do
-  status=$(docker exec azureinit-provisioning-agent systemctl is-active azure-init.service)
-  echo "azure-init.service status: $status"
-  if [[ "$status" == "inactive" || "$status" == "failed" ]]; then
-    echo "azure-init.service has completed"
+  if docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager | grep -q "Finished azure-init.service"; then
+    echo "azure-init.service has finished"
     break
   fi
+  if  docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager | grep -i 'azure-init' | grep -Eiq 'failed|failure'; then
+    echo "azure-init.service has failed."
+    break
+  fi
+  echo "Waiting for azure-init.service to finish..."
   sleep 10
 done
 
