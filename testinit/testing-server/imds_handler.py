@@ -107,7 +107,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
     
     _responses_file_path = None 
     _responses = None
-    response_position = 0
+    _response_position = 0
 
     @classmethod
     def set_response_file_path(cls, file_path):
@@ -123,14 +123,15 @@ class IMDSHandler(BaseHTTPRequestHandler):
         logger.info("Cade, here is the json from responses")
         logger.info(json.dumps(cls._responses))
 
+    @classmethod
     def write_custom_response(self):
         responses_list = self._responses
             
         # Ensure we don't go out of bounds
-        if self.response_position >= len(responses_list):
-            self.response_position = 0
+        if self.__class__._response_position >= len(responses_list):
+            self.__class__._response_position = 0
         
-        current_response = responses_list[self.response_position]
+        current_response = responses_list[self.__class__._response_position]
         
         self.send_response(current_response['status_code'])
         
@@ -141,9 +142,9 @@ class IMDSHandler(BaseHTTPRequestHandler):
         
         response_body = current_response.get('response', {})
         self.wfile.write(json.dumps(response_body).encode())
-        
-        logger.info(f"Returning response: {current_response}, from position: {self.response_position}")
-        self.response_position += 1
+
+        logger.info(f"Returning response: {current_response}, from position: {self.__class__._response_position}")
+        self.__class__._response_position += 1
         return
 
     def do_GET(self):
