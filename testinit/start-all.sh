@@ -9,6 +9,16 @@ popd
 echo "Starting provisioning-agent (connects to existing networks)..."
 docker compose up -d --build
 
+while true; do
+  status=$(docker exec provisioning-agent systemctl is-active azure-init.service)
+  echo "azure-init.service status: $status"
+  if [[ "$status" == "inactive" || "$status" == "failed" ]]; then
+    echo "azure-init.service has completed"
+    break
+  fi
+  sleep 10
+done
+
 echo "Testing-server is available at the Azure service endpoints:"
 echo "  IMDS: http://169.254.169.254/metadata/instance"
 echo "  WireServer: http://168.63.129.16/machine"
