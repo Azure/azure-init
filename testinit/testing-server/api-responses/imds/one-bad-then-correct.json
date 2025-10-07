@@ -1,0 +1,108 @@
+{
+  "responses": [
+    {
+      "status_code": 500,
+      "headers": {"Content-Type": "application/json"},
+      "response": {
+        "error": "Internal server error from Cade"
+      }
+    },
+    {
+      "status_code": 200,
+      "headers": {"Content-Type": "application/json"},
+      "response": {
+            "compute": {
+                "azEnvironment": "AzurePublicCloud",
+                "customData": "",
+                "isHostCompatibilityLayerVm": "false",
+                "licenseType": "",
+                "location": "eastus",
+                "name": "test-vm",
+                "offer": "UbuntuServer",
+                "osProfile": {
+                    "adminUsername": "userforazure",
+                    "computerName": "test-vm",
+                    "disablePasswordAuthentication": "true"
+                },
+                "osType": "Linux",
+                "placementGroupId": "",
+                "plan": {
+                    "name": "",
+                    "product": "",
+                    "publisher": ""
+                },
+                "platformFaultDomain": "0",
+                "platformUpdateDomain": "0",
+                "provider": "Microsoft.Compute",
+                "publicKeys": [],
+                "publisher": "Canonical",
+                "resourceGroupName": "test-rg",
+                "resourceId": "/subscriptions/12345678-90ab-cdef-1234-567890abcdef/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/test-vm",
+                "securityProfile": {
+                    "secureBootEnabled": "false",
+                    "virtualTpmEnabled": "false"
+                },
+                "sku": "18.04-LTS",
+                "storageProfile": {
+                    "dataDisks": [],
+                    "imageReference": {
+                        "offer": "UbuntuServer",
+                        "publisher": "Canonical",
+                        "sku": "18.04-LTS",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "caching": "ReadWrite",
+                        "createOption": "FromImage",
+                        "diskSizeGB": "30",
+                        "image": {
+                            "uri": ""
+                        },
+                        "managedDisk": {
+                            "id": "/subscriptions/12345678-90ab-cdef-1234-567890abcdef/resourceGroups/test-rg/providers/Microsoft.Compute/disks/test-vm_OsDisk_1",
+                            "storageAccountType": "Premium_LRS"
+                        },
+                        "name": "test-vm_OsDisk_1",
+                        "osType": "Linux",
+                        "vhd": {
+                            "uri": ""
+                        },
+                        "writeAcceleratorEnabled": "false"
+                    }
+                },
+                "subscriptionId": "12345678-90ab-cdef-1234-567890abcdef",
+                "tags": "Environment:Test;Project:ProvisioningAgent",
+                "version": "18.04.202109080",
+                "vmId": "12345678-90ab-cdef-1234-567890abcdef",
+                "vmScaleSetName": "",
+                "vmSize": "Standard_B2s",
+                "zone": "1"
+            },
+            "network": {
+                "interface": [
+                    {
+                        "ipv4": {
+                            "ipAddress": [
+                                {
+                                    "privateIpAddress": "10.0.0.4",
+                                    "publicIpAddress": "52.168.1.1"
+                                }
+                            ],
+                            "subnet": [
+                                {
+                                    "address": "10.0.0.0",
+                                    "prefix": "24"
+                                }
+                            ]
+                        },
+                        "ipv6": {
+                            "ipAddress": []
+                        },
+                        "macAddress": "000D3A123456"
+                    }
+                ]
+            }
+        }
+    }
+  ]
+}
