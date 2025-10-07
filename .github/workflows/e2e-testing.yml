@@ -45,11 +45,6 @@ jobs:
           echo "Starting E2E test environment..."
           ./start-all.sh
         
-      - name: Wait for services to be ready
-        run: |
-          echo "Waiting for services to fully initialize..."
-          sleep 15
-      
       - name: Check service health
         run: |
           echo "Checking if services are running..."
