@@ -1,7 +1,10 @@
+import argparse
 import subprocess
 import threading
 import time
+import json
 import signal
+import os
 import sys
 from http.server import HTTPServer
 
@@ -14,12 +17,13 @@ from imds_handler import IMDSHandler
 class TestServer:
     """Main test server class that manages network setup and HTTP servers."""
     
-    def __init__(self):
+    def __init__(self, imds_responses_file=None):
         self.imds_server = None
         self.wireserver_server = None
         self.imds_thread = None
         self.wireserver_thread = None
         self.running = False
+        self.imds_responses_file = imds_responses_file
     
     def setup_network_interface(self):
         """Set up dummy network interface with required IP addresses."""
@@ -63,6 +67,10 @@ class TestServer:
     
     def start_imds_server(self):
         """Start the IMDS HTTP server."""
+        if self.imds_responses_file:
+            IMDSHandler.set_response_file_path(self.imds_responses_file)
+            logger.info(f"IMDS handler will load responses from: {self.imds_responses_file}")
+
         logger.info(f"Starting IMDS server on {IMDS_IP}:{IMDS_PORT}")
         self.imds_server = HTTPServer((IMDS_IP, IMDS_PORT), IMDSHandler)
         self.imds_server.serve_forever()
@@ -78,7 +86,6 @@ class TestServer:
         logger.info("Starting provisioning agent test server...")
         
         try:
-            # Set up network interface
             self.setup_network_interface()
             
             # Start HTTP servers in separate threads
@@ -123,12 +130,49 @@ def signal_handler(sig, frame):
     logger.info("Received SIGINT, shutting down...")
     sys.exit(0)
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Azure provisioning agent test server',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--imds-responses',
+        type=str,
+        metavar='JSON_FILE',
+        help='Path to JSON file containing custom IMDS responses'
+    )
+    
+    return parser.parse_args()
+
+def validate_json_file(file_path):
+    """Validate that the file exists and is valid JSON."""
+    if not os.path.exists(file_path):
+        logger.error(f"JSON file not found: {file_path}")
+        sys.exit(1)
+    
+    try:
+        with open(file_path, 'r') as f:
+            json.load(f)
+        logger.info(f"Validated JSON file: {file_path}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in file: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error reading file: {e}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    # Set up signal handler for graceful shutdown
+    args = parse_arguments()
+    
+    if args.imds_responses:
+        validate_json_file(args.imds_responses)
+    
     signal.signal(signal.SIGINT, signal_handler)
     
-    server = TestServer()
+    server = TestServer(args.imds_responses)
     try:
         server.start()
     except KeyboardInterrupt:

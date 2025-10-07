@@ -105,6 +105,47 @@ MOCK_INSTANCE_METADATA = {
 class IMDSHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure Instance Metadata Service requests."""
     
+    _responses_file_path = None 
+    _responses = None
+    response_position = 0
+
+    @classmethod
+    def set_response_file_path(cls, file_path):
+        cls._responses_file_path = file_path
+
+    @classmethod
+    def load_responses(cls):
+        with open(cls._responses_file_path, 'r') as f:
+            cls._responses = json.load(f)
+
+        cls._responses = cls._responses['responses']
+
+        logger.info("Cade, here is the json from responses")
+        logger.info(json.dumps(cls._responses))
+
+    def write_custom_response(self):
+        responses_list = self._responses
+            
+        # Ensure we don't go out of bounds
+        if self.response_position >= len(responses_list):
+            self.response_position = 0
+        
+        current_response = responses_list[self.response_position]
+        
+        self.send_response(current_response['status_code'])
+        
+        headers = current_response.get('headers', {})
+        for header_name, header_value in headers.items():
+            self.send_header(header_name, header_value)
+        self.end_headers()
+        
+        response_body = current_response.get('response', {})
+        self.wfile.write(json.dumps(response_body).encode())
+        
+        self.response_position += 1
+        logger.info(f"Sent custom response {self._response_position - 1}, next position: {self._response_position}")
+        return
+
     def do_GET(self):
         """Handle GET requests to IMDS endpoints."""
         parsed_url = urlparse(self.path)
@@ -128,13 +169,20 @@ class IMDSHandler(BaseHTTPRequestHandler):
             error_response = {"error": "Bad Request", "message": "Metadata header not found"}
             self.wfile.write(json.dumps(error_response).encode())
             return
-        
-        # Handle different IMDS endpoints
+
         if parsed_url.path == '/metadata/instance':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(MOCK_INSTANCE_METADATA).encode())
+            # If we have custom responses from a file, we should use them.
+            if self.responses is not None:
+                self.write_custom_response()
+                return 
+            
+            # If we have no custom responses, we are good to 
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(MOCK_INSTANCE_METADATA).encode())
+                return
         
         else:
             self.send_response(404)
