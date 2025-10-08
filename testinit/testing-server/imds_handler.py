@@ -3,7 +3,6 @@ import json
 import time
 from urllib.parse import urlparse
 
-from config import IMDS_GET_TIMEOUT
 from utils import logger
 
 
