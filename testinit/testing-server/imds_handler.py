@@ -1,7 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 import json
 import time
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, ParseResult
 
 from utils import logger
 
@@ -53,7 +53,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
         self.__class__._response_position += 1
         return
     
-    def write_default_response(self, parsed_url: str):
+    def write_default_response(self, parsed_url: ParseResult):
         query_params = parse_qs(parsed_url.query)
         extended = query_params.get('extended', ['false'])[0].lower() == 'true'
         
@@ -91,7 +91,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
             
             # If we have no custom responses, return the default JSON depending on URL params
             else:
-                self.write_default_response()
+                self.write_default_response(parsed_url)
                 return
         
         else:
