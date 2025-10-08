@@ -3,7 +3,7 @@ import json
 import time
 from urllib.parse import urlparse
 
-from config import IMDS_GET_DELAY, IMDS_GET_TIMEOUT
+from config import IMDS_GET_TIMEOUT
 from utils import logger
 
 
@@ -130,6 +130,11 @@ class IMDSHandler(BaseHTTPRequestHandler):
         
         current_response = responses_list[self.__class__._response_position]
         
+        delay = current_response.get("delay")
+        if delay is not None:
+            logger.info(f"Adding custom delay of {delay} seconds")
+            time.sleep(delay)
+
         self.send_response(current_response['status_code'])
         
         headers = current_response.get('headers', {})
@@ -150,14 +155,6 @@ class IMDSHandler(BaseHTTPRequestHandler):
         
         logger.info(f"IMDS GET request: {self.path}")
         logger.info(f"Headers: {dict(self.headers)}")
-        
-        if IMDS_GET_TIMEOUT:
-            logger.info(f"Adding IDMS GET timeout from ENV variable")
-            return
-
-        if IMDS_GET_DELAY != 0:
-            logger.info(f"Adding IMDS GET request delay of {IMDS_GET_DELAY} seconds")
-            time.sleep(IMDS_GET_DELAY)
 
         # Check for required Metadata header
         if self.headers.get('Metadata') != 'true':
