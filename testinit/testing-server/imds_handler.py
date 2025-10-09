@@ -49,7 +49,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
         response_body = current_response.get('response', {})
         self.wfile.write(json.dumps(response_body).encode())
 
-        logger.info(f"Returning response: {current_response}, from position: {self.__class__._response_position}")
+        logger.info(f"Returning response: {json.dumps(current_response, indent=2)}, from position: {self.__class__._response_position}")
         self.__class__._response_position += 1
         return
     
