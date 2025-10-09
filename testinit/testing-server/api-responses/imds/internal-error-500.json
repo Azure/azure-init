@@ -2,7 +2,9 @@
   "responses": [
     {
       "status_code": 500,
-      "headers": {"Content-Type": "application/json"},
+      "headers": {
+        "Content-Type": "application/json"
+      },
       "response": {
         "error": "Internal server error."
       }
