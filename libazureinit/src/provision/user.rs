@@ -170,7 +170,7 @@ fn useradd(user: &User) -> Result<(), Error> {
         let group_list = user.groups.join(",");
 
         tracing::info!(
-            target: "libazureinit:user::add",
+            target: "libazureinit::user::add",
             "User '{}' is being added to the following groups: {}",
             user.name,
             group_list
@@ -182,6 +182,12 @@ fn useradd(user: &User) -> Result<(), Error> {
     }
 
     let path_useradd = env!("PATH_USERADD");
+
+    tracing::info!(
+        target: "libazureinit::user::add",
+        "Creating user with username: '{}'",
+        user.name,
+    );
 
     let mut command = Command::new(path_useradd);
     command
