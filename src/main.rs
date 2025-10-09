@@ -74,6 +74,9 @@ struct Cli {
     #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
     show_version: bool,
 
+    #[arg(long = "hostname", help = "Write the hostname to the hostname file")]
+    set_hostname: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -147,6 +150,32 @@ fn get_username(
         .ok_or_else(|| {
             tracing::error!("Username Failure: Could not determine username from IMDS or OVF environment.");
             LibError::UsernameFailure.into()
+        })
+}
+
+#[instrument(skip_all)]
+fn get_hostname(
+    instance_metadata: Option<&InstanceMetadata>,
+    environment: Option<&Environment>,
+) -> Result<String, anyhow::Error> {
+    if let Some(metadata) = instance_metadata {
+        tracing::debug!("Using hostname from IMDS.");
+        return Ok(metadata.compute.os_profile.computer_name.clone());
+    }
+
+    // Read hostname from OVF environment via mounted local device.
+    tracing::debug!("IMDS metadata not available, attempting to get hostname from OVF environment.");
+    environment
+        .map(|env| {
+            tracing::debug!("Using hostname from OVF environment.");
+            env.clone()
+                .provisioning_section
+                .linux_prov_conf_set
+                .hostname
+        })
+        .ok_or_else(|| {
+            tracing::error!("Hostname Failure: Could not determine hostname from IMDS or OVF environment.");
+            LibError::HostnameFailure.into()
         })
 }
 
@@ -462,13 +491,21 @@ async fn provision(
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
-    Provision::new(
-        im.compute.os_profile.computer_name,
+    let hostname =
+        get_hostname(instance_metadata.as_ref(), environment.as_ref())?;
+
+    let provision = Provision::new(
+        hostname,
         user,
         config,
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
-    )
-    .provision()?;
+    );
+
+    if opts.set_hostname {
+        provision.provision_hostname()?;
+    } else {
+        provision.provision()?;
+    }
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {

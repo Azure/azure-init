@@ -68,6 +68,23 @@ impl Provision {
             .ok_or(Error::NoUserProvisioner)
     }
 
+    #[instrument(skip_all)]
+    pub fn provision_hostname(self) -> Result<(), Error> {
+        self.config
+            .hostname_provisioners
+            .backends
+            .iter()
+            .find_map(|backend| match backend {
+                HostnameProvisioner::Hostnamectl => {
+                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
+                }
+                #[cfg(test)]
+                HostnameProvisioner::FakeHostnamectl => Some(()),
+            })
+            .ok_or(Error::NoHostnameProvisioner)?;
+        Ok(())
+    }
+
     /// Provisioning can fail if the host lacks the necessary tools. For example,
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
