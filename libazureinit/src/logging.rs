@@ -28,8 +28,9 @@ fn initialize_tracing() -> sdktrace::Tracer {
         .with_sampler(Sampler::AlwaysOn)
         .build();
 
-    global::set_tracer_provider(provider.clone());
-    provider.tracer("azure-kvp")
+    let tracer = provider.tracer("azure-kvp");
+    global::set_tracer_provider(provider);
+    tracer
 }
 
 fn default_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
