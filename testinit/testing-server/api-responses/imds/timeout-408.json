@@ -1,0 +1,13 @@
+{
+  "responses": [
+    {
+      "status_code": 408,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "response": {
+        "error": "Request timeout."
+      }
+    }
+  ]
+}
