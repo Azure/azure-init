@@ -99,7 +99,7 @@ class TestServer:
             self.running = True
             logger.info("Test server started successfully!")
             logger.info(f"IMDS endpoint: http://{IMDS_IP}:{IMDS_PORT}/metadata/instance")
-            logger.info(f"WireServer endpoint: http://{WIRESERVER_IP}:{WIRESERVER_PORT}/machine")
+            logger.info(f"WireServer endpoint: http://{WIRESERVER_IP}:{WIRESERVER_PORT}")
             
             # Keep the main thread alive
             try:

@@ -98,7 +98,7 @@ check_dependencies
 echo ""
 print_status "Starting Azure provisioning agent test server..."
 print_info "IMDS endpoint: http://169.254.169.254/metadata/instance"
-print_info "WireServer endpoint: http://168.63.129.16/machine"
+print_info "WireServer endpoint: http://168.63.129.16"
 print_info "All requests will be logged below"
 print_info "Press Ctrl+C to stop the server"
 echo ""
@@ -120,7 +120,7 @@ print_status "Test server started successfully (PID: $SERVER_PID)"
 print_info "Server is ready to receive requests..."
 print_info "You can test the endpoints from outside the container:"
 print_info "   curl -H 'Metadata: true' 'http://169.254.169.254/metadata/instance?api-version=2021-02-01'"
-print_info "   curl 'http://168.63.129.16/machine'"
+print_info "   curl 'http://168.63.129.16'"
 
 # Wait for the server process to finish
 wait $SERVER_PID 2>/dev/null
