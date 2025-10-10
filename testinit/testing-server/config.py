@@ -1,5 +1,3 @@
-import os
-
 # Network configuration
 IMDS_IP = "169.254.169.254"
 WIRESERVER_IP = "168.63.129.16"
