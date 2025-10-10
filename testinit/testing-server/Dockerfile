@@ -27,8 +27,4 @@ EXPOSE 80
 
 ENV PATH="/app/venv/bin:$PATH"
 
-# Add potential delays/timeouts to the mocked servers here with env vars
-# ENV WIRESERVER_GET_DELAY=5
-# ENV WIRESERVER_GET_TIMEOUT=True
-
 CMD ["./start_server_docker.sh"]

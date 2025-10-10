@@ -6,7 +6,3 @@ WIRESERVER_IP = "168.63.129.16"
 DUMMY_IFACE = "dummy0"
 IMDS_PORT = 80
 WIRESERVER_PORT = 80
-
-# Server configuration
-WIRESERVER_GET_DELAY = int(os.getenv("WIRESERVER_GET_DELAY", "0"))  # In seconds
-WIRESERVER_GET_TIMEOUT = True if os.getenv("WIRESERVER_GET_TIMEOUT", "False").lower() == "true" else False

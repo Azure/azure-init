@@ -71,7 +71,7 @@ This will:
 - **Container**: `azure-testing-server`
 - **Endpoints**:
   - IMDS: `http://169.254.169.254/metadata/instance`
-  - WireServer: `http://168.63.129.16/machine`
+  - WireServer: `http://168.63.129.16`
 - **Port**: 80 (mapped to host)
 
 ## Monitoring and Debugging
