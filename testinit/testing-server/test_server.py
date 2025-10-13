@@ -18,13 +18,14 @@ from imds_handler import IMDSHandler
 class TestServer:
     """Main test server class that manages network setup and HTTP servers."""
 
-    def __init__(self, imds_responses_file=None):
+    def __init__(self, imds_responses_file=None, wireserver_responses_file=None):
         self.imds_server = None
         self.wireserver_server = None
         self.imds_thread = None
         self.wireserver_thread = None
         self.running = False
         self.imds_responses_file = imds_responses_file
+        self.wireserver_responses_file = wireserver_responses_file
 
     def setup_network_interface(self):
         """Set up dummy network interface with required IP addresses."""
