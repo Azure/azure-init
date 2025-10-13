@@ -375,6 +375,13 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Give the tracing pipeline time to deliver any pending events
+    // (especially from report_ready/report_failure) to the KVP writer
+    // before triggering shutdown
+    if kvp_completion_rx.is_some() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+
     if let Some(handle) = kvp_completion_rx {
         graceful_shutdown.cancel();
         match handle.await {
