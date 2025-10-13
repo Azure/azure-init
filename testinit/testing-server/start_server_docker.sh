@@ -104,7 +104,10 @@ print_info "Press Ctrl+C to stop the server"
 echo ""
 
 # Start the server and capture its PID
-python3 test_server.py --imds-responses ./api-responses/imds/one-bad-then-success.json --wireserver-responses ./api-responses/wireserver/two-bad-then-success.xml &
+# By default, we ensure that both IMDS and the Wireserver respond with a 500
+# before responding with a success. This does add time to the pipeline since 
+# each failure causes a retry duration. 
+python3 test_server.py --imds-responses ./api-responses/imds/two-bad-then-success.json --wireserver-responses ./api-responses/wireserver/one-bad-then-success.xml &
 SERVER_PID=$!
 
 # Give the server a moment to start

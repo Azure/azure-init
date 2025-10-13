@@ -8,13 +8,6 @@
     <response_body></response_body>
   </response>
   <response>
-    <status_code>500</status_code>
-    <headers>
-      <header name="Content-Type" value="text/xml"/>
-    </headers>
-    <response_body></response_body>
-  </response>
-  <response>
     <status_code>200</status_code>
     <headers>
       <header name="Content-Type" value="text/xml"/>
