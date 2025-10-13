@@ -94,10 +94,6 @@ pub async fn report_ready(
     optional_key_value: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     tracing::info!("Reporting provisioning complete");
-    tracing::info!(
-        target: "libazureinit::health::status",
-        "Initiating health report to wireserver"
-    );
     let desc = encoded_success_report(vm_id, optional_key_value);
     _report(ProvisioningState::Ready, None, Some(desc), config).await
 }
@@ -108,10 +104,6 @@ pub async fn report_failure(
     report_str: String,
     config: &Config,
 ) -> Result<(), Error> {
-    tracing::info!(
-        target: "libazureinit::health::status",
-        "Initiating health report to wireserver"
-    );
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::ProvisioningFailed),
@@ -128,10 +120,6 @@ pub async fn report_in_progress(
     vm_id: &str,
 ) -> Result<(), Error> {
     let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
-    tracing::info!(
-        target: "libazureinit::health::status",
-        "Initiating health report to wireserver"
-    );
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::Provisioning),
@@ -151,6 +139,19 @@ async fn _report(
     description: Option<String>,
     config: &Config,
 ) -> Result<(), Error> {
+    // Ensure all health status events in this function have an active span that
+    // the KVP layer can associate with. Using a dedicated span here avoids relying
+    // on upstream span context and keeps KVP emission consistent.
+    let _health_span_guard = tracing::info_span!(
+        target: "libazureinit::health::status",
+        "health_status"
+    )
+    .entered();
+    tracing::info!(
+        target: "libazureinit::health::status",
+        "Initiating health report to wireserver: statusm,"
+    );
+
     if let Some(description_str) = &description {
         tracing::info!(
             target: "libazureinit::health::report",
