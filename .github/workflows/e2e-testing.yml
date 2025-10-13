@@ -75,6 +75,11 @@ jobs:
         run: |
           docker exec azureinit-provisioning-agent cat /var/lib/hyperv/.kvp_pool_1
 
+      - name: Output Azure-init log
+        if: always()
+        run: |
+          docker exec azureinit-provisioning-agent cat /var/log/azure-init.log
+
       - name: Cleanup - Stop all services
         if: always()
         working-directory: testinit
