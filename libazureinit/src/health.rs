@@ -93,6 +93,10 @@ pub async fn report_ready(
     optional_key_value: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     tracing::info!("Reporting provisioning complete");
+    tracing::info!(
+        target: "libazureinit::health::status",
+        "Initiating health report to wireserver"
+    );
     let desc = encoded_success_report(vm_id, optional_key_value);
     _report(ProvisioningState::Ready, None, Some(desc), config).await
 }
@@ -102,6 +106,10 @@ pub async fn report_failure(
     report_str: String,
     config: &Config,
 ) -> Result<(), Error> {
+    tracing::info!(
+        target: "libazureinit::health::status",
+        "Initiating health report to wireserver"
+    );
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::ProvisioningFailed),
@@ -117,6 +125,10 @@ pub async fn report_in_progress(
     vm_id: &str,
 ) -> Result<(), Error> {
     let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
+    tracing::info!(
+        target: "libazureinit::health::status",
+        "Initiating health report to wireserver"
+    );
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::Provisioning),
@@ -136,13 +148,6 @@ async fn _report(
     description: Option<String>,
     config: &Config,
 ) -> Result<(), Error> {
-    tracing::info!(
-        target: "libazureinit::health::status",
-        "Beginning report to wireserver: state={}, substatus={:?}",
-        state,
-        substatus
-    );
-
     if let Some(description_str) = &description {
         tracing::info!(
             target: "libazureinit::health::report",
