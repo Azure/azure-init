@@ -317,6 +317,34 @@ where
                 &event_value,
             );
         }
+        else {
+            // No active span associated with this event. Still emit it to KVP so that
+            // important diagnostics (e.g., health status messages) are not dropped due to
+            // span filtering or timing of span creation.
+            let mut event_message = String::new();
+            let mut visitor = StringVisitor { string: &mut event_message };
+            event.record(&mut visitor);
+
+            let event_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let event_time_dt = DateTime::<Utc>::from(UNIX_EPOCH + event_time)
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+            let event_value = format!(
+                "Time: {event_time_dt} | Event: {event_message}"
+            );
+
+            let span_id: Uuid = Uuid::new_v4();
+            let event_name = event.metadata().target();
+
+            self.handle_kvp_operation(
+                event.metadata().level().as_str(),
+                event_name,
+                &span_id.to_string(),
+                &event_value,
+            );
+        }
     }
 
     /// Called when a new span is created. Records the start time of the span
