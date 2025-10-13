@@ -5,21 +5,21 @@
     <headers>
       <header name="Content-Type" value="application/xml"/>
     </headers>
-    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Error><Code>500</Code><Message>Internal server error.</Message></Error>]]></response_body>
+    <response_body></response_body>
   </response>
   <response>
     <status_code>500</status_code>
     <headers>
       <header name="Content-Type" value="application/xml"/>
     </headers>
-    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Error><Code>500</Code><Message>Internal server error.</Message></Error>]]></response_body>
+    <response_body></response_body>
   </response>
   <response>
     <status_code>200</status_code>
     <headers>
-      <header name="Content-Type" value="application/xml"/>
+      <header name="Content-Type" value="text/xml"/>
     </headers>
-    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>]]></response_body>
+    <response_body></response_body>
     <delay>5</delay>
   </response>
 </responses>

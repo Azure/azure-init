@@ -73,7 +73,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
             self.send_header(header_name, header_value)
         self.end_headers()
 
-        response_body = current_response.get("response", "")
+        response_body = ""
 
         self.wfile.write(response_body.encode())
 
