@@ -334,7 +334,6 @@ async fn main() -> ExitCode {
                 }
 
                 tracing::info!("Provisioning completed successfully");
-                tokio::time::sleep(Duration::from_secs(2)).await;
 
                 ExitCode::SUCCESS
             }
