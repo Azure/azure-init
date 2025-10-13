@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 import time
 import json
+import xml.etree.ElementTree as ET
 
 from utils import logger
 
@@ -18,12 +19,39 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
     @classmethod
     def load_responses(cls):
-        with open(cls._responses_file_path, "r") as f:
-            cls._responses = json.load(f)
+        tree = ET.parse(cls._responses_file_path)
+        root = tree.getroot()
 
-        cls._responses = cls._responses["responses"]
+        cls._responses = []
+        logger.info("PRINTING RESPONSES")
 
-        logger.info(json.dumps(cls._responses, indent=2))
+        for response_elem in root.findall("response"):
+            logger.info(f"elem {response_elem}")
+            response_dict = {}
+
+            status_code = response_elem.find("status_code")
+            if status_code is not None:
+                response_dict["status_code"] = int(status_code.text)
+
+            headers_elem = response_elem.find("headers")
+            if headers_elem is not None:
+                headers = {}
+                for header in headers_elem.findall("header"):
+                    name = header.get("name")
+                    value = header.get("value")
+                    if name and value:
+                        headers[name] = value
+                response_dict["headers"] = headers
+
+            response_body = response_elem.find("response_body")
+            if response_body is not None:
+                response_dict["response"] = response_body.text
+
+            delay_elem = response_elem.find("delay")
+            if delay_elem is not None:
+                time.sleep(delay_elem)
+
+            cls._responses.append(response_dict)
 
     def write_custom_response(self):
         responses_list = self._responses
@@ -45,12 +73,14 @@ class WireServerHandler(BaseHTTPRequestHandler):
             self.send_header(header_name, header_value)
         self.end_headers()
 
-        response_body = current_response.get("response", {})
-        self.wfile.write(json.dumps(response_body).encode())
+        response_body = current_response.get("response", "")
+
+        self.wfile.write(response_body.encode())
 
         logger.info(
-            f"Returning response: {json.dumps(current_response, indent=2)}, from position: {self.__class__._response_position}"
+            f"Returning response from position: {self.__class__._response_position}"
         )
+        logger.info(f"Response details:\n{json.dumps(current_response, indent=2)}")
         self.__class__._response_position += 1
         return
 

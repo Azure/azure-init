@@ -196,8 +196,8 @@ if __name__ == "__main__":
 
     if args.imds_responses:
         validate_json_file(args.imds_responses)
-    if args.wireserver_responses:
-        validate_json_file(args.wireserver_responses)
+    # if args.wireserver_responses:
+    #     validate_json_file(args.wireserver_responses)
 
     signal.signal(signal.SIGINT, signal_handler)
 

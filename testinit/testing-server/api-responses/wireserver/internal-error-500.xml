@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<responses>
+  <response>
+    <status_code>500</status_code>
+    <headers>
+      <header name="Content-Type" value="application/xml"/>
+    </headers>
+    <response_body></response_body>
+  </response>
+</responses>
