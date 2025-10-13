@@ -205,12 +205,6 @@ async fn _report(
         )
         .await?;
 
-        tracing::info!(
-            target: "libazureinit::health::status",
-            "Wireserver responded with {:?}",
-            resp
-        );
-
         let status = resp.status();
         for (key, value) in resp.headers().iter() {
             tracing::info!(
