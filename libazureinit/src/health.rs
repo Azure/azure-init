@@ -132,24 +132,22 @@ pub async fn report_in_progress(
 /// Internal helper that handles all HTTP details for health reporting to the wireserver.
 ///
 /// Builds the JSON payload, sets required headers, and performs retries as needed.
-#[instrument(err, skip_all)]
+#[instrument(
+    name = "health_status",
+    target = "libazureinit::health::status",
+    err,
+    skip_all
+)]
 async fn _report(
     state: ProvisioningState,
     substatus: Option<ProvisioningSubStatus>,
     description: Option<String>,
     config: &Config,
 ) -> Result<(), Error> {
-    // Ensure all health status events in this function have an active span that
-    // the KVP layer can associate with. Using a dedicated span here avoids relying
-    // on upstream span context and keeps KVP emission consistent.
-    let _health_span_guard = tracing::info_span!(
-        target: "libazureinit::health::status",
-        "health_status"
-    )
-    .entered();
     tracing::info!(
         target: "libazureinit::health::status",
-        "Initiating health report to wireserver: statusm,"
+        "Initiating health report to wireserver: {}",
+        state
     );
 
     if let Some(description_str) = &description {
