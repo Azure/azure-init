@@ -36,7 +36,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
 
         delay = current_response.get("delay")
         if delay is not None:
-            logger.info(f"Adding custom delay of {delay} seconds")
+            logger.info(f"Adding custom IDMS delay of {delay} seconds")
             time.sleep(delay)
 
         self.send_response(current_response["status_code"])

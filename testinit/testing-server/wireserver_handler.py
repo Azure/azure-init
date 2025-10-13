@@ -23,10 +23,8 @@ class WireServerHandler(BaseHTTPRequestHandler):
         root = tree.getroot()
 
         cls._responses = []
-        logger.info("PRINTING RESPONSES")
 
         for response_elem in root.findall("response"):
-            logger.info(f"elem {response_elem}")
             response_dict = {}
 
             status_code = response_elem.find("status_code")
@@ -49,9 +47,11 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
             delay_elem = response_elem.find("delay")
             if delay_elem is not None:
-                time.sleep(delay_elem)
+                response_dict["delay"] = delay_elem
 
             cls._responses.append(response_dict)
+
+        logger.info(f"PRINTING RESPONSES {cls._responses}")
 
     def write_custom_response(self):
         responses_list = self._responses
@@ -63,7 +63,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
         delay = current_response.get("delay")
         if delay is not None:
-            logger.info(f"Adding custom delay of {delay} seconds")
+            logger.info(f"Adding custom WireServer delay of {delay} seconds")
             time.sleep(delay)
 
         self.send_response(current_response["status_code"])

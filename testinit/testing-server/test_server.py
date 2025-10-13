@@ -86,6 +86,13 @@ class TestServer:
 
     def start_wireserver_server(self):
         """Start the WireServer HTTP server."""
+        if self.wireserver_responses_file:
+            WireServerHandler.set_response_file_path(self.wireserver_responses_file)
+            WireServerHandler.load_responses()
+            logger.info(
+                f"Wireserver handler will load responses from: {self.wireserver_responses_file}"
+            )
+
         logger.info(f"Starting WireServer on {WIRESERVER_IP}:{WIRESERVER_PORT}")
         self.wireserver_server = HTTPServer(
             (WIRESERVER_IP, WIRESERVER_PORT), WireServerHandler
