@@ -51,7 +51,8 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
             cls._responses.append(response_dict)
 
-        logger.info(f"PRINTING RESPONSES {cls._responses}")
+        logger.info("Outputting loaded custom WireServer responses")
+        logger.info(json.dumps(cls._responses, indent=2))
 
     def write_custom_response(self):
         responses_list = self._responses
@@ -73,7 +74,12 @@ class WireServerHandler(BaseHTTPRequestHandler):
             self.send_header(header_name, header_value)
         self.end_headers()
 
-        response_body = ""
+        response_body = current_response["response"]
+
+        # The official WireServer 200 response is currently 0 bytes long.
+        # Azure-init also only checks the WireServer status code.
+        if response_body is None:
+            response_body = ""
 
         self.wfile.write(response_body.encode())
 
@@ -88,9 +94,8 @@ class WireServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.end_headers()
-        response = '<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>'
+        response = ""
         self.wfile.write(response.encode())
-
         return
 
     def do_POST(self):

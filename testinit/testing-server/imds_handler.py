@@ -24,6 +24,7 @@ class IMDSHandler(BaseHTTPRequestHandler):
 
         cls._responses = cls._responses["responses"]
 
+        logger.info("Outputting loaded custom IMDS responses")
         logger.info(json.dumps(cls._responses, indent=2))
 
     def write_custom_response(self):
