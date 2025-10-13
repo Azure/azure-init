@@ -64,7 +64,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
         delay = current_response.get("delay")
         if delay is not None:
             logger.info(f"Adding custom WireServer delay of {delay} seconds")
-            time.sleep(delay)
+        #            time.sleep(delay)
 
         self.send_response(current_response["status_code"])
 
