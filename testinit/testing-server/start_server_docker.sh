@@ -104,7 +104,7 @@ print_info "Press Ctrl+C to stop the server"
 echo ""
 
 # Start the server and capture its PID
-python3 test_server.py --imds-responses ./api-responses/imds/one-bad-then-success.json --wireserver-responses ./api-responses/wireserver/one-bad-then-success.xml &
+python3 test_server.py --imds-responses ./api-responses/imds/one-bad-then-success.json --wireserver-responses ./api-responses/wireserver/success-200.xml &
 SERVER_PID=$!
 
 # Give the server a moment to start
