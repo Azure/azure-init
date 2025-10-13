@@ -375,15 +375,24 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Give the tracing pipeline time to deliver any pending events
-    // (especially from report_ready/report_failure) to the KVP writer
-    // before triggering shutdown
-    if kvp_completion_rx.is_some() {
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    }
-
+    // Shut down the KVP writer gracefully:
+    // 1. Drop the global subscriber to stop new events from being generated
+    // 2. Wait briefly for any in-flight events to reach the writer
+    // 3. Cancel the graceful_shutdown token to signal the writer to drain and exit
     if let Some(handle) = kvp_completion_rx {
+        // Explicitly drop the global subscriber to ensure no new tracing events
+        // are generated after this point
+        drop(tracing::subscriber::set_default(
+            tracing::subscriber::NoSubscriber::default(),
+        ));
+
+        // Give the tracing pipeline time to deliver any pending events
+        // that were already emitted to the KVP writer before we dropped the subscriber
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Now signal the writer to drain remaining events and shut down
         graceful_shutdown.cancel();
+
         match handle.await {
             Ok(Ok(_)) => {
                 tracing::info!("KVP writer task finished successfully.");
