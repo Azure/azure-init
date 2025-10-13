@@ -3,8 +3,8 @@
   <response>
     <status_code>404</status_code>
     <headers>
-      <header name="Content-Type" value="application/xml"/>
+      <header name="Content-Type" value="text/xml"/>
     </headers>
-    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Error><Code>ResourceNotFound</Code><Message>The requested resource was not found.</Message></Error>]]></response_body>
+    <response_body></response_body>
   </response>
 </responses>
