@@ -151,7 +151,8 @@ async fn _report(
     if let Some(description_str) = &description {
         tracing::info!(
             target: "libazureinit::health::report",
-            health_report = %description_str
+            health_report = %description_str,
+            "Provisioning report: {}", description_str
         );
     }
 
