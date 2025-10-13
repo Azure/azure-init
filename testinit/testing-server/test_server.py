@@ -7,6 +7,7 @@ import signal
 import os
 import sys
 from http.server import HTTPServer
+import xml.etree.ElementTree as ET
 
 from config import WIRESERVER_IP, WIRESERVER_PORT, IMDS_IP, IMDS_PORT, DUMMY_IFACE
 from utils import logger, run_cmd
@@ -18,7 +19,9 @@ from imds_handler import IMDSHandler
 class TestServer:
     """Main test server class that manages network setup and HTTP servers."""
 
-    def __init__(self, imds_responses_file=None, wireserver_responses_file=None):
+    def __init__(
+        self, imds_responses_file: str = None, wireserver_responses_file: str = None
+    ):
         self.imds_server = None
         self.wireserver_server = None
         self.imds_thread = None
@@ -181,7 +184,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def validate_json_file(file_path):
+def validate_json_file(file_path: str):
     """Validate that the file exists and is valid JSON."""
     if not os.path.exists(file_path):
         logger.error(f"JSON file not found: {file_path}")
@@ -199,13 +202,30 @@ def validate_json_file(file_path):
         sys.exit(1)
 
 
+def validate_xml_file(file_path: str):
+    """Validate that the file exists and is valid XML."""
+    if not os.path.exists(file_path):
+        logger.error(f"XML file not found: {file_path}")
+        sys.exit(1)
+
+    try:
+        ET.parse(file_path)
+        logger.info(f"Validated XML file: {file_path}")
+    except ET.ParseError as e:
+        logger.error(f"Invalid XML in file: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error reading file: {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     args = parse_arguments()
 
     if args.imds_responses:
         validate_json_file(args.imds_responses)
-    # if args.wireserver_responses:
-    #     validate_json_file(args.wireserver_responses)
+    if args.wireserver_responses:
+        validate_xml_file(args.wireserver_responses)
 
     signal.signal(signal.SIGINT, signal_handler)
 
