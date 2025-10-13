@@ -5,14 +5,14 @@
     <headers>
       <header name="Content-Type" value="application/xml"/>
     </headers>
-    <response_body></response_body>
+    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Error><Code>InternalServerError</Code><Message>Internal server error.</Message></Error>]]></response_body>
   </response>
   <response>
     <status_code>200</status_code>
     <headers>
       <header name="Content-Type" value="application/xml"/>
     </headers>
-    <response_body></response_body>
+    <response_body><![CDATA[<?xml version="1.0" encoding="utf-8"?><Success><Code>OK</Code><Message>Request completed successfully.</Message></Success>]]></response_body>
     <delay>25</delay>
   </response>
 </responses>
