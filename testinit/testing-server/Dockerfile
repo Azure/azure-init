@@ -29,8 +29,6 @@ ENV PATH="/app/venv/bin:$PATH"
 
 # Add potential delays/timeouts to the mocked servers here with env vars
 # ENV WIRESERVER_GET_DELAY=5
-# ENV IMDS_GET_DELAY=5
-# ENV IMDS_GET_TIMEOUT=True
 # ENV WIRESERVER_GET_TIMEOUT=True
 
 CMD ["./start_server_docker.sh"]

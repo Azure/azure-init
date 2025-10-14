@@ -136,6 +136,13 @@ async fn _report(
     description: Option<String>,
     config: &Config,
 ) -> Result<(), Error> {
+    tracing::info!(
+        target: "libazureinit::health::status",
+        "Beginning report to wireserver: state={}, substatus={:?}",
+        state,
+        substatus
+    );
+
     if let Some(description_str) = &description {
         tracing::info!(
             target: "libazureinit::health::report",

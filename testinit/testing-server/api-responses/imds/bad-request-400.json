@@ -1,0 +1,13 @@
+{
+  "responses": [
+    {
+      "status_code": 400,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "response": {
+        "error": "Bad request."
+      }
+    }
+  ]
+}

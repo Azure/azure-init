@@ -2,7 +2,8 @@
 
 A containerized Azure provisioning agent that simulates Azure Instance Metadata Service (IMDS) and WireServer for testing and development environments.
 
-> **Warning**
+> [!WARNING]
+>
 > Running the ./start-all.sh script will modify your local machine due to how systemd in Docker works!
 > Whenever possible, do not run this system on your personal machine as it completes the full provisioning run found in azure-init.
 > This may affect your local hostname, ssh keys, users, or more.

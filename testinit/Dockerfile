@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     util-linux \
+    openssh-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Disable systemd's unnecessary units for containers
