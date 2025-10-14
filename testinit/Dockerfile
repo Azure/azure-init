@@ -6,7 +6,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 VOLUME [ "/sys/fs/cgroup" ]
 
-RUN apt-get update && apt-get install -y \
+# Conditional package installation for apt-based and rpm-based systems
+RUN if command -v apt-get >/dev/null 2>&1; then \
+    # Debian/Ubuntu (apt-based) \
+    apt-get update && apt-get install -y \
     systemd \
     dbus \
     curl \
@@ -16,7 +19,40 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
     libudev-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf >/dev/null 2>&1; then \
+    # Fedora (dnf-based) \
+    dnf install -y \
+    systemd \
+    dbus \
+    curl \
+    ca-certificates \
+    util-linux \
+    openssh-server \
+    gcc \
+    gcc-c++ \
+    make \
+    pkg-config \
+    libudev-devel \
+    && dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+    # CentOS/RHEL (yum-based) \
+    yum install -y \
+    systemd \
+    dbus \
+    curl \
+    ca-certificates \
+    util-linux \
+    openssh-server \
+    gcc \
+    gcc-c++ \
+    make \
+    pkg-config \
+    libudev-devel \
+    && yum clean all; \
+    else \
+    echo "No supported package manager found" && exit 1; \
+    fi
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
