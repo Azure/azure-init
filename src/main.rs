@@ -377,6 +377,7 @@ async fn main() -> ExitCode {
 
     if let Some(handle) = kvp_completion_rx {
         graceful_shutdown.cancel();
+
         match handle.await {
             Ok(Ok(_)) => {
                 tracing::info!("KVP writer task finished successfully.");
