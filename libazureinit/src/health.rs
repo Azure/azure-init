@@ -129,7 +129,12 @@ pub async fn report_in_progress(
 /// Internal helper that handles all HTTP details for health reporting to the wireserver.
 ///
 /// Builds the JSON payload, sets required headers, and performs retries as needed.
-#[instrument(err, skip_all)]
+#[instrument(
+    name = "health_status",
+    target = "libazureinit::health::status",
+    err,
+    skip_all
+)]
 async fn _report(
     state: ProvisioningState,
     substatus: Option<ProvisioningSubStatus>,
@@ -138,15 +143,15 @@ async fn _report(
 ) -> Result<(), Error> {
     tracing::info!(
         target: "libazureinit::health::status",
-        "Beginning report to wireserver: state={}, substatus={:?}",
-        state,
-        substatus
+        "Initiating health report to wireserver: {}",
+        state
     );
 
     if let Some(description_str) = &description {
         tracing::info!(
             target: "libazureinit::health::report",
-            health_report = %description_str
+            health_report = %description_str,
+            "Provisioning report: {}", description_str
         );
     }
 
