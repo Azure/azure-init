@@ -13,8 +13,14 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     util-linux \
     openssh-server \
-    glibc-source \
+    build-essential \
+    pkg-config \
+    libudev-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Disable systemd's unnecessary units for containers
 RUN systemctl mask dev-hugepages.mount sys-fs-fuse-connections.mount \
@@ -31,8 +37,13 @@ RUN mkdir -p /etc/sudoers.d
 # Create the SSHD directory
 RUN mkdir -p /etc/ssh
 
-COPY target/debug/azure-init /usr/bin/azure-init
-RUN chmod +x /usr/bin/azure-init
+# Copy source code and build azure-init
+COPY . /build
+WORKDIR /build
+RUN cargo build --verbose
+RUN cp target/debug/azure-init /usr/bin/azure-init && chmod +x /usr/bin/azure-init
+
+WORKDIR /
 
 COPY config/azure-init.service /etc/systemd/system/azure-init.service
 RUN systemctl enable azure-init.service

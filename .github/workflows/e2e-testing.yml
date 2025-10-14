@@ -27,28 +27,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
       
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install libudev-dev -y
-          sudo apt install glibc-source -y
-      
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      
-      - name: Build azure-init binary
-        run: |
-          # Install musl target for static linking
-          rustup target add x86_64-unknown-linux-musl
-          sudo apt install -y musl-tools
-          # Build with musl for better compatibility across different glibc versions
-          cargo build --target x86_64-unknown-linux-musl --verbose
-          # Copy musl binary to debug location for Dockerfile
-          mkdir -p target/debug
-          cp target/x86_64-unknown-linux-musl/debug/azure-init target/debug/azure-init
-      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
