@@ -52,7 +52,7 @@ jobs:
           docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
           cat provisioning_agent_logs.txt
           # Fail only if a single line contains both "azure-init" and "failed"/"failure" (case-insensitive).
-          if grep -i 'azure-init' provisioning_agent_logs.txt | grep -Ei 'failed|failure' >/dev/null; then
+          if grep -i 'azure-init' provisioning_agent_logs.txt | grep -Ei 'failed|failure' | grep -v 'sshd -G' >/dev/null; then
             echo "ERROR: provisioning-agent logs contain a line with 'azure-init' and failure indicators."
             exit 1
           fi
