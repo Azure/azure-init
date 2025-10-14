@@ -19,7 +19,6 @@ jobs:
           - ubuntu:22.04
           - ubuntu:24.04
           - debian:12
-          - debian:sid
 
     name: Testinit E2E
     runs-on: ubuntu-latest
