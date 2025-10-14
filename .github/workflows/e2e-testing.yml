@@ -21,7 +21,7 @@ jobs:
           - debian:12
           - debian:sid
 
-    name: End-to-End Testing with Docker
+    name: Testinit E2E
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -30,7 +30,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y libudev-dev
+          sudo apt install libudev-dev -y
+          sudo apt install glibc-source -y
       
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
