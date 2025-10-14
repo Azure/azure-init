@@ -31,6 +31,8 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
     openssh-server \
     gcc \
     gcc-c++ \
+    glibc-devel \
+    binutils \
     make \
     pkg-config \
     libudev-devel \
