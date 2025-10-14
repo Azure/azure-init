@@ -192,6 +192,13 @@ async fn _report(
         .timeout(read_timeout)
         .build()?;
 
+    tracing::info!(
+        target: "libazureinit::health::report",
+        "Cade, body={} headers={:?}",
+        body,
+        headers
+    );
+
     let mut remaining = retry_for;
     while !remaining.is_zero() {
         let (resp, new_remaining) = http::post(
