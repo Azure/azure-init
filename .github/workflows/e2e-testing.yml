@@ -20,6 +20,7 @@ jobs:
           - ubuntu:24.04
           - debian:12
           - debian:13
+          - mcr.microsoft.com/azurelinux/base/core:3.0
 
     name: Testinit E2E
     runs-on: ubuntu-latest
