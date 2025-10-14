@@ -49,16 +49,6 @@ jobs:
         run: |
           echo "Checking if services are running..."
           docker ps -a
-      
-      - name: Test Azure service endpoints
-        run: |
-          echo "Testing IMDS endpoint from within provisioning agent container..."
-          # Test if the IMDS endpoint is accessible from within the container and show response
-          docker exec azureinit-provisioning-agent curl -f http://169.254.169.254/metadata/instance -H "Metadata: true" && echo "IMDS endpoint test completed"
-          
-          echo "Testing WireServer endpoint from within provisioning agent container..."
-          # Test if the WireServer endpoint is accessible from within the container and show response
-          docker exec azureinit-provisioning-agent curl -f http://168.63.129.16/machine && echo "WireServer endpoint test completed"
 
       - name: Print provisioning agent logs
         if: always()
@@ -84,6 +74,11 @@ jobs:
         if: always()
         run: |
           docker exec azureinit-provisioning-agent cat /var/lib/hyperv/.kvp_pool_1
+
+      - name: Output Azure-init log
+        if: always()
+        run: |
+          docker exec azureinit-provisioning-agent cat /var/log/azure-init.log
 
       - name: Cleanup - Stop all services
         if: always()

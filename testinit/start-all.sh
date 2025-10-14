@@ -25,7 +25,7 @@ done
 
 echo "Testing-server is available at the Azure service endpoints:"
 echo "  IMDS: http://169.254.169.254/metadata/instance"
-echo "  WireServer: http://168.63.129.16/machine"
+echo "  WireServer: http://168.63.129.16"
 echo ""
 echo "To view logs:"
 echo "  docker compose logs -f azureinit-provisioning-agent"
