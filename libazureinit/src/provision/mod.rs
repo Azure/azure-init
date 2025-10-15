@@ -68,6 +68,19 @@ impl Provision {
             .ok_or(Error::NoUserProvisioner)
     }
 
+    /// Sets the system hostname using the hostname found in either IMDS or the OVF.
+    ///
+    /// This function iterates over a list of available backends and attempts to
+    /// set the hostname until one succeeds. Currently supported backends include:
+    /// - `Hostnamectl`
+    ///
+    /// Additional hostname provisioners can be set through config files.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the hostname was set successfully by any of the backends.
+    /// Returns `Err(Error::NoHostnameProvisioner)` if no backends was able to set
+    /// the hostname.
     #[instrument(skip_all)]
     pub fn set_hostname(self) -> Result<(), Error> {
         self.config
