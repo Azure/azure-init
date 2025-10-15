@@ -130,12 +130,7 @@ pub async fn report_in_progress(
 /// Internal helper that handles all HTTP details for health reporting to the wireserver.
 ///
 /// Builds the JSON payload, sets required headers, and performs retries as needed.
-#[instrument(
-    name = "health_status",
-    target = "libazureinit::health::status",
-    err,
-    skip_all
-)]
+#[instrument(name = "report_health", err, skip_all)]
 async fn _report(
     state: ProvisioningState,
     substatus: Option<ProvisioningSubStatus>,

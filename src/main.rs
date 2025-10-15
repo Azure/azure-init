@@ -300,9 +300,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    let azure_init_run_span = tracing::info_span!("azure_init_run");
-    let _enter_azure_init_run = azure_init_run_span.enter();
-
     tracing::info!(
         target = "libazureinit::config::success",
         "Final configuration: {:#?}",

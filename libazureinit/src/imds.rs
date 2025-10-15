@@ -174,7 +174,7 @@ const DEFAULT_IMDS_URL: &str =
 ///     Some("http://127.0.0.1:8000/"),
 /// );
 /// ```
-#[instrument(err, skip_all)]
+#[instrument(name = "fetch_imds_metadata", err, skip_all)]
 pub async fn query(
     client: &Client,
     config: Option<&Config>,
