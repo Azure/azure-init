@@ -16,7 +16,6 @@ pub mod media;
 
 mod provision;
 pub use provision::{
-    hostname::hostnamectl,
     password::{lock_user, set_user_password},
     user::User,
     Provision,

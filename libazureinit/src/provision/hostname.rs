@@ -30,7 +30,7 @@ impl HostnameProvisioner {
 /// The binary path is taken from the compile-time `PATH_HOSTNAMECTL`.
 /// Requires sufficient privileges; returns an error if the command fails.
 #[instrument(skip_all)]
-pub fn hostnamectl(hostname: &str) -> Result<(), Error> {
+fn hostnamectl(hostname: &str) -> Result<(), Error> {
     let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 
     let mut command = Command::new(path_hostnamectl);
