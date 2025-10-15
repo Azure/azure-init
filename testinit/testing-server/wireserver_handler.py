@@ -1,93 +1,115 @@
 from http.server import BaseHTTPRequestHandler
-import json
 import time
+import json
+import xml.etree.ElementTree as ET
 
-from config import WIRESERVER_GET_DELAY, WIRESERVER_GET_TIMEOUT
 from utils import logger
-
-MOCK_WIRESERVER_CONFIG = {
-    "version": "2012-11-30",
-    "goalStateIncarnation": "1",
-    "machine": {
-        "expectedState": "Started",
-        "configurationStatus": "Ready"
-    },
-    "container": {
-        "containerId": "12345678-90ab-cdef-1234-567890abcdef",
-        "roleInstanceList": [
-            {
-                "instanceId": "test-vm",
-                "state": "ReadyRole",
-                "configurationName": "test-config"
-            }
-        ]
-    }
-}
 
 
 class WireServerHandler(BaseHTTPRequestHandler):
     """HTTP handler for Azure WireServer requests."""
-    
-    def do_GET(self):
-        """Handle GET requests to WireServer endpoints."""
-        logger.info(f"WireServer GET request: {self.path}")
-        logger.info(f"Headers: {dict(self.headers)}")
 
-        if WIRESERVER_GET_TIMEOUT:
-            logger.info(f"Adding wireserver GET timeout from ENV variable")
-            return
+    _responses_file_path = None
+    _responses = None
+    _response_position = 0
 
-        if WIRESERVER_GET_DELAY != 0:
-            logger.info(f"Adding wireserver GET request delay of {WIRESERVER_GET_DELAY} seconds")
-            time.sleep(WIRESERVER_GET_DELAY)
-        
-        if self.path.startswith('/machine'):
-            # Mock machine configuration endpoint
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/xml')
-            self.end_headers()
-            xml_response = '''<?xml version="1.0" encoding="utf-8"?>
-<GoalState xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="goalstate10.xsd">
-  <Version>2012-11-30</Version>
-  <Incarnation>1</Incarnation>
-  <Machine>
-    <ExpectedState>Started</ExpectedState>
-    <StopRolesDeadlineHint>300000</StopRolesDeadlineHint>
-    <LBProbePorts>
-      <Port>16001</Port>
-    </LBProbePorts>
-  </Machine>
-  <Container>
-    <ContainerId>12345678-90ab-cdef-1234-567890abcdef</ContainerId>
-    <RoleInstanceList>
-      <RoleInstance>
-        <InstanceId>test-vm</InstanceId>
-        <State>ReadyRole</State>
-        <Configuration>
-          <HostingEnvironmentConfig>test-config</HostingEnvironmentConfig>
-        </Configuration>
-      </RoleInstance>
-    </RoleInstanceList>
-  </Container>
-</GoalState>'''
-            self.wfile.write(xml_response.encode())
-        else:
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(MOCK_WIRESERVER_CONFIG).encode())
-    
+    @classmethod
+    def set_response_file_path(cls, file_path: str):
+        cls._responses_file_path = file_path
+
+    @classmethod
+    def load_responses(cls):
+        tree = ET.parse(cls._responses_file_path)
+        root = tree.getroot()
+
+        cls._responses = []
+
+        for response_elem in root.findall("response"):
+            response_dict = {}
+
+            status_code = response_elem.find("status_code")
+            if status_code is not None:
+                response_dict["status_code"] = int(status_code.text)
+
+            headers_elem = response_elem.find("headers")
+            if headers_elem is not None:
+                headers = {}
+                for header in headers_elem.findall("header"):
+                    name = header.get("name")
+                    value = header.get("value")
+                    if name and value:
+                        headers[name] = value
+                response_dict["headers"] = headers
+
+            response_body = response_elem.find("response_body")
+            if response_body is not None:
+                response_dict["response"] = response_body.text
+
+            delay_elem = response_elem.find("delay")
+            if delay_elem is not None:
+                response_dict["delay"] = int(delay_elem.text)
+
+            cls._responses.append(response_dict)
+
+        logger.info("Outputting loaded custom WireServer responses")
+        logger.info(json.dumps(cls._responses, indent=2))
+
+    def write_custom_response(self):
+        responses_list = self._responses
+
+        if self.__class__._response_position >= len(responses_list):
+            self.__class__._response_position = 0
+
+        current_response = responses_list[self.__class__._response_position]
+
+        delay = current_response.get("delay")
+        if delay is not None:
+            logger.info(f"Adding custom WireServer delay of {delay} seconds")
+            time.sleep(delay)
+
+        self.send_response(current_response["status_code"])
+
+        headers = current_response.get("headers", {})
+        for header_name, header_value in headers.items():
+            self.send_header(header_name, header_value)
+        self.end_headers()
+
+        response_body = current_response["response"]
+
+        # The official WireServer 200 response is currently 0 bytes long.
+        # Azure-init also only checks the WireServer status code.
+        if response_body is None:
+            response_body = ""
+
+        self.wfile.write(response_body.encode())
+
+        logger.info(
+            f"Returning response from position: {self.__class__._response_position}"
+        )
+        logger.info(f"Response details:\n{json.dumps(current_response, indent=2)}")
+        self.__class__._response_position += 1
+        return
+
+    def write_default_response(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.end_headers()
+        response = ""
+        self.wfile.write(response.encode())
+        return
+
     def do_POST(self):
         """Handle POST requests to WireServer endpoints."""
-        content_length = int(self.headers.get('Content-Length', 0))
+        content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
-        
+
         logger.info(f"WireServer POST request: {self.path}")
         logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
-        
-        # Mock successful response for any POST
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/xml')
-        self.end_headers()
-        response = '<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>'
-        self.wfile.write(response.encode())
+
+        if self._responses is not None:
+            self.write_custom_response()
+            return
+
+        else:
+            self.write_default_response()
+            return
