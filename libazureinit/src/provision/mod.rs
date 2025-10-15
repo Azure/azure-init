@@ -69,7 +69,7 @@ impl Provision {
     }
 
     #[instrument(skip_all)]
-    pub fn provision_hostname(self) -> Result<(), Error> {
+    pub fn set_hostname(self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
             .backends
@@ -81,8 +81,7 @@ impl Provision {
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or(Error::NoHostnameProvisioner)?;
-        Ok(())
+            .ok_or(Error::NoHostnameProvisioner)
     }
 
     /// Provisioning can fail if the host lacks the necessary tools. For example,
@@ -91,6 +90,8 @@ impl Provision {
     /// partial provisioning.
     #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
+        self.clone().set_hostname()?;
+
         self.config
             .hostname_provisioners
             .backends
