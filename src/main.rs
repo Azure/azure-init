@@ -9,6 +9,7 @@ use libazureinit::{
     error::Error as LibError,
     get_vm_id,
     health::{report_failure, report_ready},
+    hostnamectl,
     imds::{query, InstanceMetadata},
     is_provisioning_complete,
     logging::setup_layers,
@@ -495,14 +496,14 @@ async fn provision(
         get_hostname(instance_metadata.as_ref(), environment.as_ref())?;
 
     let provision = Provision::new(
-        hostname,
+        hostname.to_owned(),
         user,
         config,
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
     );
 
     if opts.set_hostname {
-        provision.provision_hostname()?;
+        hostnamectl(&hostname.clone())?;
     } else {
         provision.provision()?;
     }
