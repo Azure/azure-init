@@ -300,6 +300,9 @@ async fn main() -> ExitCode {
         }
     };
 
+    let azure_init_run_span = tracing::info_span!("azure_init_run");
+    let _enter_azure_init_run = azure_init_run_span.enter();
+
     tracing::info!(
         target = "libazureinit::config::success",
         "Final configuration: {:#?}",
@@ -396,7 +399,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(name = "root", skip_all, ret(level = "info"), err)]
+#[instrument(skip_all, err)]
 async fn provision(
     config: Config,
     vm_id: &str,

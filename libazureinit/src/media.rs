@@ -145,7 +145,7 @@ const MTAB_PATH: &str = "/etc/mtab";
 /// # Returns
 ///
 /// A `Result` containing a vector of device paths as strings, or an `Error`.
-#[instrument]
+#[instrument(skip_all)]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
     let entries = fstab.get_entries()?;
@@ -209,7 +209,7 @@ impl Media<Unmounted> {
     /// # Returns
     ///
     /// A `Result` containing the `Media` instance in the `Mounted` state, or an `Error`.
-    #[instrument]
+    #[instrument(skip_all)]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
 
@@ -257,7 +257,7 @@ impl Media<Mounted> {
     /// # Returns
     ///
     /// A `Result` containing the OVF environment data as a string, or an `Error`.
-    #[instrument]
+    #[instrument(skip_all)]
     pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
         let mut file_path = self.mount_path.clone();
         file_path.push("ovf-env.xml");

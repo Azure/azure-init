@@ -96,6 +96,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
 ///
 /// This function will panic if the request passed cannot be cloned (i.e. the body is a Stream).
 /// Functions wrapping this must ensure to include an additional bound on `Body` (see [`post`]).
+#[instrument(skip_all)]
 async fn request(
     client: &Client,
     request: Request,
@@ -106,7 +107,7 @@ async fn request(
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
+            let span = tracing::info_span!("http_request", attempt, http_status = tracing::field::Empty);
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
                 .execute(req)

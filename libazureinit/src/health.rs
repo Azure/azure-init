@@ -87,6 +87,7 @@ pub fn encode_report(data: &[String]) -> String {
 }
 
 /// Reports provisioning as successfully completed to the wireserver and/or KVP.
+#[instrument(skip_all)]
 pub async fn report_ready(
     config: &Config,
     vm_id: &str,

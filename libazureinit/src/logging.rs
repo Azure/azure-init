@@ -263,7 +263,7 @@ pub fn setup_layers(
     };
 
     let stderr_layer = fmt::layer()
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT | FmtSpan::CLOSE)
         .with_writer(std::io::stderr)
         .with_filter(
             EnvFilter::try_from_env("AZURE_INIT_LOG")
@@ -288,7 +288,9 @@ pub fn setup_layers(
 
             Some(
                 fmt::layer()
-                    .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+                    .with_span_events(
+                        FmtSpan::ENTER | FmtSpan::EXIT | FmtSpan::CLOSE,
+                    )
                     .with_writer(file)
                     .with_filter(
                         EnvFilter::try_from_env("AZURE_INIT_LOG")

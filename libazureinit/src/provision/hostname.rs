@@ -29,7 +29,7 @@ impl HostnameProvisioner {
 ///
 /// The binary path is taken from the compile-time `PATH_HOSTNAMECTL`.
 /// Requires sufficient privileges; returns an error if the command fails.
-#[instrument(skip_all)]
+#[instrument]
 fn hostnamectl(hostname: &str) -> Result<(), Error> {
     let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 
