@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/azure-init --hostname
+ExecStart=/usr/bin/azure-init
 StandardOutput=journal+console
 StandardError=journal+console
 
