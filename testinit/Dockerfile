@@ -6,7 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 VOLUME [ "/sys/fs/cgroup" ]
 
-# Conditional package installation for apt-based, rpm-based, and Azure Linux systems
 RUN if command -v apt-get >/dev/null 2>&1; then \
     # Debian/Ubuntu (apt-based) \
     apt-get update && apt-get install -y \
