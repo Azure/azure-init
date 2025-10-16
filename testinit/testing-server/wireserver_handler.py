@@ -55,7 +55,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info("Outputting loaded custom WireServer responses")
         logger.info(json.dumps(cls._responses, indent=2))
 
-    def log_kvp_file():
+    def log_kvp_file(self):
         kvp_file_path = "/var/lib/hyperv/.kvp_pool_1"
 
         if os.path.exists(kvp_file_path):
