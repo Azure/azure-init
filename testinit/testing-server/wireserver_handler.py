@@ -56,15 +56,14 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info(json.dumps(cls._responses, indent=2))
 
     def log_kvp_file():
-        """Log the entire contents of the KVP pool file."""
-        try:
-            with open("/shared-kvp/.kvp_pool_1", "r") as f:
-                content = f.read()
-                logger.info(f"KVP file contents: \n{content}")
-        except FileNotFoundError:
-            logger.error("KVP file not found at /shared-kvp/.kvp_pool_1")
-        except Exception as e:
-            logger.error(f"Error reading KVP file: {e}")
+        kvp_file_path = "/var/lib/hyperv/.kvp_pool_1"
+
+        if os.path.exists(kvp_file_path):
+            with open(kvp_file_path, "r") as f:
+                kvp_data = f.read()
+                logger.info(f"KVP data: {kvp_data}")
+        else:
+            logger.info("KVP file not found")
 
     def write_custom_response(self):
         responses_list = self._responses

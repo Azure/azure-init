@@ -11,7 +11,8 @@ services:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
-      - /var/lib/hyperv/.kvp_pool_1
+      - kvp_data:/var/lib/hyperv # Add shared volume
+
     stdin_open: true
     tty: true
     container_name: azureinit-provisioning-agent
@@ -24,7 +25,7 @@ services:
       - wireserver-network
 
 volumes:
-  kvp-pool:
+  kvp_data:
 
 
 networks:

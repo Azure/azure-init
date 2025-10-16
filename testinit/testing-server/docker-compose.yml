@@ -11,7 +11,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - kvp-pool:/shared-kvp
+      - kvp_data:/var/lib/hyperv
     networks:
       imds-network:
         ipv4_address: 169.254.169.254
@@ -25,9 +25,8 @@ services:
       start_period: 40s
 
 volumes:
-  kvp-pool:
-    external: true
-    name: testinit_kvp-pool
+  kvp_data:
+
 
 networks:
   imds-network:
