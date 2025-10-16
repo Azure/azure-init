@@ -73,7 +73,7 @@ jobs:
       - name: Output KVP telemetry
         if: always()
         run: |
-          docker exec azureinit-provisioning-agent cat /var/lib/hyperv/.kvp_pool_1
+          docker exec testing-server cat /tmp/testinit.kvp_pool_1
 
       - name: Output Azure-init log
         if: always()

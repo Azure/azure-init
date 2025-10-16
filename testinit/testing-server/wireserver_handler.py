@@ -55,13 +55,20 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info("Outputting loaded custom WireServer responses")
         logger.info(json.dumps(cls._responses, indent=2))
 
-    def log_kvp_file(self):
+    def store_kvp_file(self):
         kvp_file_path = "/var/lib/hyperv/.kvp_pool_1"
+        output_file_path = "/tmp/testinit.kvp_pool_1"
 
         if os.path.exists(kvp_file_path):
             with open(kvp_file_path, "r") as f:
                 kvp_data = f.read()
-                logger.info(f"KVP data: {kvp_data}")
+
+            # Write to output file, overwriting if it exists since this gets
+            # called multiple times with a failure.
+            with open(output_file_path, "w") as f:
+                f.write(kvp_data)
+
+            logger.info(f"KVP data written to {output_file_path}")
         else:
             logger.info("KVP file not found")
 
@@ -117,7 +124,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info(f"WireServer POST request: {self.path}")
         logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
 
-        self.log_kvp_file()
+        self.store_kvp_file()
 
         if self._responses is not None:
             self.write_custom_response()
