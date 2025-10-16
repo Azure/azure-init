@@ -1,6 +1,6 @@
 #!/bin/bash
-sudo mkdir -p /var/lib/hyperv
-sudo touch /var/lib/hyperv/.kvp_pool_1
+# sudo mkdir -p /var/lib/hyperv
+# sudo touch /var/lib/hyperv/.kvp_pool_1
 
 echo "Starting testing-server first (creates networks with Azure IP addresses)..."
 pushd testing-server
