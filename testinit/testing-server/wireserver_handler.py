@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 import time
 import json
+import os
 import xml.etree.ElementTree as ET
 
 from utils import logger
@@ -53,6 +54,17 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
         logger.info("Outputting loaded custom WireServer responses")
         logger.info(json.dumps(cls._responses, indent=2))
+
+    def log_kvp_file():
+        """Log the entire contents of the KVP pool file."""
+        try:
+            with open("/shared-kvp/.kvp_pool_1", "r") as f:
+                content = f.read()
+                logger.info(f"KVP file contents: \n{content}")
+        except FileNotFoundError:
+            logger.error("KVP file not found at /shared-kvp/.kvp_pool_1")
+        except Exception as e:
+            logger.error(f"Error reading KVP file: {e}")
 
     def write_custom_response(self):
         responses_list = self._responses

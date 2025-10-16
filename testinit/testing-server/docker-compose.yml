@@ -10,17 +10,24 @@ services:
       - SYS_MODULE
     ports:
       - "80:80"
+    volumes:
+      - kvp-pool:/shared-kvp
     networks:
       imds-network:
         ipv4_address: 169.254.169.254
       wireserver-network:
         ipv4_address: 168.63.129.16
     healthcheck:
-      test: ["CMD", "curl", "-f", "-H", "Metadata: true", "http://localhost:80/metadata/instance?api-version=2021-02-01"]
+      test: [ "CMD", "curl", "-f", "-H", "Metadata: true", "http://localhost:80/metadata/instance?api-version=2021-02-01" ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  kvp-pool:
+    external: true
+    name: testinit_kvp-pool
 
 networks:
   imds-network:
@@ -30,7 +37,7 @@ networks:
       config:
         - subnet: 169.254.0.0/16
           gateway: 169.254.0.1
-  
+
   wireserver-network:
     driver: bridge
     name: wireserver-network

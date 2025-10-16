@@ -11,6 +11,7 @@ services:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
+      - /var/lib/hyperv/.kvp_pool_1
     stdin_open: true
     tty: true
     container_name: azureinit-provisioning-agent
@@ -21,6 +22,10 @@ services:
     networks:
       - imds-network
       - wireserver-network
+
+volumes:
+  kvp-pool:
+
 
 networks:
   imds-network:
