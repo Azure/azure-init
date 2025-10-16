@@ -300,11 +300,9 @@ async fn main() -> ExitCode {
         }
     };
 
-    tracing::info!(
-        target = "libazureinit::config::success",
-        "Final configuration: {:#?}",
-        config
-    );
+    tracing::info_span!("azure_init_run").in_scope(|| {
+        tracing::info!("Final configuration: {:#?}", config);
+    });
 
     let exit_code = if let Some(Command::Clean { logs }) = opts.command {
         if clean_provisioning_status(&config).is_err()
@@ -315,9 +313,11 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
     } else if is_provisioning_complete(Some(&config), &vm_id) {
-        tracing::info!(
-            "Provisioning already completed earlier. Skipping provisioning."
-        );
+        tracing::info_span!("azure_init_run").in_scope(|| {
+            tracing::info!(
+                "Provisioning already completed earlier. Skipping provisioning."
+            );
+        });
         ExitCode::SUCCESS
     } else {
         let clone_config = config.clone();
