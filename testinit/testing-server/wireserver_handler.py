@@ -118,6 +118,8 @@ class WireServerHandler(BaseHTTPRequestHandler):
         logger.info(f"WireServer POST request: {self.path}")
         logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
 
+        self.log_kvp_file()
+
         if self._responses is not None:
             self.write_custom_response()
             return
