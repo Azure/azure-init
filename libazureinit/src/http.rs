@@ -48,7 +48,7 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
 ];
 
 /// Send an HTTP GET request to the given URL with an empty body.
-#[instrument(err, skip_all)]
+#[instrument(name = "empty_http_get", err, skip_all)]
 pub(crate) async fn get(
     client: &Client,
     headers: HeaderMap,
@@ -65,10 +65,10 @@ pub(crate) async fn get(
     request(client, req, retry_interval, retry_for).await
 }
 
-/// Send an HTTP GET request to the given URL with an empty body.
+/// Send an HTTP POST request to the given URL with the specified body.
 ///
 /// `body` must implement Clone as retries must clone the entire request.
-#[instrument(err, skip_all)]
+#[instrument(name = "http_post", err, skip_all)]
 pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
     client: &Client,
     headers: HeaderMap,
@@ -96,6 +96,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
 ///
 /// This function will panic if the request passed cannot be cloned (i.e. the body is a Stream).
 /// Functions wrapping this must ensure to include an additional bound on `Body` (see [`post`]).
+#[instrument(skip_all)]
 async fn request(
     client: &Client,
     request: Request,
@@ -106,7 +107,7 @@ async fn request(
         let now = std::time::Instant::now();
         let mut attempt =  0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
+            let span = tracing::info_span!("http_request", attempt, http_status = tracing::field::Empty);
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
                 .execute(req)
