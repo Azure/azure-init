@@ -43,12 +43,21 @@ impl Provision {
         }
     }
 
-    /// Provisioning can fail if the host lacks the necessary tools. For example,
-    /// if there is no useradd command on the system's PATH, or if the command
-    /// returns an error, this will return an error. It does not attempt to undo
-    /// partial provisioning.
+    /// Sets the system hostname using the hostname found in either IMDS or the OVF.
+    ///
+    /// This function iterates over a list of available backends and attempts to
+    /// set the hostname until one succeeds. Currently supported backends include:
+    /// - `Hostnamectl`
+    ///
+    /// Additional hostname provisioners can be set through config files.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the hostname was set successfully by any of the backends.
+    /// Returns `Err(Error::NoHostnameProvisioner)` if no backends was able to set
+    /// the hostname.
     #[instrument(skip_all)]
-    pub fn provision(self) -> Result<(), Error> {
+    pub fn set_hostname(self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
             .backends
@@ -60,7 +69,16 @@ impl Provision {
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or(Error::NoHostnameProvisioner)?;
+            .ok_or(Error::NoHostnameProvisioner)
+    }
+
+    /// Provisioning can fail if the host lacks the necessary tools. For example,
+    /// if there is no useradd command on the system's PATH, or if the command
+    /// returns an error, this will return an error. It does not attempt to undo
+    /// partial provisioning.
+    #[instrument(skip_all)]
+    pub fn provision(self) -> Result<(), Error> {
+        self.clone().set_hostname()?;
 
         self.config
             .user_provisioners
