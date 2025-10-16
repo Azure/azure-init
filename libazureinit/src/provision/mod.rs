@@ -81,19 +81,6 @@ impl Provision {
         self.clone().set_hostname()?;
 
         self.config
-            .hostname_provisioners
-            .backends
-            .iter()
-            .find_map(|backend| match backend {
-                HostnameProvisioner::Hostnamectl => {
-                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
-                }
-                #[cfg(test)]
-                HostnameProvisioner::FakeHostnamectl => Some(()),
-            })
-            .ok_or(Error::NoHostnameProvisioner)?;
-
-        self.config
             .user_provisioners
             .backends
             .iter()
