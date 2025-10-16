@@ -11,7 +11,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - kvp_data:/var/lib/hyperv
+      - /var/lib/hyperv:/var/lib/hyperv:rw
     networks:
       imds-network:
         ipv4_address: 169.254.169.254
@@ -23,10 +23,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  kvp_data:
-
 
 networks:
   imds-network:
