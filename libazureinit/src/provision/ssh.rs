@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     process::{Command, Output},
 };
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument};
 
 lazy_static! {
     /// A regular expression to match the `PasswordAuthentication` setting in the SSH configuration.
