@@ -151,7 +151,7 @@ fn run_sshd_command(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
+            error!(
                 code=output.status.code().unwrap_or(-1),
                 stdout=%stdout,
                 stderr=%stderr,
@@ -160,9 +160,9 @@ fn run_sshd_command(
             None
         }
         Err(e) => {
-            warn!(
-                warning=%e,
-                "sshd -G command could not be executed, assuming sshd configuration defaults",
+            error!(
+                error=%e,
+                "Failed to execute sshd -G, assuming sshd configuration defaults",
             );
             None
         }
