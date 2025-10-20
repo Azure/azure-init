@@ -161,7 +161,7 @@ fn run_sshd_command(
         }
         Err(e) => {
             warn!(
-                error=%e,
+                warning=%e,
                 "sshd -G command could not be executed, assuming sshd configuration defaults",
             );
             None
