@@ -155,7 +155,7 @@ fn run_sshd_command(
                 code=output.status.code().unwrap_or(-1),
                 stdout=%stdout,
                 stderr=%stderr,
-                "sshd -G command exited with non-zero code, assuming sshd configuration defaults",
+                "Failed to execute sshd -G, assuming sshd configuration defaults"
             );
             None
         }
