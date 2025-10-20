@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     process::{Command, Output},
 };
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 lazy_static! {
     /// A regular expression to match the `PasswordAuthentication` setting in the SSH configuration.
@@ -151,18 +151,18 @@ fn run_sshd_command(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!(
+            warn!(
                 code=output.status.code().unwrap_or(-1),
                 stdout=%stdout,
                 stderr=%stderr,
-                "Failed to execute sshd -G, assuming sshd configuration defaults"
+                "sshd -G command failed, assuming sshd configuration defaults"
             );
             None
         }
         Err(e) => {
-            error!(
+            warn!(
                 error=%e,
-                "Failed to execute sshd -G, assuming sshd configuration defaults",
+                "sshd -G command could not be executed, assuming sshd configuration defaults",
             );
             None
         }
