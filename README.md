@@ -47,8 +47,7 @@ Azure-init is fully tested and supported on:
 
 These distributions provide full compatibility with all Azure-init features, including SSH configuration detection via `sshd -G`.
 
-**Note:** Ubuntu 22.04 and Debian 12 have a known issue where the `sshd -G` command does execute properly, which can affect SSH key path detection.
-On these older distributions, Azure-init will show a warning in the logs and fall back to default SSH configuration paths.
+**Note:** Ubuntu 22.04 and Debian 12 have a known issue where the `sshd -G` command is not supported and is unable to query the correct path for the SSH keys. In these cases, Azure-init will then show a warning in the logs but fall back to [default SSH configuration paths](./doc/configuration.md#ssh-configuration) to continue .
 
 ## Getting Started
 
