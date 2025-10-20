@@ -334,4 +334,29 @@ mod tests {
             "Should return NoUserProvisioner error"
         );
     }
+
+    #[test]
+    fn test_set_hostname_success() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+        let p = Provision::new(
+            "test-hostname".to_string(),
+            User::new("testuser", vec![]),
+            mock_config,
+            false,
+        );
+
+        let result = p.set_hostname();
+        assert!(result.is_ok());
+    }
 }
