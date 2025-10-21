@@ -396,7 +396,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(skip_all, err)]
+#[instrument(name = "azure_init_provision", skip_all, err)]
 async fn provision(
     config: Config,
     vm_id: &str,
