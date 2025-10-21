@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Accept base image as first argument, default to ubuntu:24.04 if not provided
+BASE_IMAGE=${1:-ubuntu:24.04}
+
+echo "Using base image: $BASE_IMAGE"
 echo "Starting testing-server first (creates networks with Azure IP addresses)..."
 pushd testing-server
 docker compose up -d --build
@@ -7,7 +11,7 @@ docker compose up -d --build
 popd
 
 echo "Starting azureinit-provisioning-agent (connects to existing networks)..."
-docker compose up -d --build
+BASE_IMAGE=$BASE_IMAGE docker compose up -d --build
 
 while true; do
   # Check journal logs for either a success or a failure to ensure the completion of the service
