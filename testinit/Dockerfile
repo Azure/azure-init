@@ -1,18 +1,48 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     container=docker
 
 VOLUME [ "/sys/fs/cgroup" ]
 
-RUN apt-get update && apt-get install -y \
+RUN if command -v apt-get >/dev/null 2>&1; then \
+    # Debian/Ubuntu (apt-based) \
+    apt-get update && apt-get install -y \
     systemd \
     dbus \
     curl \
     ca-certificates \
     util-linux \
     openssh-server \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    build-essential \
+    pkg-config \
+    libudev-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    elif command -v tdnf >/dev/null 2>&1; then \
+    # Azure Linux (tdnf-based) \
+    tdnf install -y \
+    systemd \
+    dbus \
+    curl \
+    ca-certificates \
+    util-linux \
+    openssh-server \
+    gcc \
+    gcc-c++ \
+    glibc-devel \
+    binutils \
+    make \
+    pkg-config \
+    libudev-devel \
+    && tdnf clean all; \
+    else \
+    echo "No supported package manager found" && exit 1; \
+    fi
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Disable systemd's unnecessary units for containers
 RUN systemctl mask dev-hugepages.mount sys-fs-fuse-connections.mount \
@@ -29,8 +59,13 @@ RUN mkdir -p /etc/sudoers.d
 # Create the SSHD directory
 RUN mkdir -p /etc/ssh
 
-COPY target/debug/azure-init /usr/bin/azure-init
-RUN chmod +x /usr/bin/azure-init
+# Copy source code and build azure-init
+COPY . /build
+WORKDIR /build
+RUN cargo build --verbose
+RUN cp target/debug/azure-init /usr/bin/azure-init && chmod +x /usr/bin/azure-init
+
+WORKDIR /
 
 COPY config/azure-init.service /etc/systemd/system/azure-init.service
 RUN systemctl enable azure-init.service
