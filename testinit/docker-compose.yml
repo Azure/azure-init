@@ -3,6 +3,8 @@ services:
     build:
       context: ../
       dockerfile: ./testinit/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:24.04}
     privileged: true
     cgroup: host
     tmpfs:
