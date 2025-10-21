@@ -42,6 +42,17 @@ This will:
 2. Wait for the testing server to be ready
 3. Start the provisioning agent
 
+#### Selecting Images
+
+The `start-all.sh` script also accepts an optional base image parameter for the Azure-init container.
+
+```bash
+./start-all.sh debian:12
+```
+
+Without a base container image argument, `start-all` defaults to Ubuntu 24.04.
+The list of currently tested images can be found in the [e2e testing workflow](/.github/workflows/e2e-testing.yml).
+
 ### Stopping Services
 
 Stop all services and clean up:

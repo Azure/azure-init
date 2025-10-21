@@ -11,27 +11,19 @@ on:
 
 jobs:
   e2e-test:
-    name: End-to-End Testing with Docker
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+          - ubuntu:24.04
+          - debian:13
+          - mcr.microsoft.com/azurelinux/base/core:3.0
+
+    name: Testinit E2E
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-      
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y libudev-dev
-      
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      
-      - name: Build azure-init binary
-        run: |
-          cargo build --verbose
-          # Create target/debug directory structure that Dockerfile expects
-          mkdir -p target/debug
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -42,8 +34,8 @@ jobs:
       - name: Run E2E tests
         run: |
           pushd testinit
-          echo "Starting E2E test environment..."
-          ./start-all.sh
+          echo "Starting E2E test environment with base image: ${{ matrix.container }}"
+          ./start-all.sh "${{ matrix.container }}"
         
       - name: Check service health
         run: |

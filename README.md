@@ -38,6 +38,17 @@ The agent communicates with the Azure Instance Metadata Service (IMDS) to retrie
 
 For a detailed architectural overview, see [Architecture Documentation](doc/architecture.md).
 
+## Supported Distros
+
+Azure-init is fully tested and supported on:
+- Ubuntu 24.04
+- Debian 13
+- Azure Linux 3.0
+
+These distributions provide full compatibility with all Azure-init features, including SSH configuration detection via `sshd -G`.
+
+**Note:** Ubuntu 22.04 and Debian 12 have a known issue where the `sshd -G` command is not supported and is unable to query the correct path for the SSH keys. In these cases, Azure-init will then show a warning in the logs but fall back to [default SSH configuration paths](./doc/configuration.md#ssh-configuration) to continue .
+
 ## Getting Started
 
 For step-by-step instructions on installing, configuring, and using azure-init, please refer to our [Getting Started Guide](doc/getting_started.md).
