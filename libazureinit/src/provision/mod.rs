@@ -10,6 +10,9 @@ use crate::config::{
 };
 use crate::error::Error;
 use crate::User;
+use std::io;
+use std::process::{Command, Output};
+
 use tracing::instrument;
 
 /// The interface for applying the desired configuration to the host.
@@ -68,6 +71,42 @@ impl Provision {
             .ok_or(Error::NoUserProvisioner)
     }
 
+    /// Sets the system hostname with a custom DHCP renewer function.
+    ///
+    /// This version allows dependency injection of the DHCP renewal command for testing.
+    ///
+    /// # Arguments
+    ///
+    /// * `dhcp_renew_command_runner` - A function that runs the DHCP renewal command and returns its output.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the hostname was set successfully and DHCP leases were renewed.
+    /// Returns an error if hostname setting fails or DHCP renewal fails.
+    ///
+    #[instrument(skip_all)]
+    pub fn set_hostname(self) -> Result<(), Error> {
+        #[cfg(not(test))]
+        {
+            self.set_hostname_with_dhcp_renewer(|| {
+                Command::new("systemctl")
+                    .arg("restart")
+                    .arg("systemd-networkd")
+                    .output()
+            })
+        }
+        #[cfg(test)]
+        {
+            self.set_hostname_with_dhcp_renewer(|| {
+                Ok(Output {
+                    status: std::os::unix::process::ExitStatusExt::from_raw(0),
+                    stdout: b"DHCP renewal successful".to_vec(),
+                    stderr: b"".to_vec(),
+                })
+            })
+        }
+    }
+
     /// Sets the system hostname using the hostname found in either IMDS or the OVF.
     ///
     /// This function iterates over a list of available backends and attempts to
@@ -75,6 +114,7 @@ impl Provision {
     /// - `Hostnamectl`
     ///
     /// Additional hostname provisioners can be set through config files.
+    /// This function ends by renewing all DHCP leases.
     ///
     /// # Returns
     ///
@@ -82,7 +122,10 @@ impl Provision {
     /// Returns `Err(Error::NoHostnameProvisioner)` if no backends was able to set
     /// the hostname.
     #[instrument(skip_all)]
-    pub fn set_hostname(self) -> Result<(), Error> {
+    fn set_hostname_with_dhcp_renewer(
+        self,
+        dhcp_renew_command_runner: impl Fn() -> io::Result<Output>,
+    ) -> Result<(), Error> {
         self.config
             .hostname_provisioners
             .backends
@@ -94,7 +137,41 @@ impl Provision {
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or(Error::NoHostnameProvisioner)
+            .ok_or(Error::NoHostnameProvisioner)?;
+
+        Self::renew_dhcp_leases_with_runner(dhcp_renew_command_runner)?;
+
+        Ok(())
+    }
+
+    /// Renews DHCP leases using a custom command runner.
+    ///
+    /// # Arguments
+    ///
+    /// * `dhcp_renew_command_runner` - A function that runs the DHCP renewal command and returns its output.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if DHCP leases were renewed successfully.
+    /// Returns an error if the command fails.
+    #[instrument(skip_all)]
+    fn renew_dhcp_leases_with_runner(
+        dhcp_renew_command_runner: impl Fn() -> io::Result<Output>,
+    ) -> Result<(), Error> {
+        let output = dhcp_renew_command_runner()?;
+
+        if !output.status.success() {
+            tracing::error!(
+                "Failed to renew DHCP leases: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(Error::SubprocessFailed {
+                command: "networkctl renew".to_string(),
+                status: output.status,
+            });
+        }
+
+        Ok(())
     }
 
     /// Provisioning can fail if the host lacks the necessary tools. For example,
