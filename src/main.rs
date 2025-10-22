@@ -74,12 +74,6 @@ struct Cli {
     #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
     show_version: bool,
 
-    #[arg(
-        long = "create-user",
-        help = "Create the admin user and its sudoers file"
-    )]
-    create_user: bool,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -468,18 +462,13 @@ async fn provision(
     let user =
         User::new(username, im.compute.public_keys).with_groups(opts.groups);
 
-    let provision = Provision::new(
+    Provision::new(
         im.compute.os_profile.computer_name,
         user,
         config,
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
-    );
-
-    if opts.create_user {
-        provision.create_user()?;
-    } else {
-        provision.provision()?;
-    }
+    )
+    .provision()?;
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {
