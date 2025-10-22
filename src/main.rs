@@ -75,7 +75,7 @@ struct Cli {
     show_version: bool,
 
     #[arg(
-        long = "create-admin",
+        long = "create-user",
         help = "Create the admin user and its sudoers file"
     )]
     create_user: bool,
