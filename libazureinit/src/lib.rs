@@ -17,6 +17,7 @@ pub mod media;
 mod provision;
 pub use provision::{
     password::{lock_user, set_user_password},
+    ssh::{get_sshd_config_path, update_sshd_config},
     user::User,
     Provision,
 };

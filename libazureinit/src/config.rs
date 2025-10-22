@@ -62,6 +62,12 @@ pub struct Ssh {
     /// If `sshd -G` fails, `azure-init` reports the failure but continues using `authorized_keys_path`.
     /// When `false`, `azure-init` directly uses the `authorized_keys_path` as specified.
     pub query_sshd_config: bool,
+
+    /// When `true`, the library will manage the `PasswordAuthentication` setting
+    /// in the SSH daemon configuration during provisioning. When `false`, SSH
+    /// configuration related to password authentication is not modified by the
+    /// library.
+    pub manage_password_authentication: bool,
 }
 
 impl Default for Ssh {
@@ -69,6 +75,7 @@ impl Default for Ssh {
         Self {
             authorized_keys_path: PathBuf::from(".ssh/authorized_keys"),
             query_sshd_config: true,
+            manage_password_authentication: true,
         }
     }
 }
@@ -675,6 +682,7 @@ mod tests {
         );
 
         assert!(config.ssh.query_sshd_config);
+        assert!(config.ssh.manage_password_authentication);
 
         assert_eq!(
             config.hostname_provisioners.backends,
@@ -762,6 +770,7 @@ mod tests {
             r#"[ssh]
         authorized_keys_path = ".ssh/authorized_keys"
         query_sshd_config = false
+        manage_password_authentication = false
         [user_provisioners]
         backends = ["useradd"]
         [password_provisioners]
@@ -800,6 +809,7 @@ mod tests {
             ".ssh/authorized_keys"
         );
         assert!(!config.ssh.query_sshd_config);
+        assert!(!config.ssh.manage_password_authentication);
 
         tracing::debug!(
             "Verifying default hostname provisioner configuration..."
@@ -880,6 +890,7 @@ mod tests {
             ".ssh/authorized_keys"
         );
         assert!(config.ssh.query_sshd_config);
+        assert!(config.ssh.manage_password_authentication);
 
         tracing::debug!("Verifying default hostname provisioner...");
         assert_eq!(
@@ -966,6 +977,7 @@ mod tests {
             r#"[ssh]
         authorized_keys_path = ".ssh/authorized_keys"
         query_sshd_config = false
+        manage_password_authentication = false
         [user_provisioners]
         backends = ["useradd"]
         [password_provisioners]
@@ -1009,6 +1021,7 @@ mod tests {
             ".ssh/authorized_keys"
         );
         assert!(!config.ssh.query_sshd_config);
+        assert!(!config.ssh.manage_password_authentication);
 
         assert_eq!(
             config.user_provisioners.backends,

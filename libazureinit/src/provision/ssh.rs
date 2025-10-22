@@ -202,14 +202,17 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     None
 }
 
-/// Updates the SSH daemon configuration to ensure `PasswordAuthentication` is set to `yes`.
+/// Updates the SSH daemon configuration to set the `PasswordAuthentication` setting.
 ///
-/// Checks if the `sshd_config` file exists and updates the `PasswordAuthentication`
-/// setting to `yes`. If the file does not exist, it creates a new one with the appropriate setting.
+/// This function is decoupled from password provisioning and can be called independently.
+/// It checks if the `sshd_config` file exists and updates the `PasswordAuthentication`
+/// setting. If the file does not exist, it creates a new one with the appropriate setting.
 ///
 /// # Arguments
 ///
 /// * `sshd_config_path` - A string slice containing the path to the `sshd_config` file.
+/// * `disable_password_authentication` - If true, sets `PasswordAuthentication no`.
+///   If false, sets `PasswordAuthentication yes`.
 ///
 /// # Returns
 ///
@@ -218,7 +221,7 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 /// # Errors
 ///
 /// This function will return an error if it fails to read, write, or create the `sshd_config` file.
-pub(crate) fn update_sshd_config(
+pub fn update_sshd_config(
     sshd_config_path: &str,
     disable_password_authentication: bool,
 ) -> Result<(), io::Error> {
@@ -291,7 +294,7 @@ pub(crate) fn update_sshd_config(
 // Determines the appropriate SSH configuration file path based on the filesystem.
 // If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
 // Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
-pub(crate) fn get_sshd_config_path() -> &'static str {
+pub fn get_sshd_config_path() -> &'static str {
     if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
         "/etc/ssh/sshd_config.d/50-azure-init.conf"
     } else {
