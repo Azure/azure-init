@@ -23,9 +23,9 @@ use tracing::instrument;
 /// user creation, password management, SSH configuration, and SSH key provisioning.
 /// Password operations ([`password::set_user_password`], [`password::lock_user`])
 /// never modify SSH configuration. SSH configuration updates are controlled by
-/// `ssh.manage_password_authentication` (default: `true`).
+/// `ssh.update_sshd_config` (default: `true`).
 ///
-/// To skip SSH configuration updates, either set `ssh.manage_password_authentication = false`
+/// To skip SSH configuration updates, either set `ssh.update_sshd_config = false`
 /// in config, or use [`Provision::provision_without_ssh_config`]. For explicit
 /// control, call [`ssh::update_sshd_config`] and [`ssh::get_sshd_config_path`] directly.
 #[derive(Clone)]
@@ -131,8 +131,7 @@ impl Provision {
     #[instrument(skip_all)]
     fn update_ssh_config(&self) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
-        let ssh_config_update_required =
-            self.config.ssh.manage_password_authentication;
+        let ssh_config_update_required = self.config.ssh.update_sshd_config;
 
         if ssh_config_update_required {
             let sshd_config_path = ssh::get_sshd_config_path();
@@ -182,7 +181,7 @@ impl Provision {
 #[cfg(test)]
 impl Provision {
     fn update_sshd_config(&self) -> bool {
-        self.config.ssh.manage_password_authentication
+        self.config.ssh.update_sshd_config
     }
 }
 
@@ -210,7 +209,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
             ssh: crate::config::Ssh {
-                manage_password_authentication: false,
+                update_sshd_config: false,
                 ..Default::default()
             },
             ..Config::default()
@@ -238,7 +237,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
             ssh: crate::config::Ssh {
-                manage_password_authentication: false,
+                update_sshd_config: false,
                 ..Default::default()
             },
             ..Config::default()
@@ -265,7 +264,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::Passwd],
             },
             ssh: crate::config::Ssh {
-                manage_password_authentication: true,
+                update_sshd_config: true,
                 ..Default::default()
             },
             ..Config::default()
