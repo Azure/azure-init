@@ -134,6 +134,5 @@ Both containers will output all logs they have access to in order to better debu
 ## Next Steps
 
 - Review the [Configuration Guide](configuration.md) for detailed configuration options
-- Learn about the [Architecture](architecture.md) of azure-init
 - Understand the [Tracing System](libazurekvp.md) for monitoring and debugging
 - Explore [End-to-End Testing](e2e_testing.md) for comprehensive testing
