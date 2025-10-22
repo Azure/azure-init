@@ -43,6 +43,15 @@ impl Provision {
         }
     }
 
+    /// Iterates through the configured user provisioners and attempts to create
+    /// the user with the first backend that succeeds. Currently supported
+    /// backends include:
+    /// - Useradd
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
+    /// configured or if all backends fail to create the user.
     #[instrument(skip_all)]
     pub fn create_user(self) -> Result<(), Error> {
         self.config
