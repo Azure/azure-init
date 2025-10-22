@@ -36,8 +36,6 @@ Azure-init consists of two main components:
 
 The agent communicates with the Azure Instance Metadata Service (IMDS) to retrieve VM-specific configuration data, and then applies the appropriate configurations to the Linux system.
 
-For a detailed architectural overview, see [Architecture Documentation](doc/architecture.md).
-
 ## Supported Distros
 
 Azure-init is fully tested and supported on:
@@ -75,7 +73,6 @@ To run the program, you must enter the command `cargo run --bin <binary_name>` a
 | Document | Description |
 |----------|-------------|
 | [Getting Started Guide](doc/getting_started.md) | Step-by-step instructions for new users |
-| [Architecture Overview](doc/architecture.md) | High-level system design and component interactions |
 | [Configuration Guide](doc/configuration.md) | Detailed configuration options and file structure |
 | [Tracing System](doc/libazurekvp.md) | Understanding the telemetry and tracing capabilities |
 | [End-to-End Testing](doc/e2e_testing.md) | How to perform comprehensive system testing |
