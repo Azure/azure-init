@@ -53,7 +53,7 @@ impl Provision {
     /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
     /// configured or if all backends fail to create the user.
     #[instrument(skip_all)]
-    pub fn create_user(self) -> Result<(), Error> {
+    pub fn create_user(&self) -> Result<(), Error> {
         self.config
             .user_provisioners
             .backends
@@ -87,7 +87,7 @@ impl Provision {
             })
             .ok_or(Error::NoHostnameProvisioner)?;
 
-        self.clone().create_user()?;
+        self.create_user()?;
 
         self.config
             .password_provisioners
