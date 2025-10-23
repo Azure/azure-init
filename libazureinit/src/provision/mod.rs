@@ -23,11 +23,10 @@ use tracing::instrument;
 /// user creation, password management, SSH configuration, and SSH key provisioning.
 /// Password operations ([`password::set_user_password`], [`password::lock_user`])
 /// never modify SSH configuration. SSH configuration updates are controlled by
-/// `ssh.update_sshd_config` (default: `true`).
+/// the `ssh.configure_sshd_password_authentication` config setting (default: `true`).
 ///
-/// To skip SSH configuration updates, either set `ssh.update_sshd_config = false`
-/// in config, or use [`Provision::provision_without_ssh_config`]. For explicit
-/// control, call [`ssh::update_sshd_config`] and [`ssh::get_sshd_config_path`] directly.
+/// To skip SSH configuration updates, either set `ssh.configure_sshd_password_authentication = false`
+/// in config, or use [`Provision::provision_without_ssh_config`].
 #[derive(Clone)]
 pub struct Provision {
     hostname: String,
@@ -74,7 +73,7 @@ impl Provision {
     /// Provisions the host without updating SSH configuration.
     ///
     /// Performs hostname, user, password, and SSH key provisioning, but skips
-    /// SSH configuration updates. Use [`ssh::update_sshd_config`] for explicit control.
+    /// SSH configuration updates.
     #[instrument(skip_all)]
     pub fn provision_without_ssh_config(self) -> Result<(), Error> {
         self.provision_core()?;
@@ -131,7 +130,8 @@ impl Provision {
     #[instrument(skip_all)]
     fn update_ssh_config(&self) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
-        let ssh_config_update_required = self.config.ssh.update_sshd_config;
+        let ssh_config_update_required =
+            self.config.ssh.configure_sshd_password_authentication;
 
         if ssh_config_update_required {
             let sshd_config_path = ssh::get_sshd_config_path();
@@ -155,22 +155,18 @@ impl Provision {
     ///
     /// Creates the `.ssh` directory and writes the `authorized_keys` file.
     #[instrument(skip_all)]
-    fn provision_ssh_keys(&self) -> Result<(), Error> {
+    fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
-            let authorized_keys_path =
-                self.config.ssh.authorized_keys_path.clone();
-            let query_sshd_config = self.config.ssh.query_sshd_config;
-
             let user = nix::unistd::User::from_name(&self.user.name)?.ok_or(
                 Error::UserMissing {
-                    user: self.user.name.clone(),
+                    user: self.user.name,
                 },
             )?;
             ssh::provision_ssh(
                 &user,
                 &self.user.ssh_keys,
-                authorized_keys_path,
-                query_sshd_config,
+                &self.config.ssh.authorized_keys_path,
+                self.config.ssh.query_sshd_config,
             )?;
         }
 
@@ -181,7 +177,7 @@ impl Provision {
 #[cfg(test)]
 impl Provision {
     fn update_sshd_config(&self) -> bool {
-        self.config.ssh.update_sshd_config
+        self.config.ssh.configure_sshd_password_authentication
     }
 }
 
@@ -209,7 +205,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
             ssh: crate::config::Ssh {
-                update_sshd_config: false,
+                configure_sshd_password_authentication: false,
                 ..Default::default()
             },
             ..Config::default()
@@ -237,7 +233,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
             ssh: crate::config::Ssh {
-                update_sshd_config: false,
+                configure_sshd_password_authentication: false,
                 ..Default::default()
             },
             ..Config::default()
@@ -264,7 +260,7 @@ mod tests {
                 backends: vec![PasswordProvisioner::Passwd],
             },
             ssh: crate::config::Ssh {
-                update_sshd_config: true,
+                configure_sshd_password_authentication: true,
                 ..Default::default()
             },
             ..Config::default()

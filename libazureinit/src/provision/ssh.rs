@@ -17,7 +17,7 @@ use std::{
     },
     io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 use tracing::{error, info, instrument};
@@ -55,7 +55,7 @@ lazy_static! {
 pub(crate) fn provision_ssh(
     user: &User,
     keys: &[PublicKeys],
-    authorized_keys_path: PathBuf,
+    authorized_keys_path: &Path,
     query_sshd_config: bool,
 ) -> Result<(), Error> {
     let authorized_keys_path = if query_sshd_config {
@@ -204,7 +204,8 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 
 /// Updates the SSH daemon configuration to set the `PasswordAuthentication` setting.
 ///
-/// This function is decoupled from password provisioning and can be called independently.
+/// This is an internal function used by the provisioning system. It is decoupled from
+/// password provisioning logic but is not part of the public API.
 /// It checks if the `sshd_config` file exists and updates the `PasswordAuthentication`
 /// setting. If the file does not exist, it creates a new one with the appropriate setting.
 ///
@@ -221,7 +222,7 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 /// # Errors
 ///
 /// This function will return an error if it fails to read, write, or create the `sshd_config` file.
-pub fn update_sshd_config(
+pub(crate) fn update_sshd_config(
     sshd_config_path: &str,
     disable_password_authentication: bool,
 ) -> Result<(), io::Error> {
@@ -294,7 +295,7 @@ pub fn update_sshd_config(
 // Determines the appropriate SSH configuration file path based on the filesystem.
 // If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
 // Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
-pub fn get_sshd_config_path() -> &'static str {
+pub(crate) fn get_sshd_config_path() -> &'static str {
     if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
         "/etc/ssh/sshd_config.d/50-azure-init.conf"
     } else {
@@ -470,7 +471,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
+        provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
         let ssh_path = user.dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
@@ -509,7 +510,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
+        provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
         let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
         assert_eq!(
@@ -535,11 +536,9 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
-        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
         let mut auth_file =
             std::fs::File::open(user.dir.join(".ssh/xauthorized_keys"))
