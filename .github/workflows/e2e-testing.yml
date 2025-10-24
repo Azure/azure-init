@@ -65,6 +65,7 @@ jobs:
       - name: Output KVP telemetry
         if: always()
         run: |
+          docker exec azure-testing-server sed 's/.*azure-init-0\.1\.1//' /tmp/testinit.kvp_pool_1 > /tmp/testinit.kvp_pool_1
           docker exec azure-testing-server cat /tmp/testinit.kvp_pool_1
 
       - name: Output Azure-init log
