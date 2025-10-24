@@ -19,7 +19,9 @@
 //! - On **reboot**, if the same VM ID exists, provisioning is skipped.
 //! - If the **VM ID changes** (e.g., due to VM cloning), provisioning runs again.
 
+use fs2::FileExt;
 use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -31,7 +33,7 @@ use crate::error::Error;
 ///
 /// If a [`Config`] is provided, this function returns `config.azure_init_data_dir.path`.
 /// Otherwise, it falls back to the default `/var/lib/azure-init/`.
-fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
+pub fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
     config
         .map(|cfg| cfg.azure_init_data_dir.path.clone())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_AZURE_INIT_DATA_DIR))
@@ -215,6 +217,7 @@ pub fn is_provisioning_complete(config: Option<&Config>, vm_id: &str) -> bool {
 /// # Parameters
 /// - `config`: An optional configuration reference used to determine the provisioning directory.
 ///   If `None`, the default provisioning directory defined by `DEFAULT_AZURE_INIT_DATA_DIR` is used.
+/// - `vm_id`: The VM ID for this provisioning instance.
 ///
 /// # Returns
 /// - `Ok(())` if the provisioning status file was successfully created.
@@ -234,7 +237,9 @@ pub fn mark_provisioning_complete(
         .mode(0o600) // Ensures correct permissions from the start
         .open(&file_path)
     {
-        Ok(_) => {
+        Ok(file) => {
+            file.lock_exclusive()?;
+
             tracing::info!(
                 target: "libazureinit::status::success",
                 "Provisioning complete. File created: {}",
@@ -250,6 +255,106 @@ pub fn mark_provisioning_complete(
             return Err(error.into());
         }
     }
+
+    Ok(())
+}
+
+/// Marks provisioning as failed by creating a failure status file with the error report.
+///
+/// This function ensures that the provisioning directory exists and creates a
+/// `{vm_id}.failed` file containing the encoded error report.
+///
+/// # Parameters
+/// - `config`: An optional configuration reference used to determine the provisioning directory.
+///   If `None`, the default provisioning directory defined by `DEFAULT_AZURE_INIT_DATA_DIR` is used.
+/// - `vm_id`: The VM ID for this provisioning instance.
+/// - `error_report`: The encoded error report string to write to the file.
+///
+/// # Returns
+/// - `Ok(())` if the failure status file was successfully created.
+/// - `Err(Error)` if an error occurred while creating the failure file.
+pub fn mark_provisioning_failure(
+    config: Option<&Config>,
+    vm_id: &str,
+    error_report: &str,
+) -> Result<(), Error> {
+    check_provision_dir(config)?;
+    let file_path =
+        get_provisioning_dir(config).join(format!("{vm_id}.failed"));
+
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&file_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+
+            file.lock_exclusive()?;
+
+            writeln!(file, "{error_report}")?;
+            tracing::info!(
+                target: "libazureinit::status::failure",
+                "Provisioning failure recorded. File created: {}",
+                file_path.display()
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                file_path=?file_path,
+                "Failed to create provisioning failure file"
+            );
+            return Err(error.into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks if a provisioning state file has been reported to Azure.
+///
+/// This function reads the file and checks if it contains the "REPORTED" marker
+/// on a line by itself, indicating that the provisioning status has already been
+/// sent to the Azure health endpoint.
+///
+/// # Parameters
+/// - `file_path`: The path to the provisioning state file (`.provisioned` or `.failed`).
+///
+/// # Returns
+/// - `true` if the file contains the "REPORTED" marker.
+/// - `false` if the file does not contain the marker or cannot be read.
+pub fn has_been_reported(file_path: &Path) -> bool {
+    fs::read_to_string(file_path)
+        .map(|content| content.lines().any(|line| line.trim() == "REPORTED"))
+        .unwrap_or(false)
+}
+
+/// Marks a provisioning state file as reported by appending the "REPORTED" marker.
+///
+/// This function appends a new line with "REPORTED" to the file, indicating that
+/// the provisioning status has been successfully sent to the Azure health endpoint.
+///
+/// # Parameters
+/// - `file_path`: The path to the provisioning state file (`.provisioned` or `.failed`).
+///
+/// # Returns
+/// - `Ok(())` if the marker was successfully appended.
+/// - `Err(Error)` if the file could not be opened or written to.
+pub fn mark_reported(file_path: &Path) -> Result<(), Error> {
+    let mut file = OpenOptions::new().append(true).open(file_path)?;
+
+    file.lock_exclusive()?;
+
+    writeln!(file, "REPORTED")?;
+
+    tracing::info!(
+        target: "libazureinit::status::reported",
+        "Marked provisioning status as reported: {}",
+        file_path.display()
+    );
 
     Ok(())
 }
@@ -415,5 +520,111 @@ mod tests {
             "550e8400-e29b-41d4-a716-446655440000",
             "Should not byte-swap for Gen2"
         );
+    }
+
+    #[test]
+    fn test_mark_provisioning_failure() {
+        let (test_config, test_dir) = create_test_config();
+        let vm_id = "00000000-0000-0000-0000-000000000000";
+        let error_report =
+            "result=error|reason=test_failure|vm_id=00000000-0000-0000-0000-000000000000";
+
+        let file_path = test_dir.path().join(format!("{}.failed", vm_id));
+        assert!(
+            !file_path.exists(),
+            "Failed file should not exist before marking"
+        );
+
+        mark_provisioning_failure(Some(&test_config), vm_id, error_report)
+            .unwrap();
+
+        assert!(file_path.exists(), "Failed file should be created");
+
+        // Verify content
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            content.contains(error_report),
+            "File should contain the error report"
+        );
+    }
+
+    #[test]
+    fn test_has_been_reported_false() {
+        let tmpdir = TempDir::new().unwrap();
+        let file_path = tmpdir.path().join("test.provisioned");
+
+        // File with content but no REPORTED marker
+        fs::write(&file_path, "result=success|agent=Azure-Init/test").unwrap();
+
+        assert!(
+            !has_been_reported(&file_path),
+            "Should return false when REPORTED marker is absent"
+        );
+    }
+
+    #[test]
+    fn test_has_been_reported_true() {
+        let tmpdir = TempDir::new().unwrap();
+        let file_path = tmpdir.path().join("test.provisioned");
+
+        // File with REPORTED marker
+        fs::write(&file_path, "result=success|agent=Azure-Init/test\nREPORTED")
+            .unwrap();
+
+        assert!(
+            has_been_reported(&file_path),
+            "Should return true when REPORTED marker is present"
+        );
+    }
+
+    #[test]
+    fn test_has_been_reported_nonexistent_file() {
+        let tmpdir = TempDir::new().unwrap();
+        let file_path = tmpdir.path().join("nonexistent.provisioned");
+
+        assert!(
+            !has_been_reported(&file_path),
+            "Should return false for nonexistent file"
+        );
+    }
+
+    #[test]
+    fn test_mark_reported() {
+        let tmpdir = TempDir::new().unwrap();
+        let file_path = tmpdir.path().join("test.provisioned");
+
+        // Create file with initial content
+        fs::write(&file_path, "result=success|agent=Azure-Init/test").unwrap();
+
+        // Mark as reported
+        mark_reported(&file_path).unwrap();
+
+        // Verify REPORTED marker was added
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            content.contains("REPORTED"),
+            "File should contain REPORTED marker"
+        );
+        assert!(
+            content.starts_with("result=success"),
+            "Original content should be preserved"
+        );
+    }
+
+    // TODO: In theory, trying to mark reported
+    #[test]
+    fn test_mark_reported_idempotent() {
+        let tmpdir = TempDir::new().unwrap();
+        let file_path = tmpdir.path().join("test.provisioned");
+
+        // Create file
+        fs::write(&file_path, "result=success|agent=Azure-Init/test").unwrap();
+
+        // Mark as reported twice
+        mark_reported(&file_path).unwrap();
+        mark_reported(&file_path).unwrap();
+
+        // Verify file still valid
+        assert!(has_been_reported(&file_path));
     }
 }

@@ -79,6 +79,14 @@ pub enum Error {
     LoadSshdConfig { details: String },
     #[error("unhandled error: {details}")]
     UnhandledError { details: String },
+    #[error("VM ID is unavailable")]
+    VmIdUnavailable,
+    #[error("No provisioning state found. Run provisioning first.")]
+    NoProvisioningState,
+    #[error("Provisioning status has already been reported to Azure")]
+    AlreadyReported,
+    #[error("Invalid state file: file is empty or malformed")]
+    InvalidStateFile,
 }
 
 impl From<tokio::time::error::Elapsed> for Error {
