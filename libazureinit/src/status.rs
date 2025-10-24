@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::config::{Config, DEFAULT_AZURE_INIT_DATA_DIR};
 use crate::error::Error;
+use tracing::instrument;
 
 /// This function determines the effective provisioning directory.
 ///
@@ -39,6 +40,7 @@ fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
 
 /// This function checks if the azure-init data directory is present, and if not,
 /// it creates it.
+#[instrument(skip_all)]
 fn check_provision_dir(config: Option<&Config>) -> Result<(), Error> {
     let dir = get_provisioning_dir(config);
     if !dir.exists() {
@@ -130,6 +132,7 @@ pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
 
+#[instrument(skip_all)]
 fn private_get_vm_id(
     product_uuid_path: Option<&str>,
     sysfs_efi_path: Option<&str>,
@@ -195,6 +198,7 @@ fn private_get_vm_id(
 /// # Returns
 /// - `true` if provisioning is complete (i.e., the provisioning file exists).
 /// - `false` if provisioning has not been completed (i.e., no provisioning file exists).
+#[instrument(skip_all)]
 pub fn is_provisioning_complete(config: Option<&Config>, vm_id: &str) -> bool {
     let file_path =
         get_provisioning_dir(config).join(format!("{vm_id}.provisioned"));
@@ -219,6 +223,7 @@ pub fn is_provisioning_complete(config: Option<&Config>, vm_id: &str) -> bool {
 /// # Returns
 /// - `Ok(())` if the provisioning status file was successfully created.
 /// - `Err(Error)` if an error occurred while creating the provisioning file.
+#[instrument(skip_all)]
 pub fn mark_provisioning_complete(
     config: Option<&Config>,
     vm_id: &str,

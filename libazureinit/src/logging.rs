@@ -38,6 +38,7 @@ fn default_kvp_filter() -> Result<EnvFilter, anyhow::Error> {
         [
             "WARN",
             "azure_init=INFO",
+            "libazureinit=INFO",
             "libazureinit::config::success",
             "libazureinit::http::received",
             "libazureinit::http::success",
