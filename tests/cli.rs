@@ -74,8 +74,12 @@ fn setup_clean_test() -> Result<
     let log_file = temp_dir.path().join("azure-init.log");
     fs::create_dir_all(&data_dir)?;
 
+    // Create both .provisioned and .failed files
     let provisioned_file = data_dir.join("vm-id.provisioned");
     File::create(provisioned_file)?;
+
+    let failed_file = data_dir.join("vm-id.failed");
+    fs::write(&failed_file, "result=error|reason=test")?;
 
     let mut log = File::create(&log_file)?;
     writeln!(log, "fake log line")?;
@@ -97,16 +101,21 @@ fn setup_clean_test() -> Result<
     Ok((temp_dir, data_dir, log_file, config_path))
 }
 
-// Ensures that the `clean` command removes only the provisioned file
+// Ensures that the `clean` command removes both .provisioned and .failed files
 #[test]
 fn clean_removes_only_provision_files_without_log_arg(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_temp_dir, _data_dir, log_file, config_path) = setup_clean_test()?;
     let provisioned_file = _data_dir.join("vm-id.provisioned");
+    let failed_file = _data_dir.join("vm-id.failed");
 
     assert!(
         provisioned_file.exists(),
         ".provisioned file should exist before cleaning"
+    );
+    assert!(
+        failed_file.exists(),
+        ".failed file should exist before cleaning"
     );
     assert!(log_file.exists(), "log file should exist before cleaning");
 
@@ -119,22 +128,28 @@ fn clean_removes_only_provision_files_without_log_arg(
         !provisioned_file.exists(),
         "Expected .provisioned file to be deleted"
     );
+    assert!(!failed_file.exists(), "Expected .failed file to be deleted");
     assert!(log_file.exists(), "log file should exist after cleaning");
 
     Ok(())
 }
 
 // Ensures that the `clean` command with the --logs arg
-// removes both the provisioned file and the log file
+// removes both .provisioned, .failed, and log files
 #[test]
 fn clean_removes_provision_and_log_files_with_log_arg(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_temp_dir, _data_dir, log_file, config_path) = setup_clean_test()?;
     let provisioned_file = _data_dir.join("vm-id.provisioned");
+    let failed_file = _data_dir.join("vm-id.failed");
 
     assert!(
         provisioned_file.exists(),
         ".provisioned file should exist before cleaning"
+    );
+    assert!(
+        failed_file.exists(),
+        ".failed file should exist before cleaning"
     );
     assert!(log_file.exists(), "log file should exist before cleaning");
 
@@ -147,10 +162,125 @@ fn clean_removes_provision_and_log_files_with_log_arg(
         !provisioned_file.exists(),
         "Expected .provisioned file to be deleted"
     );
+    assert!(!failed_file.exists(), "Expected .failed file to be deleted");
     assert!(
         !log_file.exists(),
         "Expected azure-init.log file to be deleted"
     );
+
+    Ok(())
+}
+
+// Assert report command exists in help
+#[test]
+fn help_shows_report_command() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.arg("--help");
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("report"))
+        .stdout(predicate::str::contains(
+            "Report provisioning status to Azure",
+        ));
+
+    Ok(())
+}
+
+// Assert report subcommands exist
+#[test]
+fn report_help_shows_subcommands() -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::cargo_bin("azure-init")?;
+    command.args(["report", "--help"]);
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auto"))
+        .stdout(predicate::str::contains("ready"))
+        .stdout(predicate::str::contains("failure"));
+
+    Ok(())
+}
+
+// Test that report auto fails gracefully when no state files exist
+#[test]
+fn report_auto_fails_without_state_files(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let data_dir = temp_dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let config_contents = format!(
+        r#"
+        [azure_init_data_dir]
+        path = "{}"
+        "#,
+        data_dir.display()
+    );
+    let config_path = temp_dir.path().join("azure-init-config.toml");
+    fs::write(&config_path, config_contents)?;
+
+    let mut cmd = Command::cargo_bin("azure-init")?;
+    cmd.args(["--config", config_path.to_str().unwrap(), "report", "auto"]);
+
+    cmd.assert().failure();
+
+    Ok(())
+}
+
+// Test that report ready fails gracefully when no .provisioned file exists
+#[test]
+fn report_ready_fails_without_provisioned_file(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let data_dir = temp_dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let config_contents = format!(
+        r#"
+        [azure_init_data_dir]
+        path = "{}"
+        "#,
+        data_dir.display()
+    );
+    let config_path = temp_dir.path().join("azure-init-config.toml");
+    fs::write(&config_path, config_contents)?;
+
+    let mut cmd = Command::cargo_bin("azure-init")?;
+    cmd.args(["--config", config_path.to_str().unwrap(), "report", "ready"]);
+
+    cmd.assert().failure();
+
+    Ok(())
+}
+
+// Test that report failure fails gracefully when no .failed file exists
+#[test]
+fn report_failure_fails_without_failed_file(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let data_dir = temp_dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let config_contents = format!(
+        r#"
+        [azure_init_data_dir]
+        path = "{}"
+        "#,
+        data_dir.display()
+    );
+    let config_path = temp_dir.path().join("azure-init-config.toml");
+    fs::write(&config_path, config_contents)?;
+
+    let mut cmd = Command::cargo_bin("azure-init")?;
+    cmd.args([
+        "--config",
+        config_path.to_str().unwrap(),
+        "report",
+        "failure",
+    ]);
+
+    cmd.assert().failure();
 
     Ok(())
 }
