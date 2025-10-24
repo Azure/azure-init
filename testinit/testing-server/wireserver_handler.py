@@ -70,7 +70,7 @@ class WireServerHandler(BaseHTTPRequestHandler):
 
             logger.info(f"KVP data written to {output_file_path}")
         else:
-            logger.info("KVP file not found")
+            logger.error("KVP file not found")
 
     def write_custom_response(self):
         responses_list = self._responses
