@@ -11,7 +11,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - /var/lib/hyperv:/var/lib/hyperv:rw
+      - /tmp:/var/lib/hyperv:rw
     networks:
       imds-network:
         ipv4_address: 169.254.169.254

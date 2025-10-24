@@ -13,7 +13,7 @@ services:
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:rw
-      - /var/lib/hyperv:/var/lib/hyperv:rw
+      - /tmp:/var/lib/hyperv:rw
     stdin_open: true
     tty: true
     container_name: azureinit-provisioning-agent

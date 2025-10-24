@@ -65,12 +65,7 @@ jobs:
       - name: Output KVP telemetry
         if: always()
         run: |
-          # These KVP files are extraordinarily long and contain some of the 
-          # host OS's setup because of the mounting process. These are not
-          # relevant to our purposes, so we only need information including,
-          # and after, the first instance of "azure-init"
-          docker exec azure-testing-server sh -c "perl -pe 's/^.*?(azure-init)/\$1/' /tmp/testinit.kvp_pool_1 > /tmp/pruned_testinit.kvp_pool_1"
-          docker exec azure-testing-server cat /tmp/pruned_testinit.kvp_pool_1
+          docker exec azure-testing-server cat /tmp/testinit.kvp_pool_1
 
       - name: Output Azure-init log
         if: always()
