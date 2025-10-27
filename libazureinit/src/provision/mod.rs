@@ -83,49 +83,8 @@ impl Provision {
     ///
     /// Returns `Ok(())` if the hostname was set successfully and DHCP leases were renewed.
     /// Returns an error if hostname setting fails or DHCP renewal fails.
-    ///
     #[instrument(skip_all)]
-    pub fn set_hostname(self) -> Result<(), Error> {
-        #[cfg(not(test))]
-        {
-            self.set_hostname_with_dhcp_renewer(|| {
-                Command::new("systemctl")
-                    .arg("restart")
-                    .arg("systemd-networkd")
-                    .output()
-            })
-        }
-        #[cfg(test)]
-        {
-            self.set_hostname_with_dhcp_renewer(|| {
-                Ok(Output {
-                    status: std::os::unix::process::ExitStatusExt::from_raw(0),
-                    stdout: b"DHCP renewal successful".to_vec(),
-                    stderr: b"".to_vec(),
-                })
-            })
-        }
-    }
-
-    /// Sets the system hostname using the hostname found in either IMDS or the OVF.
-    ///
-    /// This function iterates over a list of available backends and attempts to
-    /// set the hostname until one succeeds. Currently supported backends include:
-    /// - `Hostnamectl`
-    ///
-    /// Additional hostname provisioners can be set through config files.
-    /// This function ends by renewing all DHCP leases.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if the hostname was set successfully by any of the backends.
-    /// Returns `Err(Error::NoHostnameProvisioner)` if no backends was able to set
-    /// the hostname.
-    #[instrument(skip_all)]
-    fn set_hostname_with_dhcp_renewer(
-        self,
-        dhcp_renew_command_runner: impl Fn() -> io::Result<Output>,
-    ) -> Result<(), Error> {
+    pub fn set_hostname(&self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
             .backends
@@ -137,41 +96,7 @@ impl Provision {
                 #[cfg(test)]
                 HostnameProvisioner::FakeHostnamectl => Some(()),
             })
-            .ok_or(Error::NoHostnameProvisioner)?;
-
-        Self::renew_dhcp_leases_with_runner(dhcp_renew_command_runner)?;
-
-        Ok(())
-    }
-
-    /// Renews DHCP leases using a custom command runner.
-    ///
-    /// # Arguments
-    ///
-    /// * `dhcp_renew_command_runner` - A function that runs the DHCP renewal command and returns its output.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if DHCP leases were renewed successfully.
-    /// Returns an error if the command fails.
-    #[instrument(skip_all)]
-    fn renew_dhcp_leases_with_runner(
-        dhcp_renew_command_runner: impl Fn() -> io::Result<Output>,
-    ) -> Result<(), Error> {
-        let output = dhcp_renew_command_runner()?;
-
-        if !output.status.success() {
-            tracing::error!(
-                "Failed to renew DHCP leases: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(Error::SubprocessFailed {
-                command: "networkctl renew".to_string(),
-                status: output.status,
-            });
-        }
-
-        Ok(())
+            .ok_or(Error::NoHostnameProvisioner)
     }
 
     /// Provisioning can fail if the host lacks the necessary tools. For example,
@@ -180,20 +105,7 @@ impl Provision {
     /// partial provisioning.
     #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
-        self.clone().set_hostname()?;
-
-        self.config
-            .hostname_provisioners
-            .backends
-            .iter()
-            .find_map(|backend| match backend {
-                HostnameProvisioner::Hostnamectl => {
-                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
-                }
-                #[cfg(test)]
-                HostnameProvisioner::FakeHostnamectl => Some(()),
-            })
-            .ok_or(Error::NoHostnameProvisioner)?;
+        self.set_hostname()?;
 
         self.create_user()?;
 
@@ -274,6 +186,7 @@ mod tests {
     use crate::config::{
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
+    use crate::error;
     use crate::error::Error;
     use crate::User;
 
@@ -407,7 +320,7 @@ mod tests {
             "create_user should fail with no user provisioners"
         );
         assert!(
-            matches!(result.unwrap_err(), error::Error::NoUserProvisioner),
+            matches!(result.unwrap_err(), Error::NoUserProvisioner),
             "Should return NoUserProvisioner error"
         );
     }
