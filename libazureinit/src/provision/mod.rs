@@ -10,7 +10,6 @@ use crate::config::{
 };
 use crate::error::Error;
 use crate::User;
-
 use tracing::instrument;
 
 /// The interface for applying the desired configuration to the host.
@@ -184,7 +183,6 @@ mod tests {
     use crate::config::{
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
-    use crate::error;
     use crate::error::Error;
     use crate::User;
 

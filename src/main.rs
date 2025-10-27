@@ -491,14 +491,13 @@ async fn provision(
     let hostname =
         get_hostname(instance_metadata.as_ref(), environment.as_ref())?;
 
-    let provision = Provision::new(
+    Provision::new(
         hostname,
         user,
         config,
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
-    );
-
-    provision.provision()?;
+    )
+    .provision()?;
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {
