@@ -68,18 +68,18 @@ impl Provision {
             .ok_or(Error::NoUserProvisioner)
     }
 
-    /// Sets the system hostname with a custom DHCP renewer function.
+    /// Sets the system hostname using the configured hostname provisioners.
     ///
-    /// This version allows dependency injection of the DHCP renewal command for testing.
-    ///
-    /// # Arguments
-    ///
-    /// * `dhcp_renew_command_runner` - A function that runs the DHCP renewal command and returns its output.
+    /// Iterates through the configured hostname provisioner backends and attempts to set
+    /// the hostname with the first backend that succeeds. Currently supported
+    /// backends include:
+    /// - Hostnamectl
     ///
     /// # Returns
     ///
-    /// Returns `Ok(())` if the hostname was set successfully and DHCP leases were renewed.
-    /// Returns an error if hostname setting fails or DHCP renewal fails.
+    /// Returns `Ok(())` if the hostname was set successfully.
+    /// Returns [`Error::NoHostnameProvisioner`] if no hostname provisioner backends are
+    /// configured or if all backends fail to set the hostname.
     #[instrument(skip_all)]
     pub fn set_hostname(&self) -> Result<(), Error> {
         self.config
