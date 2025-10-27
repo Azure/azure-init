@@ -74,9 +74,6 @@ struct Cli {
     #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
     show_version: bool,
 
-    #[arg(long = "hostname", help = "Write the hostname to the hostname file")]
-    set_hostname: bool,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -501,11 +498,7 @@ async fn provision(
         im.compute.os_profile.disable_password_authentication, // from IMDS: controls PasswordAuthentication
     );
 
-    if opts.set_hostname {
-        provision.set_hostname()?;
-    } else {
-        provision.provision()?;
-    }
+    provision.provision()?;
 
     mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
         || {

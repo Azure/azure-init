@@ -10,8 +10,6 @@ use crate::config::{
 };
 use crate::error::Error;
 use crate::User;
-use std::io;
-use std::process::{Command, Output};
 
 use tracing::instrument;
 
