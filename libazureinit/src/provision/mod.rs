@@ -47,7 +47,7 @@ impl Provision {
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
     /// partial provisioning.
-    #[instrument(name = "check_host_for_provisioning", skip_all)]
+    #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         self.config
             .hostname_provisioners

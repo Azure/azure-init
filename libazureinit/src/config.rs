@@ -391,7 +391,7 @@ impl Config {
         )
     }
 
-    #[instrument(name = "load_config", skip_all)]
+    #[instrument(skip_all)]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,

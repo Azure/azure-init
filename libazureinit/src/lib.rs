@@ -46,8 +46,7 @@ pub(crate) fn run(
     mut command: std::process::Command,
 ) -> Result<(), error::Error> {
     let program = command.get_program().to_string_lossy().to_string();
-    let span =
-        tracing::info_span!("libazureinit_subprocess", program = %program);
+    let span = tracing::info_span!("subprocess", program = %program);
     let _entered = span.enter();
 
     tracing::debug!(?command, "About to execute system program");
