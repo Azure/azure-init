@@ -65,7 +65,7 @@ pub(crate) async fn get(
     request(client, req, retry_interval, retry_for).await
 }
 
-/// Send an HTTP GET request to the given URL with an empty body.
+/// Send an HTTP POST request to the given URL with the specified body.
 ///
 /// `body` must implement Clone as retries must clone the entire request.
 #[instrument(err, skip_all)]
@@ -96,6 +96,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
 ///
 /// This function will panic if the request passed cannot be cloned (i.e. the body is a Stream).
 /// Functions wrapping this must ensure to include an additional bound on `Body` (see [`post`]).
+#[instrument(skip_all)]
 async fn request(
     client: &Client,
     request: Request,

@@ -300,11 +300,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    tracing::info!(
-        target = "libazureinit::config::success",
-        "Final configuration: {:#?}",
-        config
-    );
+    tracing::info!("Final configuration: {:#?}", config);
 
     let exit_code = if let Some(Command::Clean { logs }) = opts.command {
         if clean_provisioning_status(&config).is_err()
@@ -396,7 +392,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(name = "root", skip_all, ret(level = "info"), err)]
+#[instrument(skip_all, err)]
 async fn provision(
     config: Config,
     vm_id: &str,

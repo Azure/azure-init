@@ -310,9 +310,10 @@ where
             let event_value =
                 format!("Time: {event_time_dt} | Event: {event_message}");
 
+            let formatted_span_name = format_span_name(span_context);
             self.handle_kvp_operation(
                 event.metadata().level().as_str(),
-                span_context.name(),
+                &formatted_span_name,
                 &span_id.to_string(),
                 &event_value,
             );
@@ -365,9 +366,10 @@ where
                 let event_value =
                     format!("Start: {start_time_dt} | End: {end_time_dt}");
 
+                let formatted_span_name = format_span_name(span_context);
                 self.handle_kvp_operation(
                     span_context.level().as_str(),
-                    span_context.name(),
+                    &formatted_span_name,
                     &span_id.to_string(),
                     &event_value,
                 );
@@ -526,6 +528,31 @@ fn get_uptime() -> Duration {
 
     let uptime_seconds = System::uptime();
     Duration::from_secs(uptime_seconds)
+}
+
+/// Given a span's metadata, this constructs a span name in the format
+/// `module:function`.
+///
+/// # Examples
+/// - Target: `azure_init`, Name: `provision` -> `provision`
+/// - Target: `libazureinit::provision::user`, Name: `create_user` -> `provision:user:create_user`
+fn format_span_name(metadata: &tracing::Metadata<'_>) -> String {
+    let target = metadata.target();
+    let name = metadata.name();
+
+    // Strip common crate prefixes
+    let module_path = target
+        .strip_prefix("libazureinit::")
+        .or_else(|| target.strip_prefix("azure_init::"))
+        .unwrap_or(target);
+
+    // If there's a module path after stripping, format as module:name
+    // Otherwise just use the name
+    if module_path.is_empty() || module_path == target && target == name {
+        name.to_string()
+    } else {
+        format!("{module_path}:{name}")
+    }
 }
 
 #[cfg(test)]
