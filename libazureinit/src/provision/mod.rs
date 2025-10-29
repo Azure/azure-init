@@ -50,6 +50,31 @@ impl Provision {
         }
     }
 
+    /// Iterates through the configured user provisioners and attempts to create
+    /// the user with the first backend that succeeds. Currently supported
+    /// backends include:
+    /// - Useradd
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
+    /// configured or if all backends fail to create the user.
+    #[instrument(skip_all)]
+    pub fn create_user(&self) -> Result<(), Error> {
+        self.config
+            .user_provisioners
+            .backends
+            .iter()
+            .find_map(|backend| match backend {
+                UserProvisioner::Useradd => {
+                    UserProvisioner::Useradd.create(&self.user).ok()
+                }
+                #[cfg(test)]
+                UserProvisioner::FakeUseradd => Some(()),
+            })
+            .ok_or(Error::NoUserProvisioner)
+    }
+
     /// Provisions the host with all configured settings, including SSH configuration.
     ///
     /// Provisioning can fail if the host lacks the necessary tools. For example,
@@ -97,18 +122,7 @@ impl Provision {
             })
             .ok_or(Error::NoHostnameProvisioner)?;
 
-        self.config
-            .user_provisioners
-            .backends
-            .iter()
-            .find_map(|backend| match backend {
-                UserProvisioner::Useradd => {
-                    UserProvisioner::Useradd.create(&self.user).ok()
-                }
-                #[cfg(test)]
-                UserProvisioner::FakeUseradd => Some(()),
-            })
-            .ok_or(Error::NoUserProvisioner)?;
+        self.create_user()?;
 
         self.config
             .password_provisioners
@@ -190,6 +204,7 @@ mod tests {
     use crate::config::{
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
+    use crate::error;
     use crate::User;
 
     #[test]
@@ -272,5 +287,70 @@ mod tests {
             true,
         );
         assert!(p.update_sshd_config());
+    }
+
+    #[test]
+    fn test_create_user_success() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+
+        let test_user = User::new("testuser", vec![])
+            .with_groups(vec!["wheel".to_string(), "docker".to_string()]);
+
+        let provision = Provision::new(
+            "test-hostname".to_string(),
+            test_user,
+            mock_config,
+            false,
+        );
+
+        let result = provision.create_user();
+        assert!(
+            result.is_ok(),
+            "create_user should succeed with FakeUseradd backend"
+        );
+    }
+
+    #[test]
+    fn test_create_user_no_provisioner_failure() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners { backends: vec![] },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+
+        let test_user = User::new("testuser", vec![]);
+
+        let provision = Provision::new(
+            "test-hostname".to_string(),
+            test_user,
+            mock_config,
+            false,
+        );
+
+        let result = provision.create_user();
+        assert!(
+            result.is_err(),
+            "create_user should fail with no user provisioners"
+        );
+        assert!(
+            matches!(result.unwrap_err(), error::Error::NoUserProvisioner),
+            "Should return NoUserProvisioner error"
+        );
     }
 }

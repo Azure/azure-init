@@ -10,7 +10,7 @@ use tempfile::tempdir;
 // Assert help text includes the --groups flag
 #[test]
 fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("azure-init")?;
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     command.arg("--help");
     command
         .assert()
@@ -23,7 +23,7 @@ fn help_groups() -> Result<(), Box<dyn std::error::Error>> {
 // Ensure no password-related flags are exposed by the CLI
 #[test]
 fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("azure-init")?;
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     command.arg("--help");
     command
         .assert()
@@ -36,7 +36,7 @@ fn help_has_no_password_flags() -> Result<(), Box<dyn std::error::Error>> {
 // Assert that the --version flag works and outputs the version
 #[test]
 fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("azure-init")?;
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     command.arg("--version");
     command
         .assert()
@@ -49,7 +49,7 @@ fn version_flag() -> Result<(), Box<dyn std::error::Error>> {
 // Assert that the -V flag works and outputs the version
 #[test]
 fn version_flag_short() -> Result<(), Box<dyn std::error::Error>> {
-    let mut command = Command::cargo_bin("azure-init")?;
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     command.arg("-V");
     command
         .assert()
@@ -110,7 +110,7 @@ fn clean_removes_only_provision_files_without_log_arg(
     );
     assert!(log_file.exists(), "log file should exist before cleaning");
 
-    let mut cmd = Command::cargo_bin("azure-init")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     cmd.args(["--config", config_path.to_str().unwrap(), "clean"]);
 
     cmd.assert().success();
@@ -138,7 +138,7 @@ fn clean_removes_provision_and_log_files_with_log_arg(
     );
     assert!(log_file.exists(), "log file should exist before cleaning");
 
-    let mut cmd = Command::cargo_bin("azure-init")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
     cmd.args(["--config", config_path.to_str().unwrap(), "clean", "--logs"]);
 
     cmd.assert().success();
