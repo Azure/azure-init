@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use fs2::FileExt;
+
 use tracing::{
     field::Visit,
     span::{Attributes, Id},
@@ -119,11 +121,20 @@ impl Kvp {
                 biased;
 
                 Some(encoded_kvp) = events.recv() => {
+                    if let Err(e) = FileExt::lock_exclusive(&file) {
+                        eprintln!("Failed to lock KVP file: {e}. Dropping KVP message.");
+                        continue;
+                    }
+
                     if let Err(e) = file.write_all(&encoded_kvp) {
                         eprintln!("Failed to write to log file: {e}");
                     }
                     if let Err(e) = file.flush() {
                          eprintln!("Failed to flush the log file: {e}");
+                    }
+
+                    if let Err(e) = FileExt::unlock(&file) {
+                        eprintln!("Failed to unlock KVP file: {e}");
                     }
                 }
 
@@ -132,11 +143,20 @@ impl Kvp {
                     // close the channel and drain remaining messages.
                     events.close();
                     while let Some(encoded_kvp) = events.recv().await {
+                        if let Err(e) = FileExt::lock_exclusive(&file) {
+                            eprintln!("Failed to lock KVP file during shutdown: {e}. Dropping KVP message.");
+                            continue;
+                        }
+
                         if let Err(e) = file.write_all(&encoded_kvp) {
                             eprintln!("Failed to write to log file during shutdown: {e}");
                         }
                         if let Err(e) = file.flush() {
                             eprintln!("Failed to flush the log file during shutdown: {e}");
+                        }
+
+                        if let Err(e) = FileExt::unlock(&file) {
+                            eprintln!("Failed to unlock KVP file during shutdown: {e}");
                         }
                     }
                     // All messages are drained, exit the loop.
