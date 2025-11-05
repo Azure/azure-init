@@ -111,6 +111,9 @@ impl Kvp {
     /// Upon receiving the cancellation signal, it stops accepting new events,
     /// drains the `events` channel of any remaining messages, and writes them
     /// to the file before exiting gracefully.
+    ///
+    /// KVP messages are batched together to minimize the number of lock/unlock
+    /// and flush operations, improving efficiency.
     async fn kvp_writer(
         mut file: File,
         mut events: UnboundedReceiver<Vec<u8>>,
@@ -121,20 +124,14 @@ impl Kvp {
                 biased;
 
                 Some(encoded_kvp) = events.recv() => {
-                    if let Err(e) = FileExt::lock_exclusive(&file) {
-                        eprintln!("Failed to lock KVP file: {e}. Dropping KVP message.");
-                        continue;
+                    // Collect this message and any other immediately available ones
+                    let mut batch = vec![encoded_kvp];
+                    while let Ok(kvp) = events.try_recv() {
+                        batch.push(kvp);
                     }
 
-                    if let Err(e) = file.write_all(&encoded_kvp) {
-                        eprintln!("Failed to write to log file: {e}");
-                    }
-                    if let Err(e) = file.flush() {
-                         eprintln!("Failed to flush the log file: {e}");
-                    }
-
-                    if let Err(e) = FileExt::unlock(&file) {
-                        eprintln!("Failed to unlock KVP file: {e}");
+                    if let Err(e) = Self::write_kvps(&mut file, &batch) {
+                        eprintln!("Failed to write KVP batch: {e}");
                     }
                 }
 
@@ -142,29 +139,59 @@ impl Kvp {
                     // Shutdown signal received.
                     // close the channel and drain remaining messages.
                     events.close();
+
+                    let mut batch = Vec::new();
                     while let Some(encoded_kvp) = events.recv().await {
-                        if let Err(e) = FileExt::lock_exclusive(&file) {
-                            eprintln!("Failed to lock KVP file during shutdown: {e}. Dropping KVP message.");
-                            continue;
-                        }
+                        batch.push(encoded_kvp);
+                    }
 
-                        if let Err(e) = file.write_all(&encoded_kvp) {
-                            eprintln!("Failed to write to log file during shutdown: {e}");
-                        }
-                        if let Err(e) = file.flush() {
-                            eprintln!("Failed to flush the log file during shutdown: {e}");
-                        }
-
-                        if let Err(e) = FileExt::unlock(&file) {
-                            eprintln!("Failed to unlock KVP file during shutdown: {e}");
+                    if !batch.is_empty() {
+                        if let Err(e) = Self::write_kvps(&mut file, &batch) {
+                            eprintln!("Failed to write KVP batch during shutdown: {e}");
                         }
                     }
+
                     // All messages are drained, exit the loop.
                     break;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Writes a batch of KVP messages to the file with a single lock/unlock cycle.
+    ///
+    /// This method takes the exclusive lock once, writes all messages in the batch,
+    /// flushes once, and then unlocks.
+    ///
+    /// # Arguments
+    /// * `file` - A mutable reference to the file to write to.
+    /// * `kvps` - A slice of encoded KVP messages to write.
+    fn write_kvps(file: &mut File, kvps: &[Vec<u8>]) -> io::Result<()> {
+        FileExt::lock_exclusive(file).map_err(|e| {
+            io::Error::other(format!("Failed to lock KVP file: {e}"))
+        })?;
+
+        let write_result = (|| -> io::Result<()> {
+            for kvp in kvps {
+                file.write_all(kvp)?;
+            }
+            file.flush()
+        })();
+
+        let unlock_result = FileExt::unlock(file).map_err(|e| {
+            io::Error::other(format!("Failed to unlock KVP file: {e}"))
+        });
+
+        // Make sure the exclusive lock is released even when writing or flushing fails.
+        if let Err(err) = write_result {
+            if let Err(ref unlock_err) = unlock_result {
+                eprintln!("Failed to unlock KVP file after write failure: {unlock_err}");
+            }
+            return Err(err);
+        }
+
+        unlock_result
     }
 }
 
