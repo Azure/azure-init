@@ -25,8 +25,8 @@ use tracing::instrument;
 /// never modify SSH configuration. SSH configuration updates are controlled by
 /// the `ssh.configure_sshd_password_authentication` config setting (default: `true`).
 ///
-/// To skip SSH configuration updates, either set `ssh.configure_sshd_password_authentication = false`
-/// in config, or use [`Provision::provision_without_ssh_config`].
+/// To skip SSH configuration updates, set `ssh.configure_sshd_password_authentication = false`
+/// in config.
 #[derive(Clone)]
 pub struct Provision {
     hostname: String,
@@ -92,17 +92,6 @@ impl Provision {
         // Provision SSH keys
         self.provision_ssh_keys()?;
 
-        Ok(())
-    }
-
-    /// Provisions the host without updating SSH configuration.
-    ///
-    /// Performs hostname, user, password, and SSH key provisioning, but skips
-    /// SSH configuration updates.
-    #[instrument(skip_all)]
-    pub fn provision_without_ssh_config(self) -> Result<(), Error> {
-        self.provision_core()?;
-        self.provision_ssh_keys()?;
         Ok(())
     }
 
