@@ -1,5 +1,7 @@
 #!/bin/bash
 
+mkdir -p /tmp/testinit
+
 # Accept base image as first argument, default to ubuntu:24.04 if not provided
 BASE_IMAGE=${1:-ubuntu:24.04}
 
