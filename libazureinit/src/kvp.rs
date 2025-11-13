@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use fs2::FileExt;
+
 use tracing::{
     field::Visit,
     span::{Attributes, Id},
@@ -109,6 +111,9 @@ impl Kvp {
     /// Upon receiving the cancellation signal, it stops accepting new events,
     /// drains the `events` channel of any remaining messages, and writes them
     /// to the file before exiting gracefully.
+    ///
+    /// KVP messages are batched together to minimize the number of lock/unlock
+    /// and flush operations, improving efficiency.
     async fn kvp_writer(
         mut file: File,
         mut events: UnboundedReceiver<Vec<u8>>,
@@ -119,11 +124,14 @@ impl Kvp {
                 biased;
 
                 Some(encoded_kvp) = events.recv() => {
-                    if let Err(e) = file.write_all(&encoded_kvp) {
-                        eprintln!("Failed to write to log file: {e}");
+                    // Collect this message and any other immediately available ones
+                    let mut batch = vec![encoded_kvp];
+                    while let Ok(kvp) = events.try_recv() {
+                        batch.push(kvp);
                     }
-                    if let Err(e) = file.flush() {
-                         eprintln!("Failed to flush the log file: {e}");
+
+                    if let Err(e) = Self::write_kvps(&mut file, &batch) {
+                        eprintln!("Failed to write KVP batch: {e}");
                     }
                 }
 
@@ -131,20 +139,59 @@ impl Kvp {
                     // Shutdown signal received.
                     // close the channel and drain remaining messages.
                     events.close();
+
+                    let mut batch = Vec::new();
                     while let Some(encoded_kvp) = events.recv().await {
-                        if let Err(e) = file.write_all(&encoded_kvp) {
-                            eprintln!("Failed to write to log file during shutdown: {e}");
-                        }
-                        if let Err(e) = file.flush() {
-                            eprintln!("Failed to flush the log file during shutdown: {e}");
+                        batch.push(encoded_kvp);
+                    }
+
+                    if !batch.is_empty() {
+                        if let Err(e) = Self::write_kvps(&mut file, &batch) {
+                            eprintln!("Failed to write KVP batch during shutdown: {e}");
                         }
                     }
+
                     // All messages are drained, exit the loop.
                     break;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Writes a batch of KVP messages to the file with a single lock/unlock cycle.
+    ///
+    /// This method takes the exclusive lock once, writes all messages in the batch,
+    /// flushes once, and then unlocks.
+    ///
+    /// # Arguments
+    /// * `file` - A mutable reference to the file to write to.
+    /// * `kvps` - A slice of encoded KVP messages to write.
+    fn write_kvps(file: &mut File, kvps: &[Vec<u8>]) -> io::Result<()> {
+        FileExt::lock_exclusive(file).map_err(|e| {
+            io::Error::other(format!("Failed to lock KVP file: {e}"))
+        })?;
+
+        let write_result = (|| -> io::Result<()> {
+            for kvp in kvps {
+                file.write_all(kvp)?;
+            }
+            file.flush()
+        })();
+
+        let unlock_result = FileExt::unlock(file).map_err(|e| {
+            io::Error::other(format!("Failed to unlock KVP file: {e}"))
+        });
+
+        // Make sure the exclusive lock is released even when writing or flushing fails.
+        if let Err(err) = write_result {
+            if let Err(ref unlock_err) = unlock_result {
+                eprintln!("Failed to unlock KVP file after write failure: {unlock_err}");
+            }
+            return Err(err);
+        }
+
+        unlock_result
     }
 }
 
@@ -310,9 +357,10 @@ where
             let event_value =
                 format!("Time: {event_time_dt} | Event: {event_message}");
 
+            let formatted_span_name = format_span_name(span_context);
             self.handle_kvp_operation(
                 event.metadata().level().as_str(),
-                span_context.name(),
+                &formatted_span_name,
                 &span_id.to_string(),
                 &event_value,
             );
@@ -365,9 +413,10 @@ where
                 let event_value =
                     format!("Start: {start_time_dt} | End: {end_time_dt}");
 
+                let formatted_span_name = format_span_name(span_context);
                 self.handle_kvp_operation(
                     span_context.level().as_str(),
-                    span_context.name(),
+                    &formatted_span_name,
                     &span_id.to_string(),
                     &event_value,
                 );
@@ -526,6 +575,31 @@ fn get_uptime() -> Duration {
 
     let uptime_seconds = System::uptime();
     Duration::from_secs(uptime_seconds)
+}
+
+/// Given a span's metadata, this constructs a span name in the format
+/// `module:function`.
+///
+/// # Examples
+/// - Target: `azure_init`, Name: `provision` -> `provision`
+/// - Target: `libazureinit::provision::user`, Name: `create_user` -> `provision:user:create_user`
+fn format_span_name(metadata: &tracing::Metadata<'_>) -> String {
+    let target = metadata.target();
+    let name = metadata.name();
+
+    // Strip common crate prefixes
+    let module_path = target
+        .strip_prefix("libazureinit::")
+        .or_else(|| target.strip_prefix("azure_init::"))
+        .unwrap_or(target);
+
+    // If there's a module path after stripping, format as module:name
+    // Otherwise just use the name
+    if module_path.is_empty() || module_path == target && target == name {
+        name.to_string()
+    } else {
+        format!("{module_path}:{name}")
+    }
 }
 
 #[cfg(test)]

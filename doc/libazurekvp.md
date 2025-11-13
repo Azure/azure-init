@@ -87,7 +87,7 @@ To instrument code with tracing, use the `#[instrument]` attribute on functions:
 ```rust
 use tracing::{instrument, Level, event};
 
-#[instrument(name = "provision_user", fields(user_id = ?user.id))]
+#[instrument(fields(user_id = ?user.id))]
 async fn provision_user(user: User) -> Result<(), Error> {
     event!(Level::INFO, "Starting user provisioning");
     
