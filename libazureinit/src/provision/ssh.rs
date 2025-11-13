@@ -51,7 +51,7 @@ lazy_static! {
 ///
 /// This function will return an error if it fails to create the `.ssh` directory, set permissions,
 /// or write to the `authorized_keys` file.
-#[instrument(skip_all, name = "ssh")]
+#[instrument(skip_all)]
 pub(crate) fn provision_ssh(
     user: &User,
     keys: &[PublicKeys],
@@ -115,6 +115,7 @@ pub(crate) fn provision_ssh(
 ///
 /// This function returns a path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
+#[instrument(skip_all)]
 fn get_authorized_keys_path_from_sshd(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<String> {
@@ -136,6 +137,7 @@ fn get_authorized_keys_path_from_sshd(
 /// # Returns
 ///
 /// This function returns an output of the command.
+#[instrument(skip_all)]
 fn run_sshd_command(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<Output> {
@@ -182,6 +184,7 @@ fn run_sshd_command(
 ///
 /// This function returns an `Option<String>` containing the path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
+#[instrument(skip_all)]
 fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(stdout);
     for line in output.lines() {
@@ -221,7 +224,8 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 ///
 /// # Errors
 ///
-/// This function will return an error if it fails to read, write, or create the `sshd_config` file.
+/// This function will return an error if it fails to read, write, or create the `sshd_config` file
+#[instrument(skip_all)]
 pub(crate) fn update_sshd_config(
     sshd_config_path: &str,
     disable_password_authentication: bool,

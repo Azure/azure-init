@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{fmt, fs};
 use toml;
-use tracing;
+use tracing::instrument;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -398,6 +398,7 @@ impl Config {
         )
     }
 
+    #[instrument(skip_all)]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,
@@ -449,6 +450,7 @@ impl Config {
     }
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
+    #[instrument(skip_all)]
     fn merge_toml_directory(
         mut figment: Figment,
         dir_path: PathBuf,
