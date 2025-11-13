@@ -17,7 +17,7 @@ use std::{
     },
     io::{self, Read, Write},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 use tracing::{error, info, instrument};
@@ -55,7 +55,7 @@ lazy_static! {
 pub(crate) fn provision_ssh(
     user: &User,
     keys: &[PublicKeys],
-    authorized_keys_path: PathBuf,
+    authorized_keys_path: &Path,
     query_sshd_config: bool,
 ) -> Result<(), Error> {
     let authorized_keys_path = if query_sshd_config {
@@ -205,14 +205,18 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     None
 }
 
-/// Updates the SSH daemon configuration to ensure `PasswordAuthentication` is set to `yes`.
+/// Updates the SSH daemon configuration to set the `PasswordAuthentication` setting.
 ///
-/// Checks if the `sshd_config` file exists and updates the `PasswordAuthentication`
-/// setting to `yes`. If the file does not exist, it creates a new one with the appropriate setting.
+/// This is an internal function used by the provisioning system. It is decoupled from
+/// password provisioning logic but is not part of the public API.
+/// It checks if the `sshd_config` file exists and updates the `PasswordAuthentication`
+/// setting. If the file does not exist, it creates a new one with the appropriate setting.
 ///
 /// # Arguments
 ///
 /// * `sshd_config_path` - A string slice containing the path to the `sshd_config` file.
+/// * `disable_password_authentication` - If true, sets `PasswordAuthentication no`.
+///   If false, sets `PasswordAuthentication yes`.
 ///
 /// # Returns
 ///
@@ -471,7 +475,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
+        provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
         let ssh_path = user.dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
@@ -510,7 +514,7 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys, authorized_keys_path, false).unwrap();
+        provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
         let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
         assert_eq!(
@@ -536,11 +540,9 @@ mod tests {
 
         let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
 
-        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
-        provision_ssh(&user, &keys[1..], authorized_keys_path.clone(), false)
-            .unwrap();
+        provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
         let mut auth_file =
             std::fs::File::open(user.dir.join(".ssh/xauthorized_keys"))
