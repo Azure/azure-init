@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 pub mod hostname;
 pub mod password;
-pub(crate) mod ssh;
+pub mod ssh;
 pub mod user;
 
 use crate::config::{
@@ -19,7 +19,14 @@ use tracing::instrument;
 /// `*_provisioners()` methods ([`Provision::hostname_provisioners`],
 /// [`Provision::user_provisioners`], etc).
 ///
-/// To actually apply the configuration, use [`Provision::provision`].
+/// [`Provision::provision`] performs the complete provisioning flow: hostname,
+/// user creation, password management, SSH configuration, and SSH key provisioning.
+/// Password operations ([`password::set_user_password`], [`password::lock_user`])
+/// never modify SSH configuration. SSH configuration updates are controlled by
+/// the `ssh.configure_sshd_password_authentication` config setting (default: `true`).
+///
+/// To skip SSH configuration updates, set `ssh.configure_sshd_password_authentication = false`
+/// in config.
 #[derive(Clone)]
 pub struct Provision {
     hostname: String,
@@ -96,12 +103,29 @@ impl Provision {
             .ok_or(Error::NoHostnameProvisioner)
     }
 
+    /// Provisions the host with all configured settings, including SSH configuration.
+    ///
     /// Provisioning can fail if the host lacks the necessary tools. For example,
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
     /// partial provisioning.
     #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
+        // Provision core resources (hostname, user, password)
+        self.provision_core()?;
+
+        // Update SSH configuration (separate from password provisioning)
+        self.update_ssh_config()?;
+
+        // Provision SSH keys
+        self.provision_ssh_keys()?;
+
+        Ok(())
+    }
+
+    /// Internal helper to provision core resources.
+    #[instrument(skip_all)]
+    fn provision_core(&self) -> Result<(), Error> {
         self.set_hostname()?;
 
         self.create_user()?;
@@ -119,13 +143,15 @@ impl Provision {
             })
             .ok_or(Error::NoPasswordProvisioner)?;
 
-        // update sshd_config based on IMDS disablePasswordAuthentication value.
-        let ssh_config_update_required = self
-            .config
-            .password_provisioners
-            .backends
-            .first()
-            .is_some_and(|b| matches!(b, PasswordProvisioner::Passwd));
+        Ok(())
+    }
+
+    /// Updates SSH configuration based on the `disable_password_authentication` flag.
+    #[instrument(skip_all)]
+    fn update_ssh_config(&self) -> Result<(), Error> {
+        // Only update SSH config if explicitly enabled via config.
+        let ssh_config_update_required =
+            self.config.ssh.configure_sshd_password_authentication;
 
         if ssh_config_update_required {
             let sshd_config_path = ssh::get_sshd_config_path();
@@ -142,10 +168,15 @@ impl Provision {
             }
         }
 
-        if !self.user.ssh_keys.is_empty() {
-            let authorized_keys_path = self.config.ssh.authorized_keys_path;
-            let query_sshd_config = self.config.ssh.query_sshd_config;
+        Ok(())
+    }
 
+    /// Provisions SSH keys for the user.
+    ///
+    /// Creates the `.ssh` directory and writes the `authorized_keys` file.
+    #[instrument(skip_all)]
+    fn provision_ssh_keys(self) -> Result<(), Error> {
+        if !self.user.ssh_keys.is_empty() {
             let user = nix::unistd::User::from_name(&self.user.name)?.ok_or(
                 Error::UserMissing {
                     user: self.user.name,
@@ -154,8 +185,8 @@ impl Provision {
             ssh::provision_ssh(
                 &user,
                 &self.user.ssh_keys,
-                authorized_keys_path,
-                query_sshd_config,
+                &self.config.ssh.authorized_keys_path,
+                self.config.ssh.query_sshd_config,
             )?;
         }
 
@@ -166,11 +197,7 @@ impl Provision {
 #[cfg(test)]
 impl Provision {
     fn update_sshd_config(&self) -> bool {
-        self.config
-            .password_provisioners
-            .backends
-            .first()
-            .is_some_and(|b| matches!(b, PasswordProvisioner::Passwd))
+        self.config.ssh.configure_sshd_password_authentication
     }
 }
 
@@ -198,6 +225,10 @@ mod tests {
             password_provisioners: PasswordProvisioners {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
+            ssh: crate::config::Ssh {
+                configure_sshd_password_authentication: false,
+                ..Default::default()
+            },
             ..Config::default()
         };
         let _p = Provision::new(
@@ -222,6 +253,10 @@ mod tests {
             password_provisioners: PasswordProvisioners {
                 backends: vec![PasswordProvisioner::FakePasswd],
             },
+            ssh: crate::config::Ssh {
+                configure_sshd_password_authentication: false,
+                ..Default::default()
+            },
             ..Config::default()
         };
         let p = Provision::new(
@@ -244,6 +279,10 @@ mod tests {
             },
             password_provisioners: PasswordProvisioners {
                 backends: vec![PasswordProvisioner::Passwd],
+            },
+            ssh: crate::config::Ssh {
+                configure_sshd_password_authentication: true,
+                ..Default::default()
             },
             ..Config::default()
         };
