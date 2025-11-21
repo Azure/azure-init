@@ -75,6 +75,34 @@ impl Provision {
             .ok_or(Error::NoUserProvisioner)
     }
 
+    /// Sets the system hostname using the configured hostname provisioners.
+    ///
+    /// Iterates through the configured hostname provisioner backends and attempts to set
+    /// the hostname with the first backend that succeeds. Currently supported
+    /// backends include:
+    /// - Hostnamectl
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the hostname was set successfully.
+    /// Returns [`Error::NoHostnameProvisioner`] if no hostname provisioner backends are
+    /// configured or if all backends fail to set the hostname.
+    #[instrument(skip_all)]
+    pub fn set_hostname(&self) -> Result<(), Error> {
+        self.config
+            .hostname_provisioners
+            .backends
+            .iter()
+            .find_map(|backend| match backend {
+                HostnameProvisioner::Hostnamectl => {
+                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
+                }
+                #[cfg(test)]
+                HostnameProvisioner::FakeHostnamectl => Some(()),
+            })
+            .ok_or(Error::NoHostnameProvisioner)
+    }
+
     /// Provisions the host with all configured settings, including SSH configuration.
     ///
     /// Provisioning can fail if the host lacks the necessary tools. For example,
@@ -98,18 +126,7 @@ impl Provision {
     /// Internal helper to provision core resources.
     #[instrument(skip_all)]
     fn provision_core(&self) -> Result<(), Error> {
-        self.config
-            .hostname_provisioners
-            .backends
-            .iter()
-            .find_map(|backend| match backend {
-                HostnameProvisioner::Hostnamectl => {
-                    HostnameProvisioner::Hostnamectl.set(&self.hostname).ok()
-                }
-                #[cfg(test)]
-                HostnameProvisioner::FakeHostnamectl => Some(()),
-            })
-            .ok_or(Error::NoHostnameProvisioner)?;
+        self.set_hostname()?;
 
         self.create_user()?;
 
@@ -193,7 +210,7 @@ mod tests {
     use crate::config::{
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
-    use crate::error;
+    use crate::error::Error;
     use crate::User;
 
     #[test]
@@ -338,8 +355,57 @@ mod tests {
             "create_user should fail with no user provisioners"
         );
         assert!(
-            matches!(result.unwrap_err(), error::Error::NoUserProvisioner),
+            matches!(result.unwrap_err(), Error::NoUserProvisioner),
             "Should return NoUserProvisioner error"
         );
+    }
+
+    #[test]
+    fn test_set_hostname_success() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![HostnameProvisioner::FakeHostnamectl],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+        let p = Provision::new(
+            "test-hostname".to_string(),
+            User::new("testuser", vec![]),
+            mock_config,
+            false,
+        );
+
+        let result = p.set_hostname();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_set_hostname_failure() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners { backends: vec![] },
+            user_provisioners: UserProvisioners {
+                backends: vec![UserProvisioner::FakeUseradd],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![PasswordProvisioner::FakePasswd],
+            },
+            ..Config::default()
+        };
+        let p = Provision::new(
+            "test-hostname".to_string(),
+            User::new("testuser", vec![]),
+            mock_config,
+            false,
+        );
+
+        let result = p.set_hostname();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::NoHostnameProvisioner));
     }
 }
