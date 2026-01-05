@@ -44,7 +44,7 @@ tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.11"
-whoami = "1"
+whoami = "2"
 anyhow = "1.0.81"
 gag = "1.0.0"
 serial_test = "3.0.0"
