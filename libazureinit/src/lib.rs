@@ -8,6 +8,7 @@ pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
 pub mod health;
+pub use health::{report_failure_from_state, report_ready_from_state};
 pub(crate) mod http;
 pub mod imds;
 mod kvp;
@@ -20,9 +21,10 @@ pub use provision::{
     user::User,
     Provision,
 };
-mod status;
+pub mod status;
 pub use status::{
     get_vm_id, is_provisioning_complete, mark_provisioning_complete,
+    mark_provisioning_failure, mark_reported,
 };
 
 #[cfg(test)]
