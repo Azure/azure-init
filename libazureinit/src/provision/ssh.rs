@@ -335,10 +335,11 @@ mod tests {
         let home_dir =
             tempfile::TempDir::new().expect("Failed to create temp directory");
 
-        let mut user =
-            nix::unistd::User::from_name(whoami::username().as_str())
-                .expect("Failed to get user")
-                .expect("User does not exist");
+        let mut user = nix::unistd::User::from_name(
+            whoami::username().expect("Failed to get username").as_str(),
+        )
+        .expect("Failed to get user")
+        .expect("User does not exist");
         user.dir = home_dir.path().into();
 
         if create_ssh_dir {

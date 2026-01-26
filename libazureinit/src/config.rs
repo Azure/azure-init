@@ -433,12 +433,11 @@ impl Config {
 
         figment
             .extract::<Config>()
-            .map(|config| {
+            .inspect(|_config| {
                 tracing::info!(
                     target: "libazureinit::config::success",
                     "Configuration successfully loaded."
                 );
-                config
             })
             .map_err(|e| {
                 tracing::error!("Failed to extract configuration: {:?}", e);
