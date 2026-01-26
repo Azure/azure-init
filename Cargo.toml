@@ -2,7 +2,7 @@
 name = "azure-init"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.88"
 repository = "https://github.com/Azure/azure-init/"
 homepage = "https://github.com/Azure/azure-init/"
 license = "MIT"
@@ -64,4 +64,4 @@ default = ["systemd_linux"]
 
 [build-dependencies]
 vergen = { version = "9.0.6", features = ["build", "cargo", "rustc", "si"] }
-vergen-gitcl = "1"
+vergen-gitcl = "9"
