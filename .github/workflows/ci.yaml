@@ -27,8 +27,6 @@ jobs:
         with:
           toolchain: ${{matrix.rust-toolchain}}
           components: clippy, rustfmt
-      - name: Ensure rustfmt and clippy are installed
-        run: rustup component add rustfmt clippy --toolchain ${{matrix.rust-toolchain}}
       - name: Rustfmt Check
         run: cargo fmt --all --check
       - name: Build azure-init
