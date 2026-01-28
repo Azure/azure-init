@@ -2,7 +2,7 @@
 name = "azure-init"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.88"
 repository = "https://github.com/Azure/azure-init/"
 homepage = "https://github.com/Azure/azure-init/"
 license = "MIT"
@@ -19,9 +19,7 @@ clap = { version = "4.5.21", features = ["derive", "cargo", "env"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tokio-util = "0.7" 
 
-# Pin sysinfo to <=0.36 for MSRV issues with Rust < 1.85.0.
-# This should be unpinned around 2026-02-17 if we continue with our ~1 year MSRV policy
-sysinfo = "=0.36"
+sysinfo = "0.38"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
@@ -30,7 +28,8 @@ predicates-core = "1.0.8"
 predicates-tree = "1.0.11"
 tempfile = "3.3.0"
 
-# Pin idna_adapter to <=1.2.0 for MSRV issues with cargo-clippy of Rust 1.78.0.
+# Pin idna_adapter to <=1.2.0 for MSRV issues with older Rust versions.
+# With MSRV 1.88, this pin may no longer be necessary.
 idna_adapter = "<=1.2.0"
 
 [dependencies.libazureinit]
@@ -61,7 +60,3 @@ useradd = []
 systemd_linux = ["passwd", "hostnamectl", "useradd"]
 
 default = ["systemd_linux"]
-
-[build-dependencies]
-vergen = { version = "9.0.6", features = ["build", "cargo", "rustc", "si"] }
-vergen-gitcl = "9"
