@@ -1,6 +1,5 @@
 use std::env;
-use vergen::Emitter;
-use vergen_gitcl::GitclBuilder;
+use std::process::Command;
 
 fn main() {
     // Re-run if the packaging version override changes
@@ -9,20 +8,47 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
 
-    let mut gitcl_builder = GitclBuilder::default();
-    // Parameters: use_tag=true, dirty=true, pattern=None
-    gitcl_builder.describe(true, true, None);
-    let git = gitcl_builder.build().ok();
-
-    let mut emitter = Emitter::default();
-    if let Some(g) = git.as_ref() {
-        let _ = emitter.add_instructions(g);
+    if let Some(git_version) = git_describe() {
+        println!("cargo:rustc-env=AZURE_INIT_BUILD_VERSION={git_version}");
+    } else if let Some(git_sha) = git_sha() {
+        println!("cargo:rustc-env=AZURE_INIT_BUILD_SHA={git_sha}");
     }
-    let _ = emitter.emit();
 
     // Allow packaging to supply a custom version
     if let Ok(custom_version) = env::var("AZURE_INIT_VERSION") {
         println!("cargo:rustc-env=AZURE_INIT_VERSION={custom_version}");
         println!("cargo:rustc-env=AZURE_INIT_BUILD_VERSION={custom_version}");
+    }
+}
+
+fn git_describe() -> Option<String> {
+    let output = Command::new("git")
+        .args(["describe", "--dirty", "--tags"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let describe = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if describe.is_empty() {
+        None
+    } else {
+        Some(describe)
+    }
+}
+
+fn git_sha() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
     }
 }
