@@ -9,8 +9,9 @@
 use crate::error::Error;
 use crate::imds::PublicKeys;
 use lazy_static::lazy_static;
-use nix::unistd::{chown, User};
 use regex::Regex;
+use rustix::fs::chown;
+use rustix::process::{Gid, Uid};
 use std::{
     fs::{
         OpenOptions, {File, Permissions},
@@ -21,6 +22,28 @@ use std::{
     process::{Command, Output},
 };
 use tracing::{error, info, instrument};
+
+/// User information needed for SSH provisioning.
+///
+/// This struct holds the minimal user information required to provision SSH keys:
+/// the home directory path and ownership information (uid/gid) for setting
+/// correct file permissions.
+pub(crate) struct SshUser {
+    pub home_dir: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl From<&users::User> for SshUser {
+    fn from(user: &users::User) -> Self {
+        use users::os::unix::UserExt;
+        SshUser {
+            home_dir: user.home_dir().to_path_buf(),
+            uid: user.uid(),
+            gid: user.primary_group_id(),
+        }
+    }
+}
 
 lazy_static! {
     /// A regular expression to match the `PasswordAuthentication` setting in the SSH configuration.
@@ -53,11 +76,16 @@ lazy_static! {
 /// or write to the `authorized_keys` file.
 #[instrument(skip_all)]
 pub(crate) fn provision_ssh(
-    user: &User,
+    user: &SshUser,
     keys: &[PublicKeys],
     authorized_keys_path: &Path,
     query_sshd_config: bool,
 ) -> Result<(), Error> {
+    let home_dir = &user.home_dir;
+    // SAFETY: uid and gid values come from the users crate which returns valid system user IDs
+    let uid = unsafe { Uid::from_raw(user.uid) };
+    let gid = unsafe { Gid::from_raw(user.gid) };
+
     let authorized_keys_path = if query_sshd_config {
         tracing::info!(
             "Attempting to get authorized keys path via sshd -G as configured."
@@ -66,24 +94,24 @@ pub(crate) fn provision_ssh(
         match get_authorized_keys_path_from_sshd(|| {
             Command::new("sshd").arg("-G").output()
         }) {
-            Some(path) => user.dir.join(path),
+            Some(path) => home_dir.join(path),
             None => {
                 tracing::warn!("sshd -G failed; using configured authorized_keys_path as fallback.");
-                user.dir.join(authorized_keys_path)
+                home_dir.join(authorized_keys_path)
             }
         }
     } else {
-        user.dir.join(authorized_keys_path)
+        home_dir.join(authorized_keys_path)
     };
 
-    let ssh_dir = user.dir.join(".ssh");
+    let ssh_dir = home_dir.join(".ssh");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&ssh_dir)?;
     std::fs::set_permissions(&ssh_dir, Permissions::from_mode(0o700))?;
 
-    chown(&ssh_dir, Some(user.uid), Some(user.gid))?;
+    chown(&ssh_dir, Some(uid), Some(gid))?;
 
     tracing::info!(
         target: "libazureinit::ssh::authorized_keys",
@@ -97,7 +125,7 @@ pub(crate) fn provision_ssh(
     keys.iter()
         .try_for_each(|key| writeln!(authorized_keys, "{}", key.key_data))?;
 
-    chown(&authorized_keys_path, Some(user.uid), Some(user.gid))?;
+    chown(&authorized_keys_path, Some(uid), Some(gid))?;
 
     Ok(())
 }
@@ -323,6 +351,8 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    use super::SshUser;
+
     fn create_output(status_code: i32, stdout: &str, stderr: &str) -> Output {
         Output {
             status: ExitStatus::from_raw(status_code),
@@ -331,24 +361,29 @@ mod tests {
         }
     }
 
-    fn get_test_user_with_home_dir(create_ssh_dir: bool) -> nix::unistd::User {
+    fn get_test_user_with_home_dir(
+        create_ssh_dir: bool,
+    ) -> (SshUser, tempfile::TempDir) {
         let home_dir =
             tempfile::TempDir::new().expect("Failed to create temp directory");
 
-        let mut user =
-            nix::unistd::User::from_name(whoami::username().as_str())
-                .expect("Failed to get user")
-                .expect("User does not exist");
-        user.dir = home_dir.path().into();
+        let current_user = users::get_current_uid();
+        let current_group = users::get_current_gid();
+
+        let user = SshUser {
+            home_dir: home_dir.path().to_path_buf(),
+            uid: current_user,
+            gid: current_group,
+        };
 
         if create_ssh_dir {
             std::fs::DirBuilder::new()
                 .mode(0o700)
-                .create(user.dir.join(".ssh"))
+                .create(user.home_dir.join(".ssh"))
                 .expect("Failed to create .ssh directory");
         }
 
-        user
+        (user, home_dir)
     }
 
     #[test]
@@ -461,7 +496,7 @@ mod tests {
     // chown without elevated permissions.
     #[test]
     fn test_provision_ssh() {
-        let user = get_test_user_with_home_dir(false);
+        let (user, _temp_dir) = get_test_user_with_home_dir(false);
         let keys = vec![
             PublicKeys {
                 key_data: "not-a-real-key abc123".to_string(),
@@ -473,11 +508,11 @@ mod tests {
             },
         ];
 
-        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+        let authorized_keys_path = user.home_dir.join(".ssh/xauthorized_keys");
 
         provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
-        let ssh_path = user.dir.join(".ssh");
+        let ssh_path = user.home_dir.join(".ssh");
         let ssh_dir = std::fs::File::open(&ssh_path).unwrap();
         let mut auth_file =
             std::fs::File::open(&ssh_path.join("xauthorized_keys")).unwrap();
@@ -500,7 +535,7 @@ mod tests {
     // /etc/skel includes it. This also checks that we fix the permissions if /etc/skel has been mis-configured.
     #[test]
     fn test_pre_existing_ssh_dir() {
-        let user = get_test_user_with_home_dir(true);
+        let (user, _temp_dir) = get_test_user_with_home_dir(true);
         let keys = vec![
             PublicKeys {
                 key_data: "not-a-real-key abc123".to_string(),
@@ -512,11 +547,11 @@ mod tests {
             },
         ];
 
-        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+        let authorized_keys_path = user.home_dir.join(".ssh/xauthorized_keys");
 
         provision_ssh(&user, &keys, &authorized_keys_path, false).unwrap();
 
-        let ssh_dir = std::fs::File::open(user.dir.join(".ssh")).unwrap();
+        let ssh_dir = std::fs::File::open(user.home_dir.join(".ssh")).unwrap();
         assert_eq!(
             ssh_dir.metadata().unwrap().permissions(),
             Permissions::from_mode(0o040700)
@@ -526,7 +561,7 @@ mod tests {
     // Test that any pre-existing authorized_keys are overwritten.
     #[test]
     fn test_pre_existing_authorized_keys() {
-        let user = get_test_user_with_home_dir(true);
+        let (user, _temp_dir) = get_test_user_with_home_dir(true);
         let keys = vec![
             PublicKeys {
                 key_data: "not-a-real-key abc123".to_string(),
@@ -538,14 +573,14 @@ mod tests {
             },
         ];
 
-        let authorized_keys_path = user.dir.join(".ssh/xauthorized_keys");
+        let authorized_keys_path = user.home_dir.join(".ssh/xauthorized_keys");
 
         provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
         provision_ssh(&user, &keys[1..], &authorized_keys_path, false).unwrap();
 
         let mut auth_file =
-            std::fs::File::open(user.dir.join(".ssh/xauthorized_keys"))
+            std::fs::File::open(user.home_dir.join(".ssh/xauthorized_keys"))
                 .unwrap();
         let mut buf = String::new();
         auth_file.read_to_string(&mut buf).unwrap();
