@@ -177,13 +177,14 @@ impl Provision {
     #[instrument(skip_all)]
     fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
-            let user = nix::unistd::User::from_name(&self.user.name)?.ok_or(
+            let user = users::get_user_by_name(&self.user.name).ok_or(
                 Error::UserMissing {
-                    user: self.user.name,
+                    user: self.user.name.clone(),
                 },
             )?;
+            let ssh_user = ssh::SshUser::from(&user);
             ssh::provision_ssh(
-                &user,
+                &ssh_user,
                 &self.user.ssh_keys,
                 &self.config.ssh.authorized_keys_path,
                 self.config.ssh.query_sshd_config,

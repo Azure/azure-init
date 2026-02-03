@@ -47,8 +47,8 @@ pub enum Error {
     },
     #[error("failed to construct a C-style string")]
     NulError(#[from] std::ffi::NulError),
-    #[error("nix call failed: {0}")]
-    Nix(#[from] nix::Error),
+    #[error("rustix call failed: {0}")]
+    Rustix(#[from] rustix::io::Errno),
     #[error("The user {user} does not exist")]
     UserMissing { user: String },
     #[error("failed to get username from IMDS or local OVF files")]
@@ -106,7 +106,7 @@ impl Error {
             Self::HttpStatus { .. } => "http status error",
             Self::SubprocessFailed { .. } => "subprocess failed",
             Self::NulError(_) => "C string nul byte",
-            Self::Nix(_) => "nix error",
+            Self::Rustix(_) => "rustix error",
             Self::UserMissing { .. } => "user not found",
             Self::UsernameFailure => "failed to determine username",
             Self::InstanceMetadataFailure => {
