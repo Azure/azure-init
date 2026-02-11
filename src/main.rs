@@ -7,14 +7,18 @@ use clap::{Parser, Subcommand};
 use libazureinit::{
     config::Config,
     error::Error as LibError,
-    get_vm_id,
-    health::{report_failure, report_ready},
+    health::{
+        report_failure, report_failure_from_state, report_ready,
+        report_ready_from_state,
+    },
     imds::{query, InstanceMetadata},
-    is_provisioning_complete,
     logging::setup_layers,
-    mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
+    status::{
+        get_provisioning_dir, get_vm_id, is_provisioning_complete,
+        mark_provisioning_complete, mark_provisioning_failure, mark_reported,
+    },
     Provision, User,
 };
 use std::process::ExitCode;
@@ -75,6 +79,11 @@ struct Cli {
     #[arg(long = "version", short = 'V', action = clap::ArgAction::SetTrue)]
     show_version: bool,
 
+    /// Report provisioning status to Azure after provisioning completes.
+    /// On success, reports ready. On failure, reports the error.
+    #[arg(long)]
+    report: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -88,6 +97,22 @@ enum Command {
         #[arg(long)]
         logs: bool,
     },
+    /// Report provisioning status to Azure
+    #[command(subcommand)]
+    Report(ReportCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum ReportCommand {
+    /// Automatically detect provisioning state and report to Azure.
+    /// Checks for .provisioned or .failed files and reports accordingly.
+    Auto,
+    /// Report provisioning success to Azure.
+    /// Reads the .provisioned file and sends success status.
+    Ready,
+    /// Report provisioning failure to Azure.
+    /// Reads the .failed file and sends failure status.
+    Failure,
 }
 
 /// Attempts to find and parse provisioning data from an OVF environment.
@@ -153,14 +178,15 @@ fn get_username(
 
 /// Cleans all provisioning state marker files from the azure-init data directory.
 ///
-/// This removes all files ending in `.provisioned` from the directory specified
-/// by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker files
-/// indicate that provisioning has completed. Removing them allows azure-init to
-/// re-run provisioning logic on the next boot.
+/// This removes all files ending in `.provisioned` or `.failed` from the directory
+/// specified by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker
+/// files indicate provisioning completion or failure. Removing them allows azure-init
+/// to re-run provisioning logic on the next boot.
 #[instrument]
 fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
     let data_dir = &config.azure_init_data_dir.path;
-    let mut found = false;
+    let mut found_provisioned = false;
+    let mut found_failed = false;
 
     for entry in std::fs::read_dir(data_dir)? {
         let path = match entry {
@@ -175,9 +201,19 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
             }
         };
 
-        if path.extension().is_some_and(|ext| ext == "provisioned") {
-            found = true;
+        let should_remove = path.extension().is_some_and(|ext| {
+            if ext == "provisioned" {
+                found_provisioned = true;
+                true
+            } else if ext == "failed" {
+                found_failed = true;
+                true
+            } else {
+                false
+            }
+        });
 
+        if should_remove {
             match std::fs::remove_file(&path) {
                 Ok(_) => {
                     tracing::info!(
@@ -203,14 +239,126 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
         }
     }
 
-    if !found {
+    if !found_provisioned && !found_failed {
         tracing::info!(
-            "No provisioning marker files (*.provisioned) found in {:?}",
+            "No provisioning marker files (*.provisioned or *.failed) found in {:?}",
             data_dir
         );
     }
 
     Ok(())
+}
+
+/// Handles the `azure-init report auto` command.
+///
+/// Automatically detects provisioning state and reports to Azure.
+/// Checks for `.failed` file first then `.provisioned` file.
+/// Reports success or failure accordingly without requiring the user to know which.
+async fn handle_report_auto() -> ExitCode {
+    tracing::info!("Attempting to auto-detect and report provisioning status");
+
+    match report_failure_from_state().await {
+        Ok(_) => {
+            tracing::info!(
+                "Successfully reported provisioning failure to Azure"
+            );
+            return ExitCode::SUCCESS;
+        }
+        Err(LibError::NoProvisioningState) => {
+            tracing::debug!(
+                "No failure state found, checking for success state"
+            );
+        }
+        Err(LibError::AlreadyReported) => {
+            tracing::info!("Provisioning failure has already been reported");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            tracing::error!("Failed to report failure: {e:?}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    match report_ready_from_state().await {
+        Ok(_) => {
+            tracing::info!(
+                "Successfully reported provisioning success to Azure"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(LibError::NoProvisioningState) => {
+            tracing::error!("No provisioning state found (.failed or .provisioned). Run provisioning first.");
+            ExitCode::FAILURE
+        }
+        Err(LibError::AlreadyReported) => {
+            tracing::info!("Provisioning success has already been reported");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            tracing::error!("Failed to report success: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Handles the `azure-init report ready` command to report provisioning success to Azure.
+/// Reads the `.provisioned` file and sends the success status.
+async fn handle_report_ready() -> ExitCode {
+    tracing::info!("Attempting to report provisioning success to Azure");
+
+    match report_ready_from_state().await {
+        Ok(_) => {
+            tracing::info!(
+                "Successfully reported provisioning success to Azure"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(LibError::NoProvisioningState) => {
+            tracing::error!("No .provisioned file found. Provisioning may not have completed successfully.");
+            ExitCode::FAILURE
+        }
+        Err(LibError::AlreadyReported) => {
+            tracing::info!(
+                "Provisioning success has already been reported to Azure"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            tracing::error!("Failed to report provisioning success: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Handles the `azure-init report failure` command to report provisioning failure to Azure.
+/// Reads the `.failed` file and sends the failure status with error details.
+async fn handle_report_failure() -> ExitCode {
+    tracing::info!("Attempting to report provisioning failure to Azure");
+
+    match report_failure_from_state().await {
+        Ok(_) => {
+            tracing::info!(
+                "Successfully reported provisioning failure to Azure"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(LibError::NoProvisioningState) => {
+            tracing::error!(
+                "No .failed file found. Provisioning may not have failed."
+            );
+            ExitCode::FAILURE
+        }
+        Err(LibError::AlreadyReported) => {
+            tracing::info!(
+                "Provisioning failure has already been reported to Azure"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            tracing::error!("Failed to report provisioning failure: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Cleans the azure-init log file defined in the configuration.
@@ -286,14 +434,13 @@ async fn main() -> ExitCode {
                 details: format!("{error:?}"),
             };
 
-            // Report the failure to the health endpoint
+            // Write failure state file
             let report_str = err.as_encoded_report(&vm_id);
-            let report_result = report_failure(report_str, &cfg).await;
-
-            if let Err(report_error) = report_result {
+            if let Err(mark_err) =
+                mark_provisioning_failure(Some(&cfg), &vm_id, &report_str)
+            {
                 tracing::warn!(
-                    "Failed to send provisioning failure report: {:?}",
-                    report_error
+                    "Failed to mark provisioning failure: {mark_err:?}"
                 );
             }
 
@@ -303,70 +450,122 @@ async fn main() -> ExitCode {
 
     tracing::info!("Final configuration: {:#?}", config);
 
-    let exit_code = if let Some(Command::Clean { logs }) = opts.command {
-        if clean_provisioning_status(&config).is_err()
-            || (logs && clean_log_file(&config).is_err())
-        {
-            ExitCode::FAILURE
-        } else {
-            ExitCode::SUCCESS
-        }
-    } else if is_provisioning_complete(Some(&config), &vm_id) {
-        tracing::info!(
-            "Provisioning already completed earlier. Skipping provisioning."
-        );
-        ExitCode::SUCCESS
-    } else {
-        let clone_config = config.clone();
-        match provision(config, &vm_id, opts).await {
-            Ok(_) => {
-                let report_result =
-                    report_ready(&clone_config, &vm_id, None).await;
-
-                if let Err(report_error) = report_result {
-                    tracing::warn!(
-                        "Failed to send provisioning success report: {:?}",
-                        report_error
-                    );
-                }
-
-                tracing::info!("Provisioning completed successfully");
-
+    let exit_code = match opts.command {
+        Some(Command::Clean { logs }) => {
+            if clean_provisioning_status(&config).is_err()
+                || (logs && clean_log_file(&config).is_err())
+            {
+                ExitCode::FAILURE
+            } else {
                 ExitCode::SUCCESS
             }
-            Err(e) => {
-                eprintln!("{e:?}");
+        }
+        Some(Command::Report(report_cmd)) => match report_cmd {
+            ReportCommand::Auto => handle_report_auto().await,
+            ReportCommand::Ready => handle_report_ready().await,
+            ReportCommand::Failure => handle_report_failure().await,
+        },
+        None => {
+            // Default behavior: provision if not already complete
+            if is_provisioning_complete(Some(&config), &vm_id) {
+                tracing::info!(
+                    "Provisioning already completed earlier. Skipping provisioning."
+                );
+                return ExitCode::SUCCESS;
+            }
+            let clone_config = config.clone();
+            let should_report = opts.report;
+            match provision(config, &vm_id, opts).await {
+                Ok(_) => {
+                    tracing::info!("Provisioning completed successfully");
 
-                let report_str = e
-                    .downcast_ref::<LibError>()
-                    .map(|lib_error| lib_error.as_encoded_report(&vm_id))
-                    .unwrap_or_else(|| {
-                        LibError::UnhandledError {
-                            details: format!("{e:?}"),
+                    // Report success if --report flag is set
+                    if should_report {
+                        tracing::info!(
+                            "Reporting provisioning success to Azure"
+                        );
+                        if let Err(report_err) =
+                            report_ready(&clone_config, &vm_id, None).await
+                        {
+                            tracing::error!(
+                                "Failed to report success: {report_err:?}"
+                            );
+                            return ExitCode::FAILURE;
                         }
-                        .as_encoded_report(&vm_id)
-                    });
-                let report_result =
-                    report_failure(report_str, &clone_config).await;
 
-                if let Err(report_error) = report_result {
-                    tracing::warn!(
-                        "Failed to send provisioning failure report: {:?}",
-                        report_error
-                    );
-                }
-
-                tracing::error!("Provisioning failed with error: {e:?}");
-
-                let config: u8 = exitcode::CONFIG
-                    .try_into()
-                    .expect("Error code must be less than 256");
-                match e.root_cause().downcast_ref::<LibError>() {
-                    Some(LibError::UserMissing { user: _ }) => {
-                        ExitCode::from(config)
+                        let file_path =
+                            get_provisioning_dir(Some(&clone_config))
+                                .join(format!("{vm_id}.provisioned"));
+                        if let Err(mark_err) = mark_reported(&file_path) {
+                            tracing::warn!(
+                                "Failed to mark as reported: {mark_err:?}"
+                            );
+                        }
+                        tracing::info!("Successfully reported provisioning success to Azure");
                     }
-                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                    Some(_) | None => ExitCode::FAILURE,
+
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e:?}");
+
+                    let report_str = e
+                        .downcast_ref::<LibError>()
+                        .map(|lib_error| lib_error.as_encoded_report(&vm_id))
+                        .unwrap_or_else(|| {
+                            LibError::UnhandledError {
+                                details: format!("{e:?}"),
+                            }
+                            .as_encoded_report(&vm_id)
+                        });
+
+                    if let Err(mark_err) = mark_provisioning_failure(
+                        Some(&clone_config),
+                        &vm_id,
+                        &report_str,
+                    ) {
+                        tracing::error!(
+                            "Failed to mark provisioning failure: {mark_err:?}"
+                        );
+                    }
+
+                    tracing::error!("Provisioning failed with error: {e:?}");
+
+                    // Report failure if --report flag is set
+                    if should_report {
+                        tracing::info!(
+                            "Reporting provisioning failure to Azure"
+                        );
+                        if let Err(report_err) =
+                            report_failure(report_str.clone(), &clone_config)
+                                .await
+                        {
+                            tracing::error!(
+                                "Failed to report failure: {report_err:?}"
+                            );
+                        } else {
+                            let file_path =
+                                get_provisioning_dir(Some(&clone_config))
+                                    .join(format!("{vm_id}.failed"));
+                            if let Err(mark_err) = mark_reported(&file_path) {
+                                tracing::warn!("Failed to mark failure as reported: {mark_err:?}");
+                            }
+                            tracing::info!("Successfully reported provisioning failure to Azure");
+                        }
+                    }
+
+                    let config: u8 = exitcode::CONFIG
+                        .try_into()
+                        .expect("Error code must be less than 256");
+                    match e.root_cause().downcast_ref::<LibError>() {
+                        Some(LibError::UserMissing { user: _ }) => {
+                            ExitCode::from(config)
+                        }
+                        Some(LibError::NonEmptyPassword) => {
+                            ExitCode::from(config)
+                        }
+                        Some(_) | None => ExitCode::FAILURE,
+                    }
                 }
             }
         }
