@@ -82,9 +82,8 @@ pub(crate) fn provision_ssh(
     query_sshd_config: bool,
 ) -> Result<(), Error> {
     let home_dir = &user.home_dir;
-    // SAFETY: uid and gid values come from the users crate which returns valid system user IDs
-    let uid = unsafe { Uid::from_raw(user.uid) };
-    let gid = unsafe { Gid::from_raw(user.gid) };
+    let uid = Uid::from_raw(user.uid);
+    let gid = Gid::from_raw(user.gid);
 
     let authorized_keys_path = if query_sshd_config {
         tracing::info!(
