@@ -4,6 +4,12 @@ permissions:
   pull-requests: write
 
 on:
+  push:
+    branches:
+      - main
+  schedule:
+    # 19:00 UTC is 11 AM PST
+    - cron: "0 19 * * *"
   pull_request:
     branches:
       - main
