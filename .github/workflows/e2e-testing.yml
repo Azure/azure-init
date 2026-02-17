@@ -27,6 +27,9 @@ jobs:
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
       
       - name: Make start-all.sh executable
         run: chmod +x testinit/start-all.sh testinit/stop-all.sh
