@@ -8,7 +8,8 @@ VOLUME [ "/sys/fs/cgroup" ]
 
 RUN if command -v apt-get >/dev/null 2>&1; then \
     # Debian/Ubuntu (apt-based) \
-    apt-get update && apt-get install -y \
+    apt-get -o Acquire::Retries=3 update; \
+    apt-get install -y \
     systemd \
     dbus \
     curl \
