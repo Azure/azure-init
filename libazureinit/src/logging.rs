@@ -16,6 +16,7 @@ use tracing_subscriber::{
 };
 
 use crate::config::Config;
+pub use crate::kvp::EVENT_PREFIX;
 use crate::kvp::{EmitKVPLayer, Kvp as KvpInternal};
 
 pub type LoggingSetup = (
@@ -153,7 +154,7 @@ struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
 ///
 /// # #[tokio::main]
 /// # async fn main() -> anyhow::Result<()> {
-/// let mut kvp = Kvp::new("a-unique-id")?;
+/// let mut kvp = Kvp::new("a-unique-id", None)?;
 /// let registry = tracing_subscriber::Registry::default().with(kvp.layer());
 ///
 /// // When it's time to shut down, doing this ensures all writes are flushed
@@ -173,12 +174,20 @@ pub struct Kvp<S: Subscriber> {
 impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
     /// Create a new tracing layer for KVP.
     ///
+    /// When `event_prefix` is `None`, the default [`EVENT_PREFIX`] is used.
+    /// Pass `Some("my-library-1.0")` to identify a different emitting library.
+    ///
     /// Refer to [`libazureinit::get_vm_id`] to retrieve the VM's unique identifier.
-    pub fn new<T: AsRef<str>>(vm_id: T) -> Result<Self, anyhow::Error> {
+    pub fn new<T: AsRef<str>>(
+        vm_id: T,
+        event_prefix: Option<&str>,
+    ) -> Result<Self, anyhow::Error> {
+        let event_prefix = event_prefix.unwrap_or(EVENT_PREFIX);
         let shutdown = CancellationToken::new();
         let inner = KvpInternal::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id.as_ref(),
+            event_prefix,
             shutdown.clone(),
         )?;
 
@@ -244,6 +253,7 @@ pub fn setup_layers(
         match KvpInternal::new(
             std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
             vm_id,
+            EVENT_PREFIX,
             graceful_shutdown,
         ) {
             Ok(kvp) => {
