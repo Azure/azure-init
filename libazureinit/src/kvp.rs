@@ -66,6 +66,14 @@ pub struct Kvp {
 }
 
 impl Kvp {
+    /// Opens a KVP guest pool file for appending.
+    ///
+    /// All callers that need a file handle for KVP writes should go through
+    /// this method so that the open-mode is consistent everywhere.
+    fn open_kvp_file(path: &Path) -> io::Result<File> {
+        OpenOptions::new().append(true).create(true).open(path)
+    }
+
     /// Creates a new `Kvp` instance, spawning a background task for writing
     /// KVP telemetry data to a file.
     ///
@@ -82,10 +90,7 @@ impl Kvp {
     ) -> Result<Self, anyhow::Error> {
         truncate_guest_pool_file(&file_path)?;
 
-        let file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&file_path)?;
+        let file = Self::open_kvp_file(&file_path)?;
 
         let (events_tx, events_rx): (
             UnboundedSender<Vec<u8>>,
@@ -966,25 +971,21 @@ mod tests {
         }
     }
 
-    /// 4 threads × 5,000 iterations writing to the same file via separate FDs.
+    /// 20 threads × 10,000 iterations writing to the same file via separate FDs.
     #[test]
     fn test_multi_thread_kvp_concurrent_writes() {
         let temp_file =
             NamedTempFile::new().expect("Failed to create tempfile");
         let temp_path = temp_file.path().to_path_buf();
 
-        let num_threads: usize = 4;
-        let iterations: usize = 5_000;
+        let num_threads: usize = 20;
+        let iterations: usize = 10_000;
 
         let handles: Vec<_> = (0..num_threads)
             .map(|tid| {
                 let path = temp_path.clone();
                 std::thread::spawn(move || {
-                    // Each thread opens its own file descriptor.
-                    let mut file = OpenOptions::new()
-                        .append(true)
-                        .create(true)
-                        .open(&path)
+                    let mut file = Kvp::open_kvp_file(&path)
                         .expect("Failed to open KVP file");
 
                     for i in 0..iterations {
@@ -1009,22 +1010,19 @@ mod tests {
         );
     }
 
-    /// 4 child processes × 5,000 iterations writing to the same file.
+    /// 10 child processes × 10,000 iterations writing to the same file.
     ///
     /// When the env var `__KVP_CHILD_WORKER` is set the process acts as a
     /// worker (encode + write); otherwise it orchestrates the children.
     #[test]
     fn test_multi_process_kvp_concurrent_writes() {
-        let num_processes: usize = 4;
-        let iterations: usize = 5_000;
+        let num_processes: usize = 10;
+        let iterations: usize = 10_000;
 
         // --- Child worker path ---
         if let Ok(path) = std::env::var("__KVP_CHILD_WORKER_PATH") {
             let pid = std::process::id();
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&path)
+            let mut file = Kvp::open_kvp_file(Path::new(&path))
                 .expect("Child: failed to open KVP file");
 
             for i in 0..iterations {
