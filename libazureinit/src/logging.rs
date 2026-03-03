@@ -11,12 +11,12 @@ use tracing::{event, Level, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
-    filter::Filtered, fmt, layer::SubscriberExt, registry::LookupSpan,
-    EnvFilter, Layer, Registry,
+    fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
 use crate::config::Config;
-use crate::kvp::{EmitKVPLayer, Kvp as KvpInternal};
+pub use crate::kvp::{Kvp, KvpOptions};
+use crate::kvp::{Kvp as KvpInternal, EVENT_PREFIX};
 
 pub type LoggingSetup = (
     Box<dyn Subscriber + Send + Sync + 'static>,
@@ -121,99 +121,6 @@ fn get_kvp_filter(
     }
 }
 
-// Public KVP wrapper API for library consumers
-struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
-
-/// Emit tracing data to the Hyper-V KVP.
-///
-/// ## KVP Tracing Configuration
-///
-/// The KVP tracing layer's filter can be configured at runtime by setting the
-/// `AZURE_INIT_KVP_FILTER` environment variable. This allows any application
-/// using this library to override the default filter and control which traces
-/// are sent to the KVP pool.
-///
-/// The value of the variable must be a string that follows the syntax for
-/// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
-/// logging directives. For example: `warn,my_crate=debug` or `info,my_crate::api=trace`.
-/// See `config.rs` for more details.
-///
-/// The filter can also be configured via the `kvp_filter` field in the `Config` struct.
-/// **Precedence**: Environment variable > Config field > Default filter.
-/// If neither is set, a default filter tailored for `azure-init` (WARN level + specific modules) is used.
-///
-/// If an invalid filter string is provided (via env or config), a warning is logged
-/// and the default filter is used instead.
-///
-/// # Example
-///
-/// ```no_run
-/// # use libazureinit::logging::Kvp;
-/// use tracing_subscriber::layer::SubscriberExt;
-///
-/// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
-/// let mut kvp = Kvp::new("a-unique-id")?;
-/// let registry = tracing_subscriber::Registry::default().with(kvp.layer());
-///
-/// // When it's time to shut down, doing this ensures all writes are flushed
-/// kvp.halt().await?;
-/// # Ok(())
-/// # }
-/// ```
-pub struct Kvp<S: Subscriber> {
-    layer: Option<KvpLayer<S>>,
-    /// The `JoinHandle` for the background task responsible for writing
-    /// KVP data to the file. The caller can use this handle to wait for
-    /// the writer to finish.
-    writer: JoinHandle<std::io::Result<()>>,
-    shutdown: CancellationToken,
-}
-
-impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
-    /// Create a new tracing layer for KVP.
-    ///
-    /// Refer to [`libazureinit::get_vm_id`] to retrieve the VM's unique identifier.
-    pub fn new<T: AsRef<str>>(vm_id: T) -> Result<Self, anyhow::Error> {
-        let shutdown = CancellationToken::new();
-        let inner = KvpInternal::new(
-            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
-            vm_id.as_ref(),
-            shutdown.clone(),
-        )?;
-
-        let kvp_filter = get_kvp_filter(None)?;
-        let layer = Some(KvpLayer(inner.tracing_layer.with_filter(kvp_filter)));
-
-        Ok(Self {
-            layer,
-            writer: inner.writer,
-            shutdown,
-        })
-    }
-
-    /// Get a tracing [`Layer`] to use with a [`Registry`].
-    ///
-    /// # Panics if this function is called more than once.
-    pub fn layer(&mut self) -> Filtered<EmitKVPLayer, EnvFilter, S> {
-        assert!(
-            self.layer.is_some(),
-            "Kvp::layer cannot be called multiple times!"
-        );
-        self.layer.take().unwrap().0
-    }
-
-    /// Gracefully shut down the KVP writer.
-    ///
-    /// This will stop new KVP logs from being queued and wait for all pending writes to the KVP
-    /// pool to complete.  After this returns, no further logs will be written to KVP.
-    pub async fn halt(self) -> Result<(), anyhow::Error> {
-        self.shutdown.cancel();
-        self.writer.await??;
-        Ok(())
-    }
-}
-
 /// Builds a `tracing` subscriber that can optionally write azure-init.log
 /// to a specific location if `Some(&Config)` is provided.
 ///
@@ -241,10 +148,14 @@ pub fn setup_layers(
         .telemetry
         .kvp_diagnostics
     {
-        match KvpInternal::new(
-            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
+        // Preserve existing azure-init behavior for subscriber wiring.
+        let options = KvpOptions::default();
+        match KvpInternal::new_internal(
+            options.file_path,
             vm_id,
+            EVENT_PREFIX,
             graceful_shutdown,
+            options.truncate_on_start,
         ) {
             Ok(kvp) => {
                 let layer = kvp.tracing_layer.with_filter(kvp_filter);
@@ -632,5 +543,30 @@ mod tests {
         assert!(!stderr_contents.contains("This is an info message"));
         assert!(!stderr_contents.contains("This is a warn message"));
         assert!(stderr_contents.contains("This is an error message"));
+    }
+
+    #[tokio::test]
+    async fn test_kvp_client_emit_and_close_writes_data() {
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+
+        let options = KvpOptions::default()
+            .vm_id("00000000-0000-0000-0000-000000000099")
+            .event_prefix("kvp-client-test")
+            .file_path(&temp_path);
+
+        let kvp = Kvp::with_options(options).expect("create kvp client");
+        kvp.emit("hello-world", None).expect("emit event");
+        kvp.emit_health_report("result=success")
+            .expect("emit report");
+        kvp.close().await.expect("close kvp client");
+
+        let bytes = std::fs::read(&temp_path).expect("read kvp file");
+        assert!(!bytes.is_empty(), "Expected KVP file to contain data");
+
+        let contents = String::from_utf8_lossy(&bytes);
+        assert!(contents.contains("hello-world"));
+        assert!(contents.contains("PROVISIONING_REPORT"));
     }
 }
