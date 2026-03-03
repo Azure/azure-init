@@ -15,7 +15,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
     os::unix::fs::MetadataExt,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,8 +23,9 @@ use fs2::FileExt;
 
 use tracing::{
     field::Visit,
+    info,
     span::{Attributes, Id},
-    Subscriber,
+    warn, Level, Subscriber,
 };
 
 use tracing_subscriber::{
@@ -48,6 +49,49 @@ const HV_KVP_AZURE_MAX_VALUE_SIZE: usize = 1022;
 /// The default event prefix used when no custom prefix is provided.
 pub const EVENT_PREFIX: &str =
     concat!("azure-init-", env!("CARGO_PKG_VERSION"));
+const DEFAULT_KVP_FILE_PATH: &str = "/var/lib/hyperv/.kvp_pool_1";
+
+/// Configuration options for creating a [`Kvp`] client.
+#[derive(Clone, Debug)]
+pub struct KvpOptions {
+    pub vm_id: Option<String>,
+    pub event_prefix: Option<String>,
+    pub file_path: PathBuf,
+    pub truncate_on_start: bool,
+}
+
+impl Default for KvpOptions {
+    fn default() -> Self {
+        Self {
+            vm_id: None,
+            event_prefix: None,
+            file_path: PathBuf::from(DEFAULT_KVP_FILE_PATH),
+            truncate_on_start: true,
+        }
+    }
+}
+
+impl KvpOptions {
+    pub fn vm_id<T: Into<String>>(mut self, vm_id: T) -> Self {
+        self.vm_id = Some(vm_id.into());
+        self
+    }
+
+    pub fn event_prefix<T: Into<String>>(mut self, event_prefix: T) -> Self {
+        self.event_prefix = Some(event_prefix.into());
+        self
+    }
+
+    pub fn file_path<T: AsRef<Path>>(mut self, file_path: T) -> Self {
+        self.file_path = file_path.as_ref().to_path_buf();
+        self
+    }
+
+    pub fn truncate_on_start(mut self, truncate_on_start: bool) -> Self {
+        self.truncate_on_start = truncate_on_start;
+        self
+    }
+}
 
 /// Encapsulates the KVP (Key-Value Pair) tracing infrastructure.
 ///
@@ -63,9 +107,37 @@ pub struct Kvp {
     /// KVP data to the file. The caller can use this handle to wait for
     /// the writer to finish.
     pub(crate) writer: JoinHandle<io::Result<()>>,
+    shutdown: Option<CancellationToken>,
 }
 
 impl Kvp {
+    /// Create a new KVP client with sensible defaults.
+    pub fn new() -> Result<Self, anyhow::Error> {
+        Self::with_options(KvpOptions::default())
+    }
+
+    /// Create a new KVP client with explicit options.
+    pub fn with_options(options: KvpOptions) -> Result<Self, anyhow::Error> {
+        let vm_id = match options.vm_id {
+            Some(vm_id) => vm_id,
+            None => crate::get_vm_id()
+                .ok_or_else(|| anyhow::anyhow!("Failed to resolve VM ID"))?,
+        };
+        let event_prefix = options
+            .event_prefix
+            .unwrap_or_else(|| EVENT_PREFIX.to_string());
+        let shutdown = CancellationToken::new();
+        let mut kvp = Self::new_internal(
+            options.file_path,
+            &vm_id,
+            &event_prefix,
+            shutdown.clone(),
+            options.truncate_on_start,
+        )?;
+        kvp.shutdown = Some(shutdown);
+        Ok(kvp)
+    }
+
     /// Opens a KVP guest pool file for appending.
     ///
     /// All callers that need a file handle for KVP writes should go through
@@ -82,13 +154,16 @@ impl Kvp {
     /// - It creates an unbounded channel for passing encoded KVP data from the
     ///   tracing layer to the writer task.
     /// - It spawns the `kvp_writer` task, which listens for data and shutdown signals.
-    pub(crate) fn new(
+    pub(crate) fn new_internal(
         file_path: std::path::PathBuf,
         vm_id: &str,
         event_prefix: &str,
         graceful_shutdown: CancellationToken,
+        truncate_on_start: bool,
     ) -> Result<Self, anyhow::Error> {
-        truncate_guest_pool_file(&file_path)?;
+        if truncate_on_start {
+            truncate_guest_pool_file(&file_path)?;
+        }
 
         let file = Self::open_kvp_file(&file_path)?;
 
@@ -107,7 +182,42 @@ impl Kvp {
                 event_prefix: event_prefix.to_string(),
             },
             writer,
+            shutdown: None,
         })
+    }
+
+    /// Emit a KVP event. Defaults to `DEBUG` level if none provided.
+    pub fn emit(
+        &self,
+        message: &str,
+        level: Option<Level>,
+    ) -> Result<(), anyhow::Error> {
+        let level = level.unwrap_or(Level::DEBUG);
+        self.tracing_layer.handle_kvp_operation(
+            level.as_str(),
+            "kvp_emit",
+            &Uuid::new_v4().to_string(),
+            message,
+        );
+        Ok(())
+    }
+
+    /// Emit a provisioning report (`PROVISIONING_REPORT`) entry.
+    pub fn emit_health_report<T: AsRef<str>>(
+        &self,
+        report: T,
+    ) -> Result<(), anyhow::Error> {
+        self.tracing_layer.emit_health_report(report.as_ref());
+        Ok(())
+    }
+
+    /// Gracefully stop the writer and flush queued KVP data.
+    pub async fn close(self) -> Result<(), anyhow::Error> {
+        if let Some(shutdown) = self.shutdown {
+            shutdown.cancel();
+        }
+        self.writer.await??;
+        Ok(())
     }
 
     /// The background task that writes encoded KVP data to a file.
@@ -298,6 +408,12 @@ impl EmitKVPLayer {
         let encoded_kvp = encode_kvp_item(&event_key, event_value);
         let encoded_kvp_flattened: Vec<u8> = encoded_kvp.concat();
         self.send_event(encoded_kvp_flattened);
+    }
+
+    /// Sends a provisioning report directly into the writer queue.
+    pub(crate) fn emit_health_report(&self, report: &str) {
+        let msg = encode_kvp_item("PROVISIONING_REPORT", report).concat();
+        self.send_event(msg);
     }
 }
 
@@ -580,9 +696,13 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
     // Hold an exclusive lock for the metadata-check + truncate window so
     // that two concurrent callers cannot both decide the file is stale and
     // truncate data the other has already written.
-    FileExt::lock_exclusive(&file).map_err(|e| {
-        anyhow::Error::from(e).context("Failed to lock KVP file for truncation")
-    })?;
+    if let Err(e) = FileExt::try_lock_exclusive(&file) {
+        warn!(
+            "Could not acquire KVP truncation lock; assuming another client is handling truncation: {}",
+            e
+        );
+        return Ok(());
+    }
 
     let result = (|| -> Result<(), anyhow::Error> {
         let metadata = file.metadata()?;
@@ -591,6 +711,7 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
             println!("Truncated the KVP file due to stale data.");
         } else {
             println!("File has been truncated since boot, no action taken.");
+            info!("KVP file already fresh since boot; no truncation needed.");
         }
         Ok(())
     })();
@@ -722,11 +843,12 @@ mod tests {
         let test_vm_id = "00000000-0000-0000-0000-000000000001";
 
         let graceful_shutdown = CancellationToken::new();
-        let kvp = Kvp::new(
+        let kvp = Kvp::new_internal(
             temp_path.clone(),
             test_vm_id,
             EVENT_PREFIX,
             graceful_shutdown.clone(),
+            true,
         )
         .expect("Failed to create Kvp");
 
@@ -846,6 +968,81 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_truncate_lock_contention_is_non_fatal() {
+        const LOCK_ENV_PATH: &str = "__KVP_TRUNCATION_LOCK_PATH";
+
+        // Child path: hold an exclusive lock briefly, then exit.
+        if let Ok(path) = std::env::var(LOCK_ENV_PATH) {
+            let lock_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .expect("Child: open lock file");
+            FileExt::lock_exclusive(&lock_file).expect("Child: acquire lock");
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            return;
+        }
+
+        let temp_file =
+            NamedTempFile::new().expect("Failed to create tempfile");
+        let temp_path = temp_file.path().to_path_buf();
+        std::fs::write(&temp_path, "stale-ish data")
+            .expect("Failed to seed temp file");
+
+        let test_exe = std::env::current_exe()
+            .expect("Failed to determine test executable path");
+
+        let mut child = std::process::Command::new(&test_exe)
+            .env(LOCK_ENV_PATH, temp_path.to_str().unwrap())
+            .arg("--exact")
+            .arg("kvp::tests::test_truncate_lock_contention_is_non_fatal")
+            .arg("--nocapture")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn child lock holder");
+
+        // Give the child a moment to acquire the lock.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let graceful_shutdown = CancellationToken::new();
+        let start = std::time::Instant::now();
+        let kvp = Kvp::new_internal(
+            temp_path.clone(),
+            "00000000-0000-0000-0000-000000000003",
+            EVENT_PREFIX,
+            graceful_shutdown.clone(),
+            true,
+        );
+        let elapsed = start.elapsed();
+
+        assert!(
+            kvp.is_ok(),
+            "Kvp initialization should not fail under truncation lock contention"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "Kvp initialization should return quickly under lock contention, took {:?}",
+            elapsed
+        );
+
+        graceful_shutdown.cancel();
+        kvp.expect("Kvp should initialize")
+            .writer
+            .await
+            .expect("KVP writer task panicked")
+            .expect("KVP writer task returned an IO error");
+
+        let status = child.wait().expect("Failed to wait on child");
+        assert!(
+            status.success(),
+            "Child lock holder exited with failure: {status}"
+        );
+    }
+
     #[test]
     fn test_encode_kvp_item_value_length() {
         let key = "test_key";
@@ -908,11 +1105,12 @@ mod tests {
         let graceful_shutdown = CancellationToken::new();
         let emit_kvp_layer = if kvp_enabled {
             Some(
-                Kvp::new(
+                Kvp::new_internal(
                     temp_path.clone(),
                     test_vm_id,
                     EVENT_PREFIX,
                     graceful_shutdown.clone(),
+                    true,
                 )
                 .expect("Failed to create Kvp")
                 .tracing_layer,

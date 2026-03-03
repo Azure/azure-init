@@ -80,40 +80,70 @@ For more on how to use these configuration variables, see the [configuration doc
 
 ## Practical Usage
 
-### Instrumenting Functions
+There are two valid ways to emit KVP data:
+- Use the direct `Kvp` client API for explicit event/report writes.
+- Use tracing instrumentation (`#[instrument]` and `event!`) with `setup_layers`.
 
-To instrument code with tracing, use the `#[instrument]` attribute on functions:
+### Using the KVP Client API
+
+For external callers that want to emit KVP diagnostics directly, use the `Kvp` client:
 
 ```rust
-use tracing::{instrument, Level, event};
+use libazureinit::logging::{Kvp, KvpOptions};
+use tracing::Level;
 
-#[instrument(fields(user_id = ?user.id))]
-async fn provision_user(user: User) -> Result<(), Error> {
-    event!(Level::INFO, "Starting user provisioning");
-    
-    // Function logic
-    
-    event!(Level::INFO, "User provisioning completed successfully");
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Simple path: all defaults
+    let kvp = Kvp::new()?;
+    kvp.emit("Provisioning started", None)?; // defaults to DEBUG
+    kvp.emit("Provisioning info event", Some(Level::INFO))?;
+    kvp.emit_health_report("result=success")?;
+    kvp.close().await?;
+
+    // Advanced path: override defaults
+    let custom = Kvp::with_options(
+        KvpOptions::default()
+            .vm_id("00000000-0000-0000-0000-000000000001")
+            .event_prefix("my-service")
+            .file_path("/var/lib/hyperv/.kvp_pool_1")
+            .truncate_on_start(true),
+    )?;
+    custom.emit("Custom event payload", None)?;
+    custom.close().await?;
     Ok(())
 }
 ```
 
-### Emitting Events
+Default behavior for `Kvp::new()`:
+- `vm_id`: resolved from platform metadata (`get_vm_id`)
+- `event_prefix`: `"azure-init-<version>"` (e.g. `"azure-init-0.1.1"`)
+- `file_path`: `/var/lib/hyperv/.kvp_pool_1`
+- `truncate_on_start`: `true`
 
-To record specific points within a span:
+### Truncation and Locking Behavior
+
+On startup, KVP performs a stale-data check and may truncate the guest pool file.
+
+- The truncate path uses file locking to avoid races between clients.
+- If truncation lock acquisition is unavailable (another client already holds it),
+  initialization continues without failing.
+- This lock-contention case is expected in multi-client scenarios and is logged.
+
+### Instrumenting with Tracing
+
+`azure-init` itself continues to use tracing layers (`setup_layers`) for KVP emission.
+To instrument code with tracing, use the `#[instrument]` attribute and `event!`:
 
 ```rust
-use tracing::{event, Level};
+use tracing::{event, instrument, Level};
 
-fn configure_ssh_keys(user: &str, keys: &[String]) {
-    event!(Level::INFO, user = user, key_count = keys.len(), "Configuring SSH keys");
-    
-    for (i, key) in keys.iter().enumerate() {
-        event!(Level::DEBUG, user = user, key_index = i, "Processing SSH key");
-        // Process each key
-    }
-    
-    event!(Level::INFO, user = user, "SSH keys configured successfully");
+#[instrument(fields(user_id = ?user.id))]
+async fn provision_user(user: User) -> Result<(), Error> {
+    event!(Level::INFO, "Starting user provisioning");
+    // Function logic
+    event!(Level::INFO, "User provisioning completed successfully");
+    Ok(())
 }
 ```
 
