@@ -50,6 +50,7 @@ path = "tests/functional_tests.rs"
 [workspace]
 members = [
     "libazureinit",
+    "libazureinit-kvp",
 ]
 
 [features]
