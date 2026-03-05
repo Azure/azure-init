@@ -5,23 +5,15 @@ use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_sdk::trace::{self as sdktrace, Sampler, SdkTracerProvider};
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::PermissionsExt;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::{event, Level, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{
-    filter::Filtered, fmt, layer::SubscriberExt, registry::LookupSpan,
-    EnvFilter, Layer, Registry,
+    fmt, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
 use crate::config::Config;
-use crate::kvp::{EmitKVPLayer, Kvp as KvpInternal};
-
-pub type LoggingSetup = (
-    Box<dyn Subscriber + Send + Sync + 'static>,
-    Option<JoinHandle<std::io::Result<()>>>,
-);
+pub use libazureinit_kvp::{Kvp, KvpOptions};
 
 fn initialize_tracing() -> sdktrace::Tracer {
     let provider = SdkTracerProvider::builder()
@@ -121,99 +113,6 @@ fn get_kvp_filter(
     }
 }
 
-// Public KVP wrapper API for library consumers
-struct KvpLayer<S: Subscriber>(Filtered<EmitKVPLayer, EnvFilter, S>);
-
-/// Emit tracing data to the Hyper-V KVP.
-///
-/// ## KVP Tracing Configuration
-///
-/// The KVP tracing layer's filter can be configured at runtime by setting the
-/// `AZURE_INIT_KVP_FILTER` environment variable. This allows any application
-/// using this library to override the default filter and control which traces
-/// are sent to the KVP pool.
-///
-/// The value of the variable must be a string that follows the syntax for
-/// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
-/// logging directives. For example: `warn,my_crate=debug` or `info,my_crate::api=trace`.
-/// See `config.rs` for more details.
-///
-/// The filter can also be configured via the `kvp_filter` field in the `Config` struct.
-/// **Precedence**: Environment variable > Config field > Default filter.
-/// If neither is set, a default filter tailored for `azure-init` (WARN level + specific modules) is used.
-///
-/// If an invalid filter string is provided (via env or config), a warning is logged
-/// and the default filter is used instead.
-///
-/// # Example
-///
-/// ```no_run
-/// # use libazureinit::logging::Kvp;
-/// use tracing_subscriber::layer::SubscriberExt;
-///
-/// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
-/// let mut kvp = Kvp::new("a-unique-id")?;
-/// let registry = tracing_subscriber::Registry::default().with(kvp.layer());
-///
-/// // When it's time to shut down, doing this ensures all writes are flushed
-/// kvp.halt().await?;
-/// # Ok(())
-/// # }
-/// ```
-pub struct Kvp<S: Subscriber> {
-    layer: Option<KvpLayer<S>>,
-    /// The `JoinHandle` for the background task responsible for writing
-    /// KVP data to the file. The caller can use this handle to wait for
-    /// the writer to finish.
-    writer: JoinHandle<std::io::Result<()>>,
-    shutdown: CancellationToken,
-}
-
-impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
-    /// Create a new tracing layer for KVP.
-    ///
-    /// Refer to [`libazureinit::get_vm_id`] to retrieve the VM's unique identifier.
-    pub fn new<T: AsRef<str>>(vm_id: T) -> Result<Self, anyhow::Error> {
-        let shutdown = CancellationToken::new();
-        let inner = KvpInternal::new(
-            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
-            vm_id.as_ref(),
-            shutdown.clone(),
-        )?;
-
-        let kvp_filter = get_kvp_filter(None)?;
-        let layer = Some(KvpLayer(inner.tracing_layer.with_filter(kvp_filter)));
-
-        Ok(Self {
-            layer,
-            writer: inner.writer,
-            shutdown,
-        })
-    }
-
-    /// Get a tracing [`Layer`] to use with a [`Registry`].
-    ///
-    /// # Panics if this function is called more than once.
-    pub fn layer(&mut self) -> Filtered<EmitKVPLayer, EnvFilter, S> {
-        assert!(
-            self.layer.is_some(),
-            "Kvp::layer cannot be called multiple times!"
-        );
-        self.layer.take().unwrap().0
-    }
-
-    /// Gracefully shut down the KVP writer.
-    ///
-    /// This will stop new KVP logs from being queued and wait for all pending writes to the KVP
-    /// pool to complete.  After this returns, no further logs will be written to KVP.
-    pub async fn halt(self) -> Result<(), anyhow::Error> {
-        self.shutdown.cancel();
-        self.writer.await??;
-        Ok(())
-    }
-}
-
 /// Builds a `tracing` subscriber that can optionally write azure-init.log
 /// to a specific location if `Some(&Config)` is provided.
 ///
@@ -227,8 +126,7 @@ impl<S: Subscriber + for<'lookup> LookupSpan<'lookup>> Kvp<S> {
 pub fn setup_layers(
     vm_id: &str,
     config: &Config,
-    graceful_shutdown: CancellationToken,
-) -> Result<LoggingSetup, anyhow::Error> {
+) -> Result<Box<dyn Subscriber + Send + Sync + 'static>, anyhow::Error> {
     let tracer = initialize_tracing();
     let otel_layer = OpenTelemetryLayer::new(tracer).with_filter(
         EnvFilter::try_from_env("AZURE_INIT_LOG")
@@ -237,22 +135,13 @@ pub fn setup_layers(
 
     let kvp_filter = get_kvp_filter(config.telemetry.kvp_filter.as_deref())?;
 
-    let (emit_kvp_layer, kvp_writer_handle) = if config
-        .telemetry
-        .kvp_diagnostics
-    {
-        match KvpInternal::new(
-            std::path::PathBuf::from("/var/lib/hyperv/.kvp_pool_1"),
-            vm_id,
-            graceful_shutdown,
-        ) {
-            Ok(kvp) => {
-                let layer = kvp.tracing_layer.with_filter(kvp_filter);
-                (Some(layer), Some(kvp.writer))
-            }
+    let emit_kvp_layer = if config.telemetry.kvp_diagnostics {
+        let options = KvpOptions::default().vm_id(vm_id);
+        match Kvp::with_options(options) {
+            Ok(kvp) => Some(kvp.tracing_layer.with_filter(kvp_filter)),
             Err(e) => {
                 event!(Level::ERROR, "Failed to initialize Kvp: {}. Continuing without KVP logging.", e);
-                (None, None)
+                None
             }
         }
     } else {
@@ -260,7 +149,7 @@ pub fn setup_layers(
             Level::INFO,
             "Hyper-V KVP diagnostics are disabled via config.  It is recommended to be enabled for support purposes."
         );
-        (None, None)
+        None
     };
 
     let stderr_layer = fmt::layer()
@@ -315,7 +204,7 @@ pub fn setup_layers(
         .with(emit_kvp_layer)
         .with(file_layer);
 
-    Ok((Box::new(subscriber), kvp_writer_handle))
+    Ok(Box::new(subscriber))
 }
 
 #[cfg(test)]
@@ -531,10 +420,9 @@ mod tests {
         std::env::remove_var("AZURE_INIT_KVP_FILTER");
     }
 
-    #[tokio::test]
+    #[test]
     #[serial]
-    async fn test_azure_init_log() {
-        // Redirect stderr to a buffer to keep the main test output clean from ERROR logs.
+    fn test_azure_init_log() {
         let _buf = BufferRedirect::stderr().unwrap();
 
         let log_file = NamedTempFile::new().expect("Failed to create tempfile");
@@ -545,11 +433,9 @@ mod tests {
         config.telemetry.kvp_diagnostics = false;
 
         let vm_id = "test-vm-id-for-logging";
-        let graceful_shutdown = CancellationToken::new();
 
-        let (subscriber, _kvp_handle) =
-            setup_layers(vm_id, &config, graceful_shutdown.clone())
-                .expect("Failed to setup layers");
+        let subscriber =
+            setup_layers(vm_id, &config).expect("Failed to setup layers");
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::trace!(
@@ -569,8 +455,7 @@ mod tests {
             );
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        graceful_shutdown.cancel();
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         let log_contents = std::fs::read_to_string(&log_path)
             .expect("Failed to read log file");
@@ -592,21 +477,18 @@ mod tests {
             && line.contains("should be logged to the file")));
     }
 
-    #[tokio::test]
+    #[test]
     #[serial]
-    async fn test_stderr_logger_defaults_to_error() {
+    fn test_stderr_logger_defaults_to_error() {
         let mut config = Config::default();
         config.telemetry.kvp_diagnostics = false;
 
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let graceful_shutdown = CancellationToken::new();
 
-        // Redirect stderr to a buffer
         let mut buf = BufferRedirect::stderr().unwrap();
 
-        let (subscriber, _kvp_handle) =
-            setup_layers(test_vm_id, &config, graceful_shutdown.clone())
-                .expect("Failed to setup layers");
+        let subscriber =
+            setup_layers(test_vm_id, &config).expect("Failed to setup layers");
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(
@@ -620,14 +502,13 @@ mod tests {
             );
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        graceful_shutdown.cancel();
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         let mut stderr_contents = String::new();
         buf.read_to_string(&mut stderr_contents)
             .expect("Failed to read from stderr buffer");
 
-        drop(buf); // release stderr
+        drop(buf);
 
         assert!(!stderr_contents.contains("This is an info message"));
         assert!(!stderr_contents.contains("This is a warn message"));

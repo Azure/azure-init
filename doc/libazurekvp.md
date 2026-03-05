@@ -1,126 +1,372 @@
-# Azure-init Tracing System
+# libazureinit-kvp: Layered KVP Architecture
 
 ## Overview
 
-Azure-init implements a comprehensive tracing system that captures detailed information about the provisioning process.
-This information is crucial for monitoring, debugging, and troubleshooting VM provisioning issues in Azure environments.
-The tracing system is built on a multi-layered architecture that provides flexibility and robustness.
+`libazureinit-kvp` is a standalone workspace crate that provides a layered
+library for Hyper-V KVP (Key-Value Pair) storage. It replaces the former
+`kvp.rs` module in `libazureinit` with independently testable
+layers and synchronous, flock-based I/O.
+
+The crate is consumed by `libazureinit` (via `logging.rs`) and is also
+available to external callers who want to emit KVP diagnostics or
+provisioning reports.
 
 ## Architecture
 
-The tracing architecture consists of four specialized layers, each handling a specific aspect of the tracing process:
+The library is organized into four layers, stacked from low-level storage
+up to tracing integration:
 
-### 1. EmitKVPLayer
+```
+┌─────────────────────────────────────────────────┐
+│  Kvp<S>  (top-level client, wires layers)       │
+├─────────────────────────────────────────────────┤
+│  Layer 3: ProvisioningReport                    │
+│           Typed accessor for PROVISIONING_REPORT│
+├─────────────────────────────────────────────────┤
+│  Layer 2: TracingKvpLayer<S>                    │
+│           tracing_subscriber::Layer impl        │
+├─────────────────────────────────────────────────┤
+│  Layer 1: DiagnosticsKvp<S>                     │
+│           Typed diagnostic events, splitting    │
+├─────────────────────────────────────────────────┤
+│  Layer 0: KvpStore trait                        │
+│  ┌──────────────────┐  ┌─────────────────────┐  │
+│  │ HyperVKvpStore   │  │ InMemoryKvpStore    │  │
+│  │ (production)     │  │ (test double)       │  │
+│  └──────────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────┘
+```
 
-**Purpose**: Processes spans and events by capturing metadata, generating key-value pairs (KVPs), and writing to Hyper-V's data exchange file.
+### Layer 0: `KvpStore` trait
 
-**Key Functions**:
-- Captures span lifecycle events (creation, entry, exit, closing)
-- Processes emitted events within spans
-- Formats data as KVPs for Hyper-V consumption
-- Writes encoded data to `/var/lib/hyperv/.kvp_pool_1`
-
-Additionally, events emitted with a `health_report` field are written as special provisioning reports using the key `PROVISIONING_REPORT`.
-
-**Integration with Azure**:
-- The `/var/lib/hyperv/.kvp_pool_1` file is monitored by the Hyper-V `hv_kvp_daemon` service
-- This enables key metrics and logs to be transferred from the VM to the Azure platform
-- Administrators can access this data through the Azure portal or API
-
-### 2. OpenTelemetryLayer
-
-**Purpose**: Propagates tracing context and prepares span data for export.
-
-**Key Functions**:
-- Maintains distributed tracing context across service boundaries
-- Exports standardized trace data to compatible backends
-- Enables integration with broader monitoring ecosystems
-
-### 3. Stderr Layer
-
-**Purpose**: Formats and logs trace data to stderr.
-
-**Key Functions**:
-- Provides human-readable logging for immediate inspection
-- Supports debugging during development
-- Captures trace events even when other layers might fail
-
-### 4. File Layer
-
-**Purpose**: Writes formatted logs to a file (default path: `/var/log/azure-init.log`).
-
-**Key Functions**:
-- Provides a persistent log for post-provisioning inspection
-- Uses file permissions `0600` when possible
-- Log level controlled by `AZURE_INIT_LOG` (defaults to `info` for the file layer)
-
-## How the Layers Work Together
-
-Despite operating independently, these layers collaborate to provide comprehensive tracing:
-
-1. **Independent Processing**: Each layer processes spans and events without dependencies on other layers
-2. **Ordered Execution**: Layers are executed in the order they are registered in `setup_layers` (stderr, OpenTelemetry, KVP if enabled, file if available)
-3. **Complementary Functions**: Each layer serves a specific purpose in the tracing ecosystem:
-   - `EmitKVPLayer` focuses on Azure Hyper-V integration
-   - `OpenTelemetryLayer` handles standardized tracing and exports
-   - `Stderr Layer` provides immediate visibility for debugging
-
-### Configuration
-
-The tracing system's behavior is controlled through configuration files and environment variables, allowing more control over what data is captured and where it's sent:
-
-- `telemetry.kvp_diagnostics` (config): Enables/disables KVP emission. Default: `true`.
-- `telemetry.kvp_filter` (config): Optional `EnvFilter`-style directives to select which spans/events go to KVP.
-- `azure_init_log_path.path` (config): Target path for the file layer. Default: `/var/log/azure-init.log`.
-- `AZURE_INIT_KVP_FILTER` (env): Overrides `telemetry.kvp_filter`. Precedence: env > config > default.
-- `AZURE_INIT_LOG` (env): Controls stderr and file fmt layers’ levels (defaults: stderr=`error`, file=`info`).
-
-The KVP layer uses a conservative default filter aimed at essential provisioning signals; adjust that via the settings above as needed.
-For more on how to use these configuration variables, see the [configuration documentation](./configuration.md#complete-configuration-example).
-
-## Practical Usage
-
-### Instrumenting Functions
-
-To instrument code with tracing, use the `#[instrument]` attribute on functions:
+The fundamental storage abstraction. All higher layers are generic over
+`S: KvpStore`, making them testable without the filesystem.
 
 ```rust
-use tracing::{instrument, Level, event};
+pub trait KvpStore: Send + Sync {
+    fn write(&self, key: &str, value: &str) -> io::Result<()>;
+    fn read(&self, key: &str) -> io::Result<Option<String>>;
+    fn entries(&self) -> io::Result<Vec<(String, String)>>;
+    fn delete(&self, key: &str) -> io::Result<bool>;
+}
+```
 
-#[instrument(fields(user_id = ?user.id))]
-async fn provision_user(user: User) -> Result<(), Error> {
-    event!(Level::INFO, "Starting user provisioning");
-    
-    // Function logic
-    
-    event!(Level::INFO, "User provisioning completed successfully");
+`HyperVKvpStore` — Production implementation that reads and writes the
+binary Hyper-V pool file (`/var/lib/hyperv/.kvp_pool_1`). Each record is
+2,560 bytes (512-byte key + 2,048-byte value). Concurrency is handled via
+`flock` (shared locks for reads, exclusive locks for writes).
+
+`InMemoryKvpStore` — `HashMap`-backed test double. Implements
+`Clone` (via `Arc<Mutex<HashMap>>`), so clones share state, matching the
+semantics expected by higher layers.
+
+### Layer 1: `DiagnosticsKvp<S>`
+
+Provides typed access to diagnostic events. Handles:
+
+- Key generation using the format
+  `{event_prefix}|{vm_id}|{level}|{name}|{span_id}`
+- Value splitting at the 1,022-byte Azure platform read limit
+- Parsing diagnostic keys back into `DiagnosticEvent` structs
+
+```rust
+kvp.diagnostics.emit(&DiagnosticEvent {
+    level: "INFO".into(),
+    name: "provision:user".into(),
+    span_id: "abc-123".into(),
+    message: "User created".into(),
+    timestamp: Utc::now(),
+})?;
+```
+
+### Layer 2: `TracingKvpLayer<S>`
+
+A `tracing_subscriber::Layer` implementation that automatically converts
+`tracing` spans and events into KVP diagnostic entries. It:
+
+- Detects events with a `health_report` field and writes them directly
+  to the store under the `PROVISIONING_REPORT` key
+- Converts all other events into `DiagnosticEvent` structs and calls
+  `DiagnosticsKvp::emit`
+- Tracks span start/end times and emits timing entries on span close
+
+This layer is registered alongside the other tracing layers (stderr,
+file, OpenTelemetry) in `setup_layers`.
+
+### Layer 3: `ProvisioningReport`
+
+A typed accessor for the `PROVISIONING_REPORT` KVP key used by the
+Azure platform. Supports:
+
+- `ProvisioningReport::success(vm_id)` — builds a success report
+- `ProvisioningReport::error(vm_id, reason)` — builds
+  an error report
+- `report.write_to(&store)` / `ProvisioningReport::read_from(&store)` —
+  serialization via the pipe-delimited wire format
+
+The wire format is fully compatible with the existing `health.rs`
+`encode_report` output.
+
+### `Kvp<S>` Client
+
+The top-level struct that wires the layers together:
+
+```rust
+pub struct Kvp<S: KvpStore + 'static> {
+    pub store: S,
+    pub diagnostics: DiagnosticsKvp<S>,
+    pub tracing_layer: TracingKvpLayer<S>,
+}
+```
+
+Constructors:
+
+- `Kvp::with_options(KvpOptions)` — production path, creates a
+  `Kvp<HyperVKvpStore>`, requires `vm_id` to be set
+- `Kvp::from_store(store, vm_id, event_prefix)` — generic constructor
+  for any `KvpStore` implementation (useful for testing)
+
+## What the Crate Provides vs. What azure-init Adds
+
+### libazureinit-kvp (standalone)
+
+External callers depend on `libazureinit-kvp` directly and get:
+
+- `KvpStore` trait + `HyperVKvpStore` + `InMemoryKvpStore`
+- `DiagnosticsKvp<S>` for typed diagnostic events with value splitting
+- `TracingKvpLayer<S>` for automatic tracing-to-KVP bridging
+- `ProvisioningReport` for reading/writing provisioning reports
+- `Kvp<S>` client that wires the layers together
+- `KvpOptions` builder for production construction
+
+The crate has **no filtering, no config system, and no awareness of
+azure-init's log levels or environment variables**. It emits every
+span/event that reaches the `TracingKvpLayer`. Callers are responsible
+for applying their own `tracing_subscriber::EnvFilter` (or other filter)
+via `.with_filter(...)` on the `TracingKvpLayer` if they want selective
+emission.
+
+Example for an external caller:
+
+```rust
+use libazureinit_kvp::{Kvp, KvpOptions};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
+let kvp = Kvp::with_options(
+    KvpOptions::default().vm_id("my-vm-id"),
+)?;
+
+let subscriber = Registry::default().with(
+    kvp.tracing_layer.with_filter(EnvFilter::new("info")),
+);
+```
+
+### azure-init / libazureinit (via `logging.rs`)
+
+azure-init adds orchestration and policy on top of the raw kvp crate:
+
+- `setup_layers()`: wires `TracingKvpLayer` alongside stderr, file,
+  and OpenTelemetry layers into a single tracing subscriber.
+- KVP filter resolution with three-tier precedence:
+  `AZURE_INIT_KVP_FILTER` env var > `telemetry.kvp_filter` config >
+  hardcoded default filter (conservative, provisioning-signal-only).
+- vm_id resolution via `get_vm_id()` (reads DMI/SMBIOS data) before
+  constructing the `Kvp` client — the kvp crate itself does not perform
+  platform-specific ID lookups.
+- config-driven enable/disable (`telemetry.kvp_diagnostics`): when
+  `false`, the KVP layer is not registered at all.
+
+This separation means the kvp crate stays dependency-light and
+platform-agnostic (beyond the Hyper-V pool file format), while
+azure-init owns the policy decisions about what gets logged where.
+
+## Integration with azure-init
+
+### `logging.rs`
+
+`setup_layers` creates the `Kvp` client and registers
+`kvp.tracing_layer` as one of the subscriber layers:
+
+```rust
+pub fn setup_layers(
+    vm_id: &str,
+    config: &Config,
+) -> Result<Box<dyn Subscriber + Send + Sync + 'static>, anyhow::Error>
+```
+
+The function no longer requires a `CancellationToken` or returns a
+`JoinHandle` — all KVP I/O is synchronous.
+
+### `main.rs`
+
+The KVP shutdown block (`graceful_shutdown.cancel()`, `handle.await`)
+has been removed. The `main` function simply calls `setup_layers` and
+uses the returned subscriber directly.
+
+### `health.rs` / `error.rs`
+
+These files are unchanged. The `encode_report` function in `health.rs`
+continues to format the pipe-delimited report string that flows through
+the tracing layer to KVP via the `health_report` field detection.
+
+## Configuration
+
+- `telemetry.kvp_diagnostics` (config): Enables/disables KVP emission.
+  Default: `true`.
+- `telemetry.kvp_filter` (config): Optional `EnvFilter`-style directives
+  to select which spans/events go to KVP.
+- `AZURE_INIT_KVP_FILTER` (env): Overrides `telemetry.kvp_filter`.
+  Precedence: env > config > default.
+- `AZURE_INIT_LOG` (env): Controls stderr and file layer log levels
+  (defaults: stderr=`error`, file=`info`).
+
+The KVP layer uses a conservative default filter aimed at essential
+provisioning signals. See the
+[configuration documentation](./configuration.md#complete-configuration-example)
+for details.
+
+## Truncation and Locking
+
+On startup, `Kvp::with_options` calls `HyperVKvpStore::truncate_if_stale`,
+which checks the pool file's mtime against the system uptime. If the file
+predates the current boot, it is truncated to discard stale data from a
+previous session. This operation uses an exclusive flock; if the lock
+cannot be acquired, initialization continues without truncation.
+
+All subsequent writes use per-operation exclusive flocks to ensure
+safe concurrent access from multiple threads or processes.
+
+## Usage Examples
+
+### Using the KVP Client API
+
+```rust
+use libazureinit_kvp::{Kvp, KvpOptions, DiagnosticEvent, ProvisioningReport};
+use chrono::Utc;
+
+fn main() -> std::io::Result<()> {
+    let vm_id = "00000000-0000-0000-0000-000000000001";
+    let kvp = Kvp::with_options(
+        KvpOptions::default().vm_id(vm_id),
+    )?;
+
+    // Emit a diagnostic event
+    kvp.diagnostics.emit(&DiagnosticEvent {
+        level: "INFO".into(),
+        name: "provision:start".into(),
+        span_id: "span-1".into(),
+        message: "Provisioning started".into(),
+        timestamp: Utc::now(),
+    })?;
+
+    // Write a provisioning report
+    let report = ProvisioningReport::success(vm_id);
+    report.write_to(&kvp.store)?;
+
     Ok(())
 }
 ```
 
-### Emitting Events
+### Full Provisioning Flow Example
 
-To record specific points within a span:
+A more realistic example showing how to emit diagnostics and
+provisioning reports through a provision-then-report workflow:
 
 ```rust
-use tracing::{event, Level};
+use libazureinit_kvp::{Kvp, KvpOptions, DiagnosticEvent, ProvisioningReport};
+use chrono::Utc;
 
-fn configure_ssh_keys(user: &str, keys: &[String]) {
-    event!(Level::INFO, user = user, key_count = keys.len(), "Configuring SSH keys");
-    
-    for (i, key) in keys.iter().enumerate() {
-        event!(Level::DEBUG, user = user, key_index = i, "Processing SSH key");
-        // Process each key
-    }
-    
-    event!(Level::INFO, user = user, "SSH keys configured successfully");
+fn provision_vm(vm_id: &str) -> Result<(), String> {
+    // ... actual provisioning logic ...
+    // Return Ok(()) on success, Err("reason") on failure
+    Ok(())
 }
+
+fn main() {
+    let vm_id = "00000000-0000-0000-0000-000000000001";
+
+    let kvp = match Kvp::with_options(KvpOptions::default().vm_id(vm_id)) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("KVP init failed (non-fatal): {e}");
+            return;
+        }
+    };
+
+    // Signal that provisioning is in progress
+    let _ = kvp.diagnostics.emit(&DiagnosticEvent {
+        level: "INFO".into(),
+        name: "provision:start".into(),
+        span_id: "main".into(),
+        message: format!("Provisioning in progress for vm_id={vm_id}"),
+        timestamp: Utc::now(),
+    });
+
+    match provision_vm(vm_id) {
+        Ok(()) => {
+            let _ = kvp.diagnostics.emit(&DiagnosticEvent {
+                level: "INFO".into(),
+                name: "provision:complete".into(),
+                span_id: "main".into(),
+                message: "Provisioning completed successfully".into(),
+                timestamp: Utc::now(),
+            });
+            let report = ProvisioningReport::success(vm_id);
+            let _ = report.write_to(&kvp.store);
+        }
+        Err(reason) => {
+            let _ = kvp.diagnostics.emit(&DiagnosticEvent {
+                level: "ERROR".into(),
+                name: "provision:failed".into(),
+                span_id: "main".into(),
+                message: format!("Provisioning failed: {reason}"),
+                timestamp: Utc::now(),
+            });
+            let report = ProvisioningReport::error(vm_id, &reason);
+            let _ = report.write_to(&kvp.store);
+        }
+    }
+}
+```
+
+Note the use of `let _ =` for all KVP operations -- KVP errors are
+non-fatal and should never block provisioning. This matches the
+principle used throughout azure-init.
+
+### Using Tracing Instrumentation
+
+`azure-init` uses `setup_layers` to register the KVP tracing layer.
+Code instrumented with `#[instrument]` and `event!` automatically
+emits KVP entries:
+
+```rust
+use tracing::{event, instrument, Level};
+
+#[instrument(fields(user_id = ?user.id))]
+fn provision_user(user: &User) -> Result<(), Error> {
+    event!(Level::INFO, "Starting user provisioning");
+    // ... provisioning logic ...
+    event!(Level::INFO, "User provisioning completed");
+    Ok(())
+}
+```
+
+### Testing with InMemoryKvpStore
+
+```rust
+use libazureinit_kvp::{Kvp, InMemoryKvpStore, ProvisioningReport};
+
+let store = InMemoryKvpStore::default();
+let kvp = Kvp::from_store(store.clone(), "test-vm", "test-prefix");
+
+let report = ProvisioningReport::success("test-vm");
+report.write_to(&kvp.store).unwrap();
+
+let read_back = ProvisioningReport::read_from(&kvp.store).unwrap();
+assert!(read_back.is_some());
 ```
 
 ## Reference Documentation
 
-For more details on how the Hyper-V Data Exchange Service works, refer to the official documentation:
-[Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
-
-For OpenTelemetry integration details:
-[OpenTelemetry for Rust](https://opentelemetry.io/docs/instrumentation/rust/)
+- [Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
+- [OpenTelemetry for Rust](https://opentelemetry.io/docs/instrumentation/rust/)
