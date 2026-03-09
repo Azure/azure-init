@@ -29,8 +29,7 @@ Records are appended to the file and zero-padded to fixed widths.
   - key byte length exceeds `max_key_size`
   - value byte length exceeds `max_value_size`
   - an I/O error occurs
-- Oversized values are rejected by the store (no silent truncation).
-  Higher layers are responsible for chunking/splitting when required.
+- This store never truncates: oversized values cause `write()` to return an error.
 
 ### `read(key)`
 
@@ -74,10 +73,9 @@ enforce and reuse exact bounds.
 
 Why Azure limit is lower for values:
 - Hyper-V record format allows 2048-byte values.
-- Azure host handling is stricter; values beyond 1022 bytes are
-  silently truncated by host-side consumers.
-- For Azure VMs, use `KvpLimits::azure()` and rely on higher-level
-  chunking when larger payloads must be preserved.
+- On Azure, host-side consumers truncate values beyond 1022 bytes, so
+  `KvpLimits::azure()` caps at 1022. Layers above this crate (e.g.
+  diagnostics/tracing) handle chunking of larger payloads.
 
 ## Record Count Behavior
 
