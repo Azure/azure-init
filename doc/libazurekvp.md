@@ -1,126 +1,90 @@
-# Azure-init Tracing System
+# `libazureinit-kvp`
 
-## Overview
+`libazureinit-kvp` is the storage layer for Hyper-V KVP (Key-Value Pair)
+pool files used by Azure guests.
 
-Azure-init implements a comprehensive tracing system that captures detailed information about the provisioning process.
-This information is crucial for monitoring, debugging, and troubleshooting VM provisioning issues in Azure environments.
-The tracing system is built on a multi-layered architecture that provides flexibility and robustness.
+It defines:
+- `KvpStore`: storage trait with explicit read/write/delete semantics.
+- `HyperVKvpStore`: production implementation backed by the Hyper-V
+  binary pool file format.
+- `KvpLimits`: exported key/value byte limits for Hyper-V and Azure.
 
-## Architecture
+## Record Format
 
-The tracing architecture consists of four specialized layers, each handling a specific aspect of the tracing process:
+The Hyper-V pool file record format is fixed width:
+- Key field: 512 bytes
+- Value field: 2048 bytes
+- Total record size: 2560 bytes
 
-### 1. EmitKVPLayer
+Records are appended to the file and zero-padded to fixed widths.
 
-**Purpose**: Processes spans and events by capturing metadata, generating key-value pairs (KVPs), and writing to Hyper-V's data exchange file.
+## Store Semantics
 
-**Key Functions**:
-- Captures span lifecycle events (creation, entry, exit, closing)
-- Processes emitted events within spans
-- Formats data as KVPs for Hyper-V consumption
-- Writes encoded data to `/var/lib/hyperv/.kvp_pool_1`
+### `write(key, value)`
 
-Additionally, events emitted with a `health_report` field are written as special provisioning reports using the key `PROVISIONING_REPORT`.
+- Append-only behavior: each call appends one new record.
+- Duplicate keys are allowed in the file.
+- Returns an error when:
+  - key is empty
+  - key byte length exceeds `max_key_size`
+  - value byte length exceeds `max_value_size`
+  - an I/O error occurs
+- Oversized values are rejected by the store (no silent truncation).
+  Higher layers are responsible for chunking/splitting when required.
 
-**Integration with Azure**:
-- The `/var/lib/hyperv/.kvp_pool_1` file is monitored by the Hyper-V `hv_kvp_daemon` service
-- This enables key metrics and logs to be transferred from the VM to the Azure platform
-- Administrators can access this data through the Azure portal or API
+### `read(key)`
 
-### 2. OpenTelemetryLayer
+- Scans records and returns the value from the most recent matching key
+  (last-write-wins).
+- Returns `Ok(None)` when the key is missing or file does not exist.
 
-**Purpose**: Propagates tracing context and prepares span data for export.
+### `entries()`
 
-**Key Functions**:
-- Maintains distributed tracing context across service boundaries
-- Exports standardized trace data to compatible backends
-- Enables integration with broader monitoring ecosystems
+- Returns `HashMap<String, String>`.
+- Deduplicates duplicate keys using last-write-wins, matching `read`.
+- This exposes a logical unique-key view even though the file itself is
+  append-only and may contain multiple records per key.
 
-### 3. Stderr Layer
+### `delete(key)`
 
-**Purpose**: Formats and logs trace data to stderr.
+- Rewrites the file without any matching key records.
+- Returns `true` if at least one record was removed, else `false`.
 
-**Key Functions**:
-- Provides human-readable logging for immediate inspection
-- Supports debugging during development
-- Captures trace events even when other layers might fail
+## Truncate Semantics (`truncate_if_stale`)
 
-### 4. File Layer
+`HyperVKvpStore::truncate_if_stale` clears stale records from previous
+boots by comparing file `mtime` to the current boot timestamp.
 
-**Purpose**: Writes formatted logs to a file (default path: `/var/log/azure-init.log`).
+- If file predates boot: truncate to zero length.
+- If file is current: leave unchanged.
+- If lock contention occurs (`WouldBlock`): return `Ok(())` and skip.
+- Non-contention lock failures are returned as errors.
 
-**Key Functions**:
-- Provides a persistent log for post-provisioning inspection
-- Uses file permissions `0600` when possible
-- Log level controlled by `AZURE_INIT_LOG` (defaults to `info` for the file layer)
+## Limits and Azure Compatibility
 
-## How the Layers Work Together
+`KvpLimits` is exported so callers (including diagnostics layers) can
+enforce and reuse exact bounds.
 
-Despite operating independently, these layers collaborate to provide comprehensive tracing:
+- `KvpLimits::hyperv()`
+  - `max_key_size = 512`
+  - `max_value_size = 2048`
+- `KvpLimits::azure()`
+  - `max_key_size = 512`
+  - `max_value_size = 1022` (UTF-16: 511 characters + null terminator)
 
-1. **Independent Processing**: Each layer processes spans and events without dependencies on other layers
-2. **Ordered Execution**: Layers are executed in the order they are registered in `setup_layers` (stderr, OpenTelemetry, KVP if enabled, file if available)
-3. **Complementary Functions**: Each layer serves a specific purpose in the tracing ecosystem:
-   - `EmitKVPLayer` focuses on Azure Hyper-V integration
-   - `OpenTelemetryLayer` handles standardized tracing and exports
-   - `Stderr Layer` provides immediate visibility for debugging
+Why Azure limit is lower for values:
+- Hyper-V record format allows 2048-byte values.
+- Azure host handling is stricter; values beyond 1022 bytes are
+  silently truncated by host-side consumers.
+- For Azure VMs, use `KvpLimits::azure()` and rely on higher-level
+  chunking when larger payloads must be preserved.
 
-### Configuration
+## Record Count Behavior
 
-The tracing system's behavior is controlled through configuration files and environment variables, allowing more control over what data is captured and where it's sent:
+There is no explicit record-count cap in this storage layer.
+The file grows with each append until external constraints (disk space,
+retention policy, or caller behavior) are applied.
 
-- `telemetry.kvp_diagnostics` (config): Enables/disables KVP emission. Default: `true`.
-- `telemetry.kvp_filter` (config): Optional `EnvFilter`-style directives to select which spans/events go to KVP.
-- `azure_init_log_path.path` (config): Target path for the file layer. Default: `/var/log/azure-init.log`.
-- `AZURE_INIT_KVP_FILTER` (env): Overrides `telemetry.kvp_filter`. Precedence: env > config > default.
-- `AZURE_INIT_LOG` (env): Controls stderr and file fmt layers’ levels (defaults: stderr=`error`, file=`info`).
+## References
 
-The KVP layer uses a conservative default filter aimed at essential provisioning signals; adjust that via the settings above as needed.
-For more on how to use these configuration variables, see the [configuration documentation](./configuration.md#complete-configuration-example).
-
-## Practical Usage
-
-### Instrumenting Functions
-
-To instrument code with tracing, use the `#[instrument]` attribute on functions:
-
-```rust
-use tracing::{instrument, Level, event};
-
-#[instrument(fields(user_id = ?user.id))]
-async fn provision_user(user: User) -> Result<(), Error> {
-    event!(Level::INFO, "Starting user provisioning");
-    
-    // Function logic
-    
-    event!(Level::INFO, "User provisioning completed successfully");
-    Ok(())
-}
-```
-
-### Emitting Events
-
-To record specific points within a span:
-
-```rust
-use tracing::{event, Level};
-
-fn configure_ssh_keys(user: &str, keys: &[String]) {
-    event!(Level::INFO, user = user, key_count = keys.len(), "Configuring SSH keys");
-    
-    for (i, key) in keys.iter().enumerate() {
-        event!(Level::DEBUG, user = user, key_index = i, "Processing SSH key");
-        // Process each key
-    }
-    
-    event!(Level::INFO, user = user, "SSH keys configured successfully");
-}
-```
-
-## Reference Documentation
-
-For more details on how the Hyper-V Data Exchange Service works, refer to the official documentation:
-[Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
-
-For OpenTelemetry integration details:
-[OpenTelemetry for Rust](https://opentelemetry.io/docs/instrumentation/rust/)
+- [Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
