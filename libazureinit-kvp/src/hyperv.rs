@@ -20,7 +20,7 @@
 //! Writes validate key/value byte lengths using [`KvpLimits`] and return
 //! errors for empty/oversized keys or oversized values. The on-disk
 //! format is always 512 + 2,048 bytes; limits only constrain what may
-//! be written (for example, Azure's 1,024-byte value limit).
+//! be written (for example, Azure's 1,022-byte value limit).
 //!
 //! Higher layers are responsible for splitting/chunking oversized
 //! diagnostics payloads before calling this store.
@@ -41,6 +41,18 @@ use sysinfo::System;
 use crate::{
     KvpLimits, KvpStore, HYPERV_MAX_KEY_BYTES, HYPERV_MAX_VALUE_BYTES,
 };
+
+/// DMI chassis asset tag used to identify Azure VMs.
+const AZURE_CHASSIS_ASSET_TAG: &str = "7783-7084-3265-9085-8269-3286-77";
+const AZURE_CHASSIS_ASSET_TAG_PATH: &str =
+    "/sys/class/dmi/id/chassis_asset_tag";
+
+fn is_azure_vm(tag_path: Option<&str>) -> bool {
+    let path = tag_path.unwrap_or(AZURE_CHASSIS_ASSET_TAG_PATH);
+    std::fs::read_to_string(path)
+        .map(|s| s.trim() == AZURE_CHASSIS_ASSET_TAG)
+        .unwrap_or(false)
+}
 
 /// Key field width in the on-disk record format (bytes).
 const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = HYPERV_MAX_KEY_BYTES;
@@ -68,12 +80,43 @@ pub struct HyperVKvpStore {
 }
 
 impl HyperVKvpStore {
-    /// Create a store backed by the pool file at `path`.
+    /// Create a store with explicit limits.
     ///
     /// The file is created on first write if it does not already exist.
-    /// `limits` controls the maximum key and value sizes that
-    /// [`write`](KvpStore::write) will accept.
+    /// Use [`HyperVKvpStore::new_autodetect`] to choose limits automatically.
     pub fn new(path: impl Into<PathBuf>, limits: KvpLimits) -> Self {
+        Self {
+            path: path.into(),
+            limits,
+        }
+    }
+
+    /// Create a store with limits chosen from host platform detection.
+    ///
+    /// If the Azure DMI asset tag is present, uses [`KvpLimits::azure`].
+    /// Otherwise, uses [`KvpLimits::hyperv`].
+    pub fn new_autodetect(path: impl Into<PathBuf>) -> Self {
+        let limits = if is_azure_vm(None) {
+            KvpLimits::azure()
+        } else {
+            KvpLimits::hyperv()
+        };
+        Self {
+            path: path.into(),
+            limits,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_autodetect_with_tag_path(
+        path: impl Into<PathBuf>,
+        tag_path: &str,
+    ) -> Self {
+        let limits = if is_azure_vm(Some(tag_path)) {
+            KvpLimits::azure()
+        } else {
+            KvpLimits::hyperv()
+        };
         Self {
             path: path.into(),
             limits,
@@ -396,6 +439,34 @@ mod tests {
 
     fn azure_store(path: &Path) -> HyperVKvpStore {
         HyperVKvpStore::new(path, KvpLimits::azure())
+    }
+
+    #[test]
+    fn test_autodetect_uses_azure_limits_on_azure_host() {
+        let tag_file = NamedTempFile::new().unwrap();
+        let pool_file = NamedTempFile::new().unwrap();
+        // DMI files on Linux have a trailing newline.
+        std::fs::write(tag_file.path(), format!("{AZURE_CHASSIS_ASSET_TAG}\n"))
+            .unwrap();
+
+        let store = HyperVKvpStore::new_autodetect_with_tag_path(
+            pool_file.path(),
+            tag_file.path().to_str().unwrap(),
+        );
+        assert_eq!(store.limits(), KvpLimits::azure());
+    }
+
+    #[test]
+    fn test_autodetect_uses_hyperv_limits_on_bare_hyperv() {
+        let tag_file = NamedTempFile::new().unwrap();
+        let pool_file = NamedTempFile::new().unwrap();
+        std::fs::write(tag_file.path(), "bare-hyperv-tag").unwrap();
+
+        let store = HyperVKvpStore::new_autodetect_with_tag_path(
+            pool_file.path(),
+            tag_file.path().to_str().unwrap(),
+        );
+        assert_eq!(store.limits(), KvpLimits::hyperv());
     }
 
     #[test]

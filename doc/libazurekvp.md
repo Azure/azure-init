@@ -70,7 +70,7 @@ enforce and reuse exact bounds.
   - `max_value_size = 2048`
 - `KvpLimits::azure()`
   - `max_key_size = 512`
-  - `max_value_size = 1022` (UTF-16: 511 characters + null terminator)
+  - `max_value_size = 1022`
 
 Why Azure limit is lower for values:
 - Hyper-V record format allows 2048-byte values.

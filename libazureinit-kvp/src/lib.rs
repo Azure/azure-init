@@ -21,7 +21,7 @@ pub const HYPERV_MAX_KEY_BYTES: usize = 512;
 pub const HYPERV_MAX_VALUE_BYTES: usize = 2048;
 /// Azure key limit in bytes (policy/default preset).
 pub const AZURE_MAX_KEY_BYTES: usize = 512;
-/// Azure value limit in bytes (UTF-16: 511 characters + null terminator).
+/// Azure value limit in bytes, matching Azure host behavior.
 pub const AZURE_MAX_VALUE_BYTES: usize = 1022;
 
 /// Storage abstraction for KVP backends.
@@ -32,8 +32,7 @@ pub const AZURE_MAX_VALUE_BYTES: usize = 1022;
 /// - `entries`: returns deduplicated key/value pairs as `HashMap`.
 /// - `delete`: removes all records for a key and reports whether any were removed.
 /// - `limits`: returns the [`KvpLimits`] that govern maximum key/value
-///   sizes for this store, allowing consumers to chunk or validate
-///   data generically.
+///   sizes for this store.
 pub trait KvpStore: Send + Sync {
     /// The key and value byte-size limits for this store.
     ///
@@ -71,16 +70,7 @@ pub trait KvpStore: Send + Sync {
     fn delete(&self, key: &str) -> io::Result<bool>;
 }
 
-/// Configurable key/value byte limits for writes.
-///
-/// Presets:
-/// - [`KvpLimits::hyperv`]: [`HYPERV_MAX_KEY_BYTES`] /
-///   [`HYPERV_MAX_VALUE_BYTES`].
-/// - [`KvpLimits::azure`]: [`AZURE_MAX_KEY_BYTES`] /
-///   [`AZURE_MAX_VALUE_BYTES`].
-///
-/// Use `azure()` for Azure guests, where host-side consumers are stricter
-/// on value byte length than raw Hyper-V format.
+/// Key/value byte limits for write validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KvpLimits {
     pub max_key_size: usize,
@@ -88,13 +78,7 @@ pub struct KvpLimits {
 }
 
 impl KvpLimits {
-    /// Raw Hyper-V wire format limits.
-    ///
-    /// - Max key size: 512 bytes
-    /// - Max value size: 2,048 bytes
-    ///
-    /// Use this when writing to a Hyper-V KVP pool file that will only
-    /// be consumed by Hyper-V tooling (not the Azure host agent).
+    /// Hyper-V limits (512-byte key, 2,048-byte value).
     pub const fn hyperv() -> Self {
         Self {
             max_key_size: HYPERV_MAX_KEY_BYTES,
@@ -102,16 +86,7 @@ impl KvpLimits {
         }
     }
 
-    /// Azure platform limits.
-    ///
-    /// - Max key size: 512 bytes
-    /// - Max value size: 1,022 bytes (UTF-16: 511 characters + null
-    ///   terminator)
-    ///
-    /// The Azure host agent reads KVP records from the guest but is
-    /// stricter than the underlying Hyper-V format. Values beyond
-    /// 1,022 bytes are silently truncated by the host. Use this preset
-    /// for any code running on Azure VMs.
+    /// Azure limits (512-byte key, 1,022-byte value).
     pub const fn azure() -> Self {
         Self {
             max_key_size: AZURE_MAX_KEY_BYTES,
