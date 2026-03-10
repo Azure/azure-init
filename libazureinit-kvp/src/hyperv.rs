@@ -144,6 +144,10 @@ impl HyperVKvpStore {
             .saturating_sub(get_uptime().as_secs())
             as i64;
 
+        self.truncate_if_stale_at_boot(boot_time)
+    }
+
+    fn truncate_if_stale_at_boot(&self, boot_time: i64) -> io::Result<()> {
         let file =
             match OpenOptions::new().read(true).write(true).open(&self.path) {
                 Ok(f) => f,
@@ -153,8 +157,11 @@ impl HyperVKvpStore {
                 Err(e) => return Err(e),
             };
 
-        if FileExt::try_lock_exclusive(&file).is_err() {
-            return Ok(());
+        if let Err(e) = FileExt::try_lock_exclusive(&file) {
+            if e.kind() == ErrorKind::WouldBlock {
+                return Ok(());
+            }
+            return Err(e);
         }
 
         let result = (|| -> io::Result<()> {
@@ -232,7 +239,8 @@ pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
 /// Decode a fixed-size record into its key and value strings.
 ///
 /// Trailing null bytes are stripped from both fields. Returns an error
-/// if `data` is not exactly [`RECORD_SIZE`] bytes.
+/// if `data` is not exactly [`RECORD_SIZE`] bytes or if either field
+/// contains invalid UTF-8.
 pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
     if data.len() != RECORD_SIZE {
         return Err(io::Error::other(format!(
@@ -241,40 +249,49 @@ pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
         )));
     }
 
-    let key = String::from_utf8(data[..HV_KVP_EXCHANGE_MAX_KEY_SIZE].to_vec())
-        .unwrap_or_default()
+    let (key_bytes, value_bytes) = data.split_at(HV_KVP_EXCHANGE_MAX_KEY_SIZE);
+
+    let key = std::str::from_utf8(key_bytes)
+        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
         .trim_end_matches('\0')
         .to_string();
 
-    let value =
-        String::from_utf8(data[HV_KVP_EXCHANGE_MAX_KEY_SIZE..].to_vec())
-            .unwrap_or_default()
-            .trim_end_matches('\0')
-            .to_string();
+    let value = std::str::from_utf8(value_bytes)
+        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
+        .trim_end_matches('\0')
+        .to_string();
 
     Ok((key, value))
 }
 
 /// Read all records from a file that is already open and locked.
 fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents)?;
+    let metadata = file.metadata()?;
+    let len = metadata.len() as usize;
 
-    if contents.is_empty() {
+    if len == 0 {
         return Ok(Vec::new());
     }
 
-    if contents.len() % RECORD_SIZE != 0 {
+    if len % RECORD_SIZE != 0 {
         return Err(io::Error::other(format!(
-            "file size ({}) is not a multiple of record size ({RECORD_SIZE})",
-            contents.len()
+            "file size ({len}) is not a multiple of record size ({RECORD_SIZE})"
         )));
     }
 
-    contents
-        .chunks_exact(RECORD_SIZE)
-        .map(decode_record)
-        .collect()
+    // Ensure we start reading from the beginning of the file.
+    file.seek(io::SeekFrom::Start(0))?;
+
+    let record_count = len / RECORD_SIZE;
+    let mut records = Vec::with_capacity(record_count);
+    let mut buf = [0u8; RECORD_SIZE];
+
+    for _ in 0..record_count {
+        file.read_exact(&mut buf)?;
+        records.push(decode_record(&buf)?);
+    }
+
+    Ok(records)
 }
 
 impl KvpStore for HyperVKvpStore {
@@ -424,15 +441,6 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    fn truncate_with_boot_time(path: &Path, boot_time: i64) -> io::Result<()> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let metadata = file.metadata()?;
-        if metadata.mtime() < boot_time {
-            file.set_len(0)?;
-        }
-        Ok(())
-    }
-
     fn hyperv_store(path: &Path) -> HyperVKvpStore {
         HyperVKvpStore::new(path, KvpLimits::hyperv())
     }
@@ -575,28 +583,47 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_if_stale_truncates_when_file_is_older_than_boot() {
+    fn test_truncate_if_stale_at_boot_truncates_when_file_is_older_than_boot() {
         let tmp = NamedTempFile::new().unwrap();
         let store = hyperv_store(tmp.path());
 
         store.write("key", "value").unwrap();
         assert!(tmp.path().metadata().unwrap().len() > 0);
 
-        truncate_with_boot_time(tmp.path(), i64::MAX).unwrap();
+        store.truncate_if_stale_at_boot(i64::MAX).unwrap();
         assert_eq!(tmp.path().metadata().unwrap().len(), 0);
     }
 
     #[test]
-    fn test_truncate_if_stale_keeps_file_when_newer_than_boot() {
+    fn test_truncate_if_stale_at_boot_keeps_file_when_newer_than_boot() {
         let tmp = NamedTempFile::new().unwrap();
         let store = hyperv_store(tmp.path());
 
         store.write("key", "value").unwrap();
         let len_before = tmp.path().metadata().unwrap().len();
 
-        // Epoch boot time ensures any current file mtime is considered fresh.
-        truncate_with_boot_time(tmp.path(), 0).unwrap();
+        store.truncate_if_stale_at_boot(0).unwrap();
         assert_eq!(tmp.path().metadata().unwrap().len(), len_before);
+    }
+
+    #[test]
+    fn test_truncate_if_stale_keeps_fresh_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = hyperv_store(tmp.path());
+
+        store.write("key", "value").unwrap();
+        let len_before = tmp.path().metadata().unwrap().len();
+        assert!(len_before > 0);
+
+        store.truncate_if_stale().unwrap();
+        assert_eq!(tmp.path().metadata().unwrap().len(), len_before);
+        assert_eq!(store.read("key").unwrap(), Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_truncate_if_stale_ok_when_file_missing() {
+        let store = hyperv_store(Path::new("/tmp/nonexistent-kvp-pool"));
+        store.truncate_if_stale().unwrap();
     }
 
     #[test]
