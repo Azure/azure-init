@@ -1,29 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Hyper-V-backed [`KvpStore`] implementation.
+//! Hyper-V KVP (Key-Value Pair) pool file backend.
 //!
-//! ## Record format
-//! - Fixed-size records of [`RECORD_SIZE`] bytes (512-byte key +
-//!   2,048-byte value), zero-padded on disk.
-//! - No record-count header or explicit record cap in this layer.
+//! Hyper-V exposes a Data Exchange Service that lets a guest and its
+//! host share key-value pairs through a set of pool files.  Each pool
+//! file is a flat sequence of fixed-size records (512-byte key +
+//! 2,048-byte value, zero-padded).  There is no record-count header;
+//! the file grows by one record per write.
 //!
-//! ## Behavior summary
-//! - **`write`**: append-only; one record appended per call.
-//! - **`read`**: last-write-wins for duplicate keys.
-//! - **`entries`**: returns a deduplicated `HashMap` with last-write-wins.
-//! - **`delete`**: rewrites file and removes all records for the key.
-//! - **`truncate_if_stale`**: truncates if file predates boot; on lock
-//!   contention (`WouldBlock`) it returns `Ok(())` and skips.
-//!
-//! ## Limits
-//! Writes validate key/value byte lengths using [`KvpLimits`] and return
-//! errors for empty/oversized keys or oversized values. The on-disk
-//! format is always 512 + 2,048 bytes; limits only constrain what may
-//! be written (for example, Azure's 1,022-byte value limit).
-//!
-//! Higher layers are responsible for splitting/chunking oversized
-//! diagnostics payloads before calling this store.
+//! On Azure, the host-side KVP consumer truncates values beyond
+//! 1,022 bytes, so Azure guests should use [`AzureKvpStore`](crate::AzureKvpStore).
 //!
 //! ## Reference
 //! - [Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
@@ -38,27 +25,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fs2::FileExt;
 use sysinfo::System;
 
-use crate::{
-    KvpLimits, KvpStore, HYPERV_MAX_KEY_BYTES, HYPERV_MAX_VALUE_BYTES,
-};
-
-/// DMI chassis asset tag used to identify Azure VMs.
-const AZURE_CHASSIS_ASSET_TAG: &str = "7783-7084-3265-9085-8269-3286-77";
-const AZURE_CHASSIS_ASSET_TAG_PATH: &str =
-    "/sys/class/dmi/id/chassis_asset_tag";
-
-fn is_azure_vm(tag_path: Option<&str>) -> bool {
-    let path = tag_path.unwrap_or(AZURE_CHASSIS_ASSET_TAG_PATH);
-    std::fs::read_to_string(path)
-        .map(|s| s.trim() == AZURE_CHASSIS_ASSET_TAG)
-        .unwrap_or(false)
-}
+use crate::{KvpError, KvpStore};
 
 /// Key field width in the on-disk record format (bytes).
-const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = HYPERV_MAX_KEY_BYTES;
+const HV_KVP_EXCHANGE_MAX_KEY_SIZE: usize = 512;
 
 /// Value field width in the on-disk record format (bytes).
-const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = HYPERV_MAX_VALUE_BYTES;
+const HV_KVP_EXCHANGE_MAX_VALUE_SIZE: usize = 2048;
 
 /// Total size of one on-disk record (key + value).
 const RECORD_SIZE: usize =
@@ -69,58 +42,26 @@ const RECORD_SIZE: usize =
 /// Reads and writes the binary Hyper-V KVP format: fixed-size records
 /// of [`RECORD_SIZE`] bytes (512-byte key + 2,048-byte value) with
 /// flock-based concurrency control.
-///
-/// Constructed via [`HyperVKvpStore::new`] with a file path and a
-/// [`KvpLimits`] that determines the maximum allowed key and value
-/// byte lengths for writes.
 #[derive(Clone, Debug)]
 pub struct HyperVKvpStore {
     path: PathBuf,
-    limits: KvpLimits,
 }
 
 impl HyperVKvpStore {
-    /// Create a store with explicit limits.
+    /// Create a new store backed by the pool file at `path`.
     ///
-    /// The file is created on first write if it does not already exist.
-    /// Use [`HyperVKvpStore::new_autodetect`] to choose limits automatically.
-    pub fn new(path: impl Into<PathBuf>, limits: KvpLimits) -> Self {
-        Self {
-            path: path.into(),
-            limits,
-        }
-    }
-
-    /// Create a store with limits chosen from host platform detection.
-    ///
-    /// If the Azure DMI asset tag is present, uses [`KvpLimits::azure`].
-    /// Otherwise, uses [`KvpLimits::hyperv`].
-    pub fn new_autodetect(path: impl Into<PathBuf>) -> Self {
-        let limits = if is_azure_vm(None) {
-            KvpLimits::azure()
-        } else {
-            KvpLimits::hyperv()
-        };
-        Self {
-            path: path.into(),
-            limits,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_autodetect_with_tag_path(
+    /// When `truncate_on_stale` is `true` the constructor checks
+    /// whether the pool file predates the current boot and, if so,
+    /// truncates it before returning.
+    pub fn new(
         path: impl Into<PathBuf>,
-        tag_path: &str,
-    ) -> Self {
-        let limits = if is_azure_vm(Some(tag_path)) {
-            KvpLimits::azure()
-        } else {
-            KvpLimits::hyperv()
-        };
-        Self {
-            path: path.into(),
-            limits,
+        truncate_on_stale: bool,
+    ) -> Result<Self, KvpError> {
+        let store = Self { path: path.into() };
+        if truncate_on_stale && store.pool_is_stale()? {
+            store.truncate_pool()?;
         }
+        Ok(store)
     }
 
     /// Return a reference to the pool file path.
@@ -128,49 +69,59 @@ impl HyperVKvpStore {
         &self.path
     }
 
-    /// Truncate the file when its mtime predates the current boot
-    /// (stale-data guard).
-    ///
-    /// An exclusive `flock` is held while checking metadata and
-    /// truncating so that concurrent processes don't race on the same
-    /// check-then-truncate sequence. If the lock cannot be acquired
-    /// immediately (another client holds it), the call returns `Ok(())`
-    /// without blocking.
-    pub fn truncate_if_stale(&self) -> io::Result<()> {
-        let boot_time = SystemTime::now()
+    // -- Private helpers ------------------------------------------------
+
+    fn boot_time() -> Result<i64, KvpError> {
+        let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| io::Error::other(format!("clock error: {e}")))?
-            .as_secs()
-            .saturating_sub(get_uptime().as_secs())
-            as i64;
-
-        self.truncate_if_stale_at_boot(boot_time)
+            .as_secs();
+        Ok(now.saturating_sub(get_uptime().as_secs()) as i64)
     }
 
-    fn truncate_if_stale_at_boot(&self, boot_time: i64) -> io::Result<()> {
+    /// Check whether the pool file's mtime predates the current boot.
+    ///
+    /// Returns `false` if the file does not exist.
+    fn pool_is_stale(&self) -> Result<bool, KvpError> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let boot = Self::boot_time()?;
+        Ok(metadata.mtime() < boot)
+    }
+
+    #[cfg(test)]
+    fn pool_is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        Ok(metadata.mtime() < boot_time)
+    }
+
+    /// Truncate the pool file to zero length under an exclusive flock.
+    fn truncate_pool(&self) -> Result<(), KvpError> {
         let file =
             match OpenOptions::new().read(true).write(true).open(&self.path) {
                 Ok(f) => f,
                 Err(ref e) if e.kind() == ErrorKind::NotFound => {
                     return Ok(());
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             };
 
-        if let Err(e) = FileExt::try_lock_exclusive(&file) {
-            if e.kind() == ErrorKind::WouldBlock {
-                return Ok(());
-            }
-            return Err(e);
-        }
+        FileExt::lock_exclusive(&file).map_err(|e| {
+            io::Error::other(format!("failed to lock KVP file: {e}"))
+        })?;
 
-        let result = (|| -> io::Result<()> {
-            let metadata = file.metadata()?;
-            if metadata.mtime() < boot_time {
-                file.set_len(0)?;
-            }
-            Ok(())
-        })();
+        let result = file.set_len(0).map_err(KvpError::from);
 
         let _ = FileExt::unlock(&file);
         result
@@ -189,27 +140,6 @@ impl HyperVKvpStore {
 
     fn open_for_read_write(&self) -> io::Result<File> {
         OpenOptions::new().read(true).write(true).open(&self.path)
-    }
-
-    fn validate_key_value(&self, key: &str, value: &str) -> io::Result<()> {
-        if key.is_empty() {
-            return Err(io::Error::other("KVP key must not be empty"));
-        }
-        if key.len() > self.limits.max_key_size {
-            return Err(io::Error::other(format!(
-                "KVP key length ({}) exceeds maximum ({})",
-                key.len(),
-                self.limits.max_key_size
-            )));
-        }
-        if value.len() > self.limits.max_value_size {
-            return Err(io::Error::other(format!(
-                "KVP value length ({}) exceeds maximum ({})",
-                value.len(),
-                self.limits.max_value_size
-            )));
-        }
-        Ok(())
     }
 }
 
@@ -273,7 +203,7 @@ fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
         return Ok(Vec::new());
     }
 
-    if len % RECORD_SIZE != 0 {
+    if !len.is_multiple_of(RECORD_SIZE) {
         return Err(io::Error::other(format!(
             "file size ({len}) is not a multiple of record size ({RECORD_SIZE})"
         )));
@@ -295,18 +225,14 @@ fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
 }
 
 impl KvpStore for HyperVKvpStore {
-    fn limits(&self) -> KvpLimits {
-        self.limits
-    }
+    const MAX_KEY_SIZE: usize = HV_KVP_EXCHANGE_MAX_KEY_SIZE;
+    const MAX_VALUE_SIZE: usize = HV_KVP_EXCHANGE_MAX_VALUE_SIZE;
 
     /// Append one fixed-size record to the pool file.
     ///
-    /// Validates key and value against the configured [`KvpLimits`],
-    /// acquires an exclusive flock, writes the record, flushes, and
+    /// Acquires an exclusive flock, writes the record, flushes, and
     /// releases the lock.
-    fn write(&self, key: &str, value: &str) -> io::Result<()> {
-        self.validate_key_value(key, value)?;
-
+    fn backend_write(&self, key: &str, value: &str) -> Result<(), KvpError> {
         let mut file = self.open_for_append()?;
         let record = encode_record(key, value);
 
@@ -322,9 +248,9 @@ impl KvpStore for HyperVKvpStore {
 
         if let Err(err) = write_result {
             let _ = unlock_result;
-            return Err(err);
+            return Err(err.into());
         }
-        unlock_result
+        unlock_result.map_err(KvpError::from)
     }
 
     /// Scan all records and return the value of the last record
@@ -332,13 +258,13 @@ impl KvpStore for HyperVKvpStore {
     ///
     /// Acquires a shared flock during the scan. Returns `Ok(None)` if
     /// the pool file does not exist or no record matches.
-    fn read(&self, key: &str) -> io::Result<Option<String>> {
+    fn backend_read(&self, key: &str) -> Result<Option<String>, KvpError> {
         let mut file = match self.open_for_read() {
             Ok(f) => f,
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
                 return Ok(None);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         FileExt::lock_shared(&file).map_err(|e| {
@@ -358,17 +284,16 @@ impl KvpStore for HyperVKvpStore {
 
     /// Return all key-value pairs as a deduplicated `HashMap`.
     ///
-    /// Duplicate keys are resolved by last-write-wins, matching
-    /// [`read`](KvpStore::read) semantics. Acquires a shared flock
-    /// during the scan. Returns an empty map if the pool file does
-    /// not exist.
-    fn entries(&self) -> io::Result<HashMap<String, String>> {
+    /// Duplicate keys are resolved by last-write-wins. Acquires a
+    /// shared flock during the scan. Returns an empty map if the pool
+    /// file does not exist.
+    fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
         let mut file = match self.open_for_read() {
             Ok(f) => f,
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
                 return Ok(HashMap::new());
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         FileExt::lock_shared(&file).map_err(|e| {
@@ -386,25 +311,47 @@ impl KvpStore for HyperVKvpStore {
         Ok(map)
     }
 
+    /// Return all raw records without deduplication.
+    ///
+    /// Acquires a shared flock during the scan. Returns an empty list
+    /// if the pool file does not exist.
+    fn entries_raw(&self) -> Result<Vec<(String, String)>, KvpError> {
+        let mut file = match self.open_for_read() {
+            Ok(f) => f,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        FileExt::lock_shared(&file).map_err(|e| {
+            io::Error::other(format!("failed to lock KVP file: {e}"))
+        })?;
+
+        let records = read_all_records(&mut file);
+        let _ = FileExt::unlock(&file);
+        Ok(records?)
+    }
+
     /// Rewrite the pool file without the record(s) matching `key`.
     ///
     /// Acquires an exclusive flock for the duration. Returns `true` if
     /// at least one record was removed, `false` if the key was not
     /// found. Returns `Ok(false)` if the pool file does not exist.
-    fn delete(&self, key: &str) -> io::Result<bool> {
+    fn delete(&self, key: &str) -> Result<bool, KvpError> {
         let mut file = match self.open_for_read_write() {
             Ok(f) => f,
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
                 return Ok(false);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         FileExt::lock_exclusive(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
 
-        let result = (|| -> io::Result<bool> {
+        let result = (|| -> Result<bool, KvpError> {
             let records = read_all_records(&mut file)?;
             let original_count = records.len();
             let kept: Vec<_> =
@@ -427,6 +374,16 @@ impl KvpStore for HyperVKvpStore {
         let _ = FileExt::unlock(&file);
         result
     }
+
+    /// Truncate the pool file to zero length, removing all records.
+    fn backend_clear(&self) -> Result<(), KvpError> {
+        self.truncate_pool()
+    }
+
+    /// Whether the pool file's mtime predates the current boot.
+    fn is_stale(&self) -> Result<bool, KvpError> {
+        self.pool_is_stale()
+    }
 }
 
 fn get_uptime() -> Duration {
@@ -442,39 +399,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     fn hyperv_store(path: &Path) -> HyperVKvpStore {
-        HyperVKvpStore::new(path, KvpLimits::hyperv())
-    }
-
-    fn azure_store(path: &Path) -> HyperVKvpStore {
-        HyperVKvpStore::new(path, KvpLimits::azure())
-    }
-
-    #[test]
-    fn test_autodetect_uses_azure_limits_on_azure_host() {
-        let tag_file = NamedTempFile::new().unwrap();
-        let pool_file = NamedTempFile::new().unwrap();
-        // DMI files on Linux have a trailing newline.
-        std::fs::write(tag_file.path(), format!("{AZURE_CHASSIS_ASSET_TAG}\n"))
-            .unwrap();
-
-        let store = HyperVKvpStore::new_autodetect_with_tag_path(
-            pool_file.path(),
-            tag_file.path().to_str().unwrap(),
-        );
-        assert_eq!(store.limits(), KvpLimits::azure());
-    }
-
-    #[test]
-    fn test_autodetect_uses_hyperv_limits_on_bare_hyperv() {
-        let tag_file = NamedTempFile::new().unwrap();
-        let pool_file = NamedTempFile::new().unwrap();
-        std::fs::write(tag_file.path(), "bare-hyperv-tag").unwrap();
-
-        let store = HyperVKvpStore::new_autodetect_with_tag_path(
-            pool_file.path(),
-            tag_file.path().to_str().unwrap(),
-        );
-        assert_eq!(store.limits(), KvpLimits::hyperv());
+        HyperVKvpStore::new(path, false).unwrap()
     }
 
     #[test]
@@ -498,8 +423,20 @@ mod tests {
 
         let err = store.write("", "value").unwrap_err();
         assert!(
-            err.to_string().contains("empty"),
-            "expected empty-key error, got: {err}"
+            matches!(err, KvpError::EmptyKey),
+            "expected EmptyKey, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_write_rejects_null_in_key() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = hyperv_store(tmp.path());
+
+        let err = store.write("bad\0key", "value").unwrap_err();
+        assert!(
+            matches!(err, KvpError::KeyContainsNull),
+            "expected KeyContainsNull, got: {err}"
         );
     }
 
@@ -511,8 +448,8 @@ mod tests {
         let key = "K".repeat(HV_KVP_EXCHANGE_MAX_KEY_SIZE + 1);
         let err = store.write(&key, "v").unwrap_err();
         assert!(
-            err.to_string().contains("key length"),
-            "expected key-length error, got: {err}"
+            matches!(err, KvpError::KeyTooLarge { .. }),
+            "expected KeyTooLarge, got: {err}"
         );
     }
 
@@ -524,21 +461,8 @@ mod tests {
         let value = "V".repeat(HV_KVP_EXCHANGE_MAX_VALUE_SIZE + 1);
         let err = store.write("k", &value).unwrap_err();
         assert!(
-            err.to_string().contains("value length"),
-            "expected value-length error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn test_azure_limits_reject_long_value() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = azure_store(tmp.path());
-
-        let value = "V".repeat(1023);
-        let err = store.write("k", &value).unwrap_err();
-        assert!(
-            err.to_string().contains("value length"),
-            "expected value-length error with azure limits, got: {err}"
+            matches!(err, KvpError::ValueTooLarge { .. }),
+            "expected ValueTooLarge, got: {err}"
         );
     }
 
@@ -583,47 +507,71 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_if_stale_at_boot_truncates_when_file_is_older_than_boot() {
+    fn test_entries_raw_preserves_duplicates() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = hyperv_store(tmp.path());
+
+        store.write("key", "v1").unwrap();
+        store.write("key", "v2").unwrap();
+        store.write("other", "v3").unwrap();
+
+        let raw = store.entries_raw().unwrap();
+        assert_eq!(raw.len(), 3);
+        assert_eq!(raw[0], ("key".to_string(), "v1".to_string()));
+        assert_eq!(raw[1], ("key".to_string(), "v2".to_string()));
+        assert_eq!(raw[2], ("other".to_string(), "v3".to_string()));
+    }
+
+    #[test]
+    fn test_clear_empties_store() {
         let tmp = NamedTempFile::new().unwrap();
         let store = hyperv_store(tmp.path());
 
         store.write("key", "value").unwrap();
         assert!(tmp.path().metadata().unwrap().len() > 0);
 
-        store.truncate_if_stale_at_boot(i64::MAX).unwrap();
+        store.clear().unwrap();
         assert_eq!(tmp.path().metadata().unwrap().len(), 0);
+        assert_eq!(store.read("key").unwrap(), None);
     }
 
     #[test]
-    fn test_truncate_if_stale_at_boot_keeps_file_when_newer_than_boot() {
+    fn test_is_stale_false_for_fresh_file() {
         let tmp = NamedTempFile::new().unwrap();
         let store = hyperv_store(tmp.path());
 
         store.write("key", "value").unwrap();
-        let len_before = tmp.path().metadata().unwrap().len();
-
-        store.truncate_if_stale_at_boot(0).unwrap();
-        assert_eq!(tmp.path().metadata().unwrap().len(), len_before);
+        assert!(!store.is_stale().unwrap());
     }
 
     #[test]
-    fn test_truncate_if_stale_keeps_fresh_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = hyperv_store(tmp.path());
-
-        store.write("key", "value").unwrap();
-        let len_before = tmp.path().metadata().unwrap().len();
-        assert!(len_before > 0);
-
-        store.truncate_if_stale().unwrap();
-        assert_eq!(tmp.path().metadata().unwrap().len(), len_before);
-        assert_eq!(store.read("key").unwrap(), Some("value".to_string()));
-    }
-
-    #[test]
-    fn test_truncate_if_stale_ok_when_file_missing() {
+    fn test_is_stale_false_when_file_missing() {
         let store = hyperv_store(Path::new("/tmp/nonexistent-kvp-pool"));
-        store.truncate_if_stale().unwrap();
+        assert!(!store.is_stale().unwrap());
+    }
+
+    #[test]
+    fn test_pool_is_stale_at_boot_detects_old_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = hyperv_store(tmp.path());
+
+        store.write("key", "value").unwrap();
+        assert!(store.pool_is_stale_at_boot(i64::MAX).unwrap());
+    }
+
+    #[test]
+    fn test_pool_is_stale_at_boot_keeps_new_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = hyperv_store(tmp.path());
+
+        store.write("key", "value").unwrap();
+        assert!(!store.pool_is_stale_at_boot(0).unwrap());
+    }
+
+    #[test]
+    fn test_clear_ok_when_file_missing() {
+        let store = hyperv_store(Path::new("/tmp/nonexistent-kvp-pool"));
+        store.clear().unwrap();
     }
 
     #[test]
@@ -655,7 +603,7 @@ mod tests {
             .map(|tid| {
                 let p = path.clone();
                 std::thread::spawn(move || {
-                    let store = HyperVKvpStore::new(&p, KvpLimits::hyperv());
+                    let store = HyperVKvpStore::new(&p, false).unwrap();
                     for i in 0..iterations {
                         let key = format!("thread-{tid}-iter-{i}");
                         let value = format!("value-{tid}-{i}");
@@ -669,7 +617,7 @@ mod tests {
             h.join().expect("thread panicked");
         }
 
-        let store = HyperVKvpStore::new(&path, KvpLimits::hyperv());
+        let store = HyperVKvpStore::new(&path, false).unwrap();
         let entries = store.entries().unwrap();
         assert_eq!(entries.len(), num_threads * iterations);
     }
