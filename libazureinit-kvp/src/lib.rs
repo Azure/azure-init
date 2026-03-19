@@ -1,19 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! `libazureinit-kvp` provides a storage trait and Hyper-V-backed
-//! implementation for KVP pool files.
+//! `libazureinit-kvp` provides a storage trait and unified KVP pool
+//! implementation for Hyper-V/Azure guests.
 //!
 //! - [`KvpStore`]: storage interface used by higher layers.
-//! - [`HyperVKvpStore`]: Hyper-V pool file implementation.
-//! - [`AzureKvpStore`]: Azure-specific wrapper with stricter value limits.
+//! - [`KvpPoolStore`]: KVP pool file implementation with
+//!   [`PoolMode`](kvp_pool::PoolMode)-based policy.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 
-pub mod azure;
-pub mod hyperv;
+pub mod kvp_pool;
 
 /// Errors returned by [`KvpStore`] operations.
 #[derive(Debug)]
@@ -24,6 +23,8 @@ pub enum KvpError {
     KeyTooLarge { max: usize, actual: usize },
     /// The value exceeds the store's maximum value size.
     ValueTooLarge { max: usize, actual: usize },
+    /// The store already has the maximum allowed number of unique keys.
+    MaxUniqueKeysExceeded { max: usize },
     /// The key contains a null byte, which is incompatible with the
     /// on-disk format (null-padded fixed-width fields).
     KeyContainsNull,
@@ -40,6 +41,9 @@ impl fmt::Display for KvpError {
             }
             Self::ValueTooLarge { max, actual } => {
                 write!(f, "KVP value length ({actual}) exceeds maximum ({max})")
+            }
+            Self::MaxUniqueKeysExceeded { max } => {
+                write!(f, "KVP unique key count exceeded maximum ({max})")
             }
             Self::KeyContainsNull => {
                 write!(f, "KVP key must not contain null bytes")
@@ -64,91 +68,66 @@ impl From<io::Error> for KvpError {
     }
 }
 
-pub use azure::AzureKvpStore;
-pub use hyperv::HyperVKvpStore;
+pub use kvp_pool::KvpPoolStore;
 
-/// Key-value store that supports Hyper-V KVP semantics while being
-/// generic enough for non-file-backed in-memory implementations
-/// (e.g. tests).
+/// Key-value store with Hyper-V KVP semantics.
+///
+/// The trait splits each operation into a `backend_*` method (raw I/O,
+/// provided by the implementor) and a public method (`write`, `read`,
+/// `clear`) that validates inputs then delegates to the backend.
 pub trait KvpStore: Send + Sync {
     /// Maximum key size in bytes for this store.
-    const MAX_KEY_SIZE: usize;
+    fn max_key_size(&self) -> usize;
+
     /// Maximum value size in bytes for this store.
-    const MAX_VALUE_SIZE: usize;
+    fn max_value_size(&self) -> usize;
 
-    // -- Backend callouts for read/write (required) ---------------------
-
-    /// Backend-specific read implementation.
-    fn backend_read(&self, key: &str) -> Result<Option<String>, KvpError>;
-
-    /// Backend-specific write implementation.
+    /// Raw write — persist a key-value pair without validation.
     fn backend_write(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
-    // -- Required methods (no shared validation wrapper) ---------------
+    /// Raw read — look up a key without validation.
+    fn backend_read(&self, key: &str) -> Result<Option<String>, KvpError>;
 
     /// Return all key-value pairs, deduplicated with last-write-wins.
     fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
 
-    /// Return all raw key-value records without deduplication.
-    ///
-    /// Useful for testing or diagnostic dump commands where the full
-    /// record history is needed.
+    /// Return all raw records in file order, without deduplication.
     fn entries_raw(&self) -> Result<Vec<(String, String)>, KvpError>;
 
-    /// Remove all records matching `key`.
-    ///
-    /// Returns `true` if at least one record was removed, `false` if
-    /// the key was not found.
+    /// Remove all records matching `key`. Returns `true` if any were removed.
     fn delete(&self, key: &str) -> Result<bool, KvpError>;
 
-    /// Backend-specific clear implementation (empty the store).
+    /// Raw clear — remove all records without additional checks.
     fn backend_clear(&self) -> Result<(), KvpError>;
 
-    // -- Public API with shared validation ----------------------------
+    /// Write a key-value pair after validation.
+    fn write(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        self.validate_key(key)?;
+        self.validate_value(value)?;
+        self.backend_write(key, value)
+    }
 
-    /// Empty the store, removing all records.
+    /// Read the most recent value for a key (last-write-wins).
+    ///
+    /// Returns `Ok(None)` when the key is absent.
+    fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
+        self.validate_key(key)?;
+        self.backend_read(key)
+    }
+
+    /// Remove all records from the store.
     fn clear(&self) -> Result<(), KvpError> {
         self.backend_clear()
     }
 
-    /// Write a key-value pair into the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`KvpError::EmptyKey`] if the key is empty,
-    /// [`KvpError::KeyContainsNull`] if the key contains a null byte,
-    /// [`KvpError::KeyTooLarge`] if the key exceeds [`Self::MAX_KEY_SIZE`],
-    /// [`KvpError::ValueTooLarge`] if the value exceeds
-    /// [`Self::MAX_VALUE_SIZE`], or [`KvpError::Io`] on I/O failure.
-    fn write(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        Self::validate_key(key)?;
-        Self::validate_value(value)?;
-        self.backend_write(key, value)
-    }
-
-    /// Read the value for a given key, returning `None` if absent.
-    ///
-    /// When multiple records share the same key, the most recent value
-    /// is returned (last-write-wins).
-    fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        Self::validate_key(key)?;
-        self.backend_read(key)
-    }
-
-    /// Whether the store's data is stale (e.g. predates the current
-    /// boot). Defaults to `false`; file-backed stores can override.
+    /// Whether the store's data is stale (e.g. predates current boot).
     fn is_stale(&self) -> Result<bool, KvpError> {
         Ok(false)
     }
 
-    // -- Validation helpers -------------------------------------------
-
-    /// Validate a key against common constraints.
-    ///
-    /// Keys must be non-empty, must not contain null bytes (the on-disk
-    /// format uses null-padding), and must not exceed
-    /// [`Self::MAX_KEY_SIZE`] bytes.
-    fn validate_key(key: &str) -> Result<(), KvpError> {
+    /// Validate a key: must be non-empty, no null bytes, within
+    /// [`max_key_size`](Self::max_key_size).
+    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
         if key.is_empty() {
             return Err(KvpError::EmptyKey);
         }
@@ -156,17 +135,17 @@ pub trait KvpStore: Send + Sync {
             return Err(KvpError::KeyContainsNull);
         }
         let actual = key.len();
-        let max = Self::MAX_KEY_SIZE;
+        let max = self.max_key_size();
         if actual > max {
             return Err(KvpError::KeyTooLarge { max, actual });
         }
         Ok(())
     }
 
-    /// Validate a value against the store's size limit.
-    fn validate_value(value: &str) -> Result<(), KvpError> {
+    /// Validate a value: must be within [`max_value_size`](Self::max_value_size).
+    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
         let actual = value.len();
-        let max = Self::MAX_VALUE_SIZE;
+        let max = self.max_value_size();
         if actual > max {
             return Err(KvpError::ValueTooLarge { max, actual });
         }
