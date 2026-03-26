@@ -17,7 +17,7 @@
 //! ## Reference
 //! - [Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::os::unix::fs::MetadataExt;
@@ -43,10 +43,6 @@ const MAX_UNIQUE_KEYS: usize = 1024;
 const RECORD_SIZE: usize = WIRE_MAX_KEY_BYTES + WIRE_MAX_VALUE_BYTES;
 
 /// Policy mode controlling key/value size limits for writes.
-///
-/// The on-disk record format is always 512 + 2048 bytes regardless of
-/// mode; the mode only determines the validation ceiling for incoming
-/// writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolMode {
     /// Conservative limits for Azure compatibility
@@ -112,6 +108,49 @@ impl KvpPoolStore {
         self.mode
     }
 
+    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
+        if key.is_empty() {
+            return Err(KvpError::EmptyKey);
+        }
+        if key.as_bytes().contains(&0) {
+            return Err(KvpError::KeyContainsNull);
+        }
+        let actual = key.len();
+        let max = self.mode.max_key_size();
+        if actual > max {
+            return Err(KvpError::KeyTooLarge { max, actual });
+        }
+        Ok(())
+    }
+
+    /// Looser validation for reads: accepts keys up to the full
+    /// wire-format maximum regardless of [`PoolMode`].
+    fn validate_key_for_read(key: &str) -> Result<(), KvpError> {
+        if key.is_empty() {
+            return Err(KvpError::EmptyKey);
+        }
+        if key.as_bytes().contains(&0) {
+            return Err(KvpError::KeyContainsNull);
+        }
+        let actual = key.len();
+        if actual > WIRE_MAX_KEY_BYTES {
+            return Err(KvpError::KeyTooLarge {
+                max: WIRE_MAX_KEY_BYTES,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
+        let actual = value.len();
+        let max = self.mode.max_value_size();
+        if actual > max {
+            return Err(KvpError::ValueTooLarge { max, actual });
+        }
+        Ok(())
+    }
+
     fn boot_time() -> Result<i64, KvpError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -164,10 +203,10 @@ impl KvpPoolStore {
         OpenOptions::new().read(true).write(true).open(&self.path)
     }
 
-    fn open_for_read_append_create(&self) -> io::Result<File> {
+    fn open_for_read_write_create(&self) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create(true)
             .open(&self.path)
     }
@@ -235,6 +274,19 @@ fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
     Ok(records)
 }
 
+fn rewrite_file(
+    file: &mut File,
+    map: &HashMap<String, String>,
+) -> Result<(), KvpError> {
+    file.set_len(0)?;
+    file.seek(io::SeekFrom::Start(0))?;
+    for (k, v) in map {
+        file.write_all(&encode_record(k, v))?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
 impl KvpStore for KvpPoolStore {
     fn max_key_size(&self) -> usize {
         self.mode.max_key_size()
@@ -244,30 +296,28 @@ impl KvpStore for KvpPoolStore {
         self.mode.max_value_size()
     }
 
-    fn backend_write(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        let mut file = self.open_for_read_append_create()?;
+    fn upsert(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        self.validate_key(key)?;
+        self.validate_value(value)?;
+
+        let mut file = self.open_for_read_write_create()?;
         FileExt::lock_exclusive(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
 
         let result = (|| -> Result<(), KvpError> {
             let records = read_all_records(&mut file)?;
-            let mut unique_keys = HashSet::with_capacity(records.len());
-            for (record_key, _) in records {
-                unique_keys.insert(record_key);
-            }
+            let mut map: HashMap<String, String> =
+                records.into_iter().collect();
 
-            if !unique_keys.contains(key)
-                && unique_keys.len() >= MAX_UNIQUE_KEYS
-            {
+            if !map.contains_key(key) && map.len() >= MAX_UNIQUE_KEYS {
                 return Err(KvpError::MaxUniqueKeysExceeded {
                     max: MAX_UNIQUE_KEYS,
                 });
             }
 
-            let record = encode_record(key, value);
-            file.write_all(&record)?;
-            file.flush()?;
+            map.insert(key.to_string(), value.to_string());
+            rewrite_file(&mut file, &map)?;
             Ok(())
         })();
 
@@ -275,7 +325,9 @@ impl KvpStore for KvpPoolStore {
         result
     }
 
-    fn backend_read(&self, key: &str) -> Result<Option<String>, KvpError> {
+    fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
+        Self::validate_key_for_read(key)?;
+
         let mut file = match self.open_for_read() {
             Ok(f) => f,
             Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(None),
@@ -289,11 +341,7 @@ impl KvpStore for KvpPoolStore {
         let _ = FileExt::unlock(&file);
         let records = records?;
 
-        Ok(records
-            .into_iter()
-            .rev()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v))
+        Ok(records.into_iter().find(|(k, _)| k == key).map(|(_, v)| v))
     }
 
     fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
@@ -313,23 +361,6 @@ impl KvpStore for KvpPoolStore {
         let records = records?;
 
         Ok(records.into_iter().collect())
-    }
-
-    fn entries_raw(&self) -> Result<Vec<(String, String)>, KvpError> {
-        let mut file = match self.open_for_read() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(Vec::new())
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        FileExt::lock_shared(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
-        let records = read_all_records(&mut file);
-        let _ = FileExt::unlock(&file);
-        Ok(records?)
     }
 
     fn delete(&self, key: &str) -> Result<bool, KvpError> {
@@ -366,12 +397,37 @@ impl KvpStore for KvpPoolStore {
         result
     }
 
-    fn backend_clear(&self) -> Result<(), KvpError> {
+    fn clear(&self) -> Result<(), KvpError> {
         self.truncate_pool()
+    }
+
+    fn len(&self) -> Result<usize, KvpError> {
+        match std::fs::metadata(&self.path) {
+            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn is_empty(&self) -> Result<bool, KvpError> {
+        match std::fs::metadata(&self.path) {
+            Ok(m) => Ok(m.len() == 0),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(true),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn is_stale(&self) -> Result<bool, KvpError> {
         self.pool_is_stale()
+    }
+
+    fn dump(&self, path: &Path) -> Result<(), KvpError> {
+        let entries = self.entries()?;
+        let json = serde_json::to_string_pretty(&entries).map_err(|e| {
+            io::Error::other(format!("JSON serialization failed: {e}"))
+        })?;
+        std::fs::write(path, json)?;
+        Ok(())
     }
 }
 
@@ -395,20 +451,20 @@ mod tests {
     }
 
     #[test]
-    fn test_write_rejects_empty_key() {
+    fn test_upsert_rejects_empty_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        let err = store.write("", "value").unwrap_err();
+        let err = store.upsert("", "value").unwrap_err();
         assert!(matches!(err, KvpError::EmptyKey));
     }
 
     #[test]
-    fn test_write_rejects_null_in_key() {
+    fn test_upsert_rejects_null_in_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        let err = store.write("bad\0key", "value").unwrap_err();
+        let err = store.upsert("bad\0key", "value").unwrap_err();
         assert!(matches!(err, KvpError::KeyContainsNull));
     }
 
@@ -437,10 +493,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         let ok_key = "k".repeat(254);
-        store.write(&ok_key, "v").unwrap();
+        store.upsert(&ok_key, "v").unwrap();
 
         let bad_key = "k".repeat(255);
-        let err = store.write(&bad_key, "v").unwrap_err();
+        let err = store.upsert(&bad_key, "v").unwrap_err();
         assert!(matches!(err, KvpError::KeyTooLarge { .. }));
     }
 
@@ -450,10 +506,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         let ok_val = "v".repeat(1022);
-        store.write("k", &ok_val).unwrap();
+        store.upsert("k", &ok_val).unwrap();
 
         let bad_val = "v".repeat(1023);
-        let err = store.write("k2", &bad_val).unwrap_err();
+        let err = store.upsert("k2", &bad_val).unwrap_err();
         assert!(matches!(err, KvpError::ValueTooLarge { .. }));
     }
 
@@ -463,10 +519,10 @@ mod tests {
         let store = full_store(tmp.path());
 
         let ok_key = "k".repeat(512);
-        store.write(&ok_key, "v").unwrap();
+        store.upsert(&ok_key, "v").unwrap();
 
         let bad_key = "k".repeat(513);
-        let err = store.write(&bad_key, "v").unwrap_err();
+        let err = store.upsert(&bad_key, "v").unwrap_err();
         assert!(matches!(err, KvpError::KeyTooLarge { .. }));
     }
 
@@ -476,37 +532,21 @@ mod tests {
         let store = full_store(tmp.path());
 
         let ok_val = "v".repeat(2048);
-        store.write("k", &ok_val).unwrap();
+        store.upsert("k", &ok_val).unwrap();
 
         let bad_val = "v".repeat(2049);
-        let err = store.write("k2", &bad_val).unwrap_err();
+        let err = store.upsert("k2", &bad_val).unwrap_err();
         assert!(matches!(err, KvpError::ValueTooLarge { .. }));
     }
 
     #[test]
-    fn test_entries_raw_preserves_duplicates() {
+    fn test_upsert_overwrites_existing_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.write("key", "v1").unwrap();
-        store.write("key", "v2").unwrap();
-        store.write("other", "v3").unwrap();
-
-        let raw = store.entries_raw().unwrap();
-        assert_eq!(raw.len(), 3);
-        assert_eq!(raw[0], ("key".to_string(), "v1".to_string()));
-        assert_eq!(raw[1], ("key".to_string(), "v2".to_string()));
-        assert_eq!(raw[2], ("other".to_string(), "v3".to_string()));
-    }
-
-    #[test]
-    fn test_entries_deduplicates_last_write_wins() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = restricted_store(tmp.path());
-
-        store.write("key", "v1").unwrap();
-        store.write("key", "v2").unwrap();
-        store.write("other", "v3").unwrap();
+        store.upsert("key", "v1").unwrap();
+        store.upsert("key", "v2").unwrap();
+        store.upsert("other", "v3").unwrap();
 
         let entries = store.entries().unwrap();
         assert_eq!(entries.len(), 2);
@@ -520,9 +560,9 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.write(&format!("k{i}"), "v").unwrap();
+            store.upsert(&format!("k{i}"), "v").unwrap();
         }
-        let err = store.write("overflow", "v").unwrap_err();
+        let err = store.upsert("overflow", "v").unwrap_err();
         assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
     }
 
@@ -532,9 +572,9 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.write(&format!("k{i}"), "v").unwrap();
+            store.upsert(&format!("k{i}"), "v").unwrap();
         }
-        store.write("k0", "updated").unwrap();
+        store.upsert("k0", "updated").unwrap();
         assert_eq!(store.read("k0").unwrap(), Some("updated".to_string()));
     }
 
@@ -544,10 +584,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.write(&format!("k{i}"), "v").unwrap();
+            store.upsert(&format!("k{i}"), "v").unwrap();
         }
         assert!(store.delete("k0").unwrap());
-        store.write("new-key", "v").unwrap();
+        store.upsert("new-key", "v").unwrap();
     }
 
     #[test]
@@ -555,30 +595,29 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.write("key", "value").unwrap();
+        store.upsert("key", "value").unwrap();
         store.clear().unwrap();
         assert_eq!(store.read("key").unwrap(), None);
     }
 
     #[test]
-    fn test_delete_removes_all_matching_records() {
+    fn test_delete_removes_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.write("key", "v1").unwrap();
-        store.write("key", "v2").unwrap();
-        store.write("other", "v3").unwrap();
+        store.upsert("key", "v1").unwrap();
+        store.upsert("other", "v2").unwrap();
 
         assert!(store.delete("key").unwrap());
         assert_eq!(store.read("key").unwrap(), None);
-        assert_eq!(store.read("other").unwrap(), Some("v3".to_string()));
+        assert_eq!(store.read("other").unwrap(), Some("v2".to_string()));
     }
 
     #[test]
     fn test_is_stale_and_pool_is_stale_at_boot_helpers() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
-        store.write("key", "value").unwrap();
+        store.upsert("key", "value").unwrap();
 
         assert!(!store.is_stale().unwrap());
         assert!(store.pool_is_stale_at_boot(i64::MAX).unwrap());
@@ -594,5 +633,240 @@ mod tests {
         let tmp2 = NamedTempFile::new().unwrap();
         let full = full_store(tmp2.path());
         assert_eq!(full.mode(), PoolMode::Full);
+    }
+
+    #[test]
+    fn test_len_and_is_empty() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        assert!(store.is_empty().unwrap());
+        assert_eq!(store.len().unwrap(), 0);
+
+        store.upsert("key", "value").unwrap();
+        assert!(!store.is_empty().unwrap());
+        assert_eq!(store.len().unwrap(), 1);
+
+        store.upsert("key2", "value2").unwrap();
+        assert_eq!(store.len().unwrap(), 2);
+
+        store.upsert("key", "updated").unwrap();
+        assert_eq!(store.len().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_read_accepts_wire_max_key_in_restricted_mode() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        // Write a record using Full mode so a 300-byte key is accepted
+        let full = full_store(tmp.path());
+        let long_key = "k".repeat(300);
+        full.upsert(&long_key, "val").unwrap();
+
+        // Restricted store can still read the 300-byte key (> 254 safe limit)
+        assert_eq!(store.read(&long_key).unwrap(), Some("val".to_string()));
+
+        // But a key beyond the wire max (512) is rejected even for reads
+        let too_long = "k".repeat(513);
+        let err = store.read(&too_long).unwrap_err();
+        assert!(matches!(err, KvpError::KeyTooLarge { .. }));
+    }
+
+    #[test]
+    fn test_dump_writes_json() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        store.upsert("key1", "value1").unwrap();
+        store.upsert("key2", "value2").unwrap();
+
+        let dump_file = NamedTempFile::new().unwrap();
+        store.dump(dump_file.path()).unwrap();
+
+        let contents = std::fs::read_to_string(dump_file.path()).unwrap();
+        let parsed: HashMap<String, String> =
+            serde_json::from_str(&contents).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(parsed.get("key2"), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_concurrent_upserts_to_different_keys() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for i in 0..10 {
+                        let key = format!("t{t}_k{i}");
+                        store.upsert(&key, &format!("val_{t}_{i}")).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let store = restricted_store(tmp.path());
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.len(), 80);
+        for t in 0..8 {
+            for i in 0..10 {
+                let key = format!("t{t}_k{i}");
+                assert_eq!(
+                    entries.get(&key),
+                    Some(&format!("val_{t}_{i}")),
+                    "missing or wrong value for {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_concurrent_upserts_to_same_key() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for i in 0..10 {
+                        store
+                            .upsert("shared_key", &format!("t{t}_v{i}"))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let store = restricted_store(tmp.path());
+        assert_eq!(store.len().unwrap(), 1);
+        let val = store.read("shared_key").unwrap().unwrap();
+        assert!(
+            val.starts_with('t') && val.contains("_v"),
+            "unexpected value format: {val}"
+        );
+
+        // File must be exactly one record (no duplicates)
+        let file_len = std::fs::metadata(tmp.path()).unwrap().len() as usize;
+        assert_eq!(file_len, RECORD_SIZE);
+    }
+
+    #[test]
+    fn test_concurrent_readers_and_writers() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        // Seed some initial data
+        let store = restricted_store(tmp.path());
+        for i in 0..10 {
+            store.upsert(&format!("k{i}"), &format!("v{i}")).unwrap();
+        }
+
+        let writer_threads: Vec<_> = (0..4)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for round in 0..5 {
+                        let key = format!("k{t}");
+                        store.upsert(&key, &format!("w{t}_r{round}")).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        let reader_threads: Vec<_> = (0..4)
+            .map(|_| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for _ in 0..20 {
+                        let entries = store.entries().unwrap();
+                        // Should always have 10 keys, never more
+                        assert!(entries.len() <= 10);
+                        // File should be well-formed
+                        for (k, v) in &entries {
+                            assert!(!k.is_empty());
+                            assert!(!v.is_empty());
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for t in writer_threads {
+            t.join().unwrap();
+        }
+        for t in reader_threads {
+            t.join().unwrap();
+        }
+
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.len(), 10);
+    }
+
+    #[test]
+    fn test_concurrent_writers_at_key_cap() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        // Fill to just under the cap
+        let store = restricted_store(tmp.path());
+        for i in 0..MAX_UNIQUE_KEYS - 4 {
+            store.upsert(&format!("pre{i}"), "v").unwrap();
+        }
+
+        // 4 threads each try to add one new unique key concurrently
+        let threads: Vec<_> = (0..4)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    store.upsert(&format!("new{t}"), "v")
+                })
+            })
+            .collect();
+
+        let results: Vec<_> =
+            threads.into_iter().map(|t| t.join().unwrap()).collect();
+
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        let cap_errors = results
+            .iter()
+            .filter(|r| {
+                matches!(r, Err(KvpError::MaxUniqueKeysExceeded { .. }))
+            })
+            .count();
+
+        // Exactly 4 should succeed (filling the last 4 slots)
+        assert_eq!(successes, 4);
+        assert_eq!(cap_errors, 0);
+        assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
+
+        // One more should be rejected
+        let err = store.upsert("one_too_many", "v").unwrap_err();
+        assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
     }
 }

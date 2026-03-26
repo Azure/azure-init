@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::path::Path;
 
 pub mod kvp_pool;
 
@@ -71,84 +72,37 @@ impl From<io::Error> for KvpError {
 pub use kvp_pool::KvpPoolStore;
 
 /// Key-value store with Hyper-V KVP semantics.
-///
-/// The trait splits each operation into a `backend_*` method (raw I/O,
-/// provided by the implementor) and a public method (`write`, `read`,
-/// `clear`) that validates inputs then delegates to the backend.
 pub trait KvpStore: Send + Sync {
-    /// Maximum key size in bytes for this store.
+    /// Maximum key size in bytes for writes.
     fn max_key_size(&self) -> usize;
 
-    /// Maximum value size in bytes for this store.
+    /// Maximum value size in bytes for writes.
     fn max_value_size(&self) -> usize;
 
-    /// Raw write — persist a key-value pair without validation.
-    fn backend_write(&self, key: &str, value: &str) -> Result<(), KvpError>;
+    /// Insert a new key-value pair or update an existing key's value.
+    fn upsert(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
-    /// Raw read — look up a key without validation.
-    fn backend_read(&self, key: &str) -> Result<Option<String>, KvpError>;
+    /// Read the value for a key. Returns `Ok(None)` when absent.
+    fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
 
-    /// Return all key-value pairs, deduplicated with last-write-wins.
-    fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
-
-    /// Return all raw records in file order, without deduplication.
-    fn entries_raw(&self) -> Result<Vec<(String, String)>, KvpError>;
-
-    /// Remove all records matching `key`. Returns `true` if any were removed.
+    /// Remove a key. Returns `true` if the key was present.
     fn delete(&self, key: &str) -> Result<bool, KvpError>;
 
-    /// Raw clear — remove all records without additional checks.
-    fn backend_clear(&self) -> Result<(), KvpError>;
+    /// Remove all entries from the store.
+    fn clear(&self) -> Result<(), KvpError>;
 
-    /// Write a key-value pair after validation.
-    fn write(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        self.validate_key(key)?;
-        self.validate_value(value)?;
-        self.backend_write(key, value)
-    }
+    /// Return all key-value pairs.
+    fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
 
-    /// Read the most recent value for a key (last-write-wins).
-    ///
-    /// Returns `Ok(None)` when the key is absent.
-    fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        self.validate_key(key)?;
-        self.backend_read(key)
-    }
+    /// Return the number of entries in the store.
+    fn len(&self) -> Result<usize, KvpError>;
 
-    /// Remove all records from the store.
-    fn clear(&self) -> Result<(), KvpError> {
-        self.backend_clear()
-    }
+    /// Return whether the store is empty.
+    fn is_empty(&self) -> Result<bool, KvpError>;
 
     /// Whether the store's data is stale (e.g. predates current boot).
-    fn is_stale(&self) -> Result<bool, KvpError> {
-        Ok(false)
-    }
+    fn is_stale(&self) -> Result<bool, KvpError>;
 
-    /// Validate a key: must be non-empty, no null bytes, within
-    /// [`max_key_size`](Self::max_key_size).
-    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
-        if key.is_empty() {
-            return Err(KvpError::EmptyKey);
-        }
-        if key.as_bytes().contains(&0) {
-            return Err(KvpError::KeyContainsNull);
-        }
-        let actual = key.len();
-        let max = self.max_key_size();
-        if actual > max {
-            return Err(KvpError::KeyTooLarge { max, actual });
-        }
-        Ok(())
-    }
-
-    /// Validate a value: must be within [`max_value_size`](Self::max_value_size).
-    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
-        let actual = value.len();
-        let max = self.max_value_size();
-        if actual > max {
-            return Err(KvpError::ValueTooLarge { max, actual });
-        }
-        Ok(())
-    }
+    /// Dump all entries to a JSON file at the given path.
+    fn dump(&self, path: &Path) -> Result<(), KvpError>;
 }
