@@ -9,7 +9,7 @@ license = "MIT"
 description = "Hyper-V KVP (Key-Value Pair) storage library for azure-init."
 
 [dependencies]
-fs2 = "0.4"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.38"

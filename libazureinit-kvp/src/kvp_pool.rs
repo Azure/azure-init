@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fs2::FileExt;
 use sysinfo::System;
 
 use crate::{KvpError, KvpStore};
@@ -41,6 +41,55 @@ const SAFE_MAX_VALUE_BYTES: usize = 1022;
 const MAX_UNIQUE_KEYS: usize = 1024;
 
 const RECORD_SIZE: usize = WIRE_MAX_KEY_BYTES + WIRE_MAX_VALUE_BYTES;
+
+/// Acquire an exclusive (write) lock on the entire file.
+///
+/// Uses `fcntl(F_OFD_SETLKW)` — open file description locks that are
+/// per-FD (safe for multi-threaded use) yet conflict with traditional
+/// `fcntl` record locks used by `hv_kvp_daemon.c` and cloud-init.
+fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
+    let fl = libc::flock {
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Acquire a shared (read) lock on the entire file.
+fn fcntl_lock_shared(file: &File) -> io::Result<()> {
+    let fl = libc::flock {
+        l_type: libc::F_RDLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Release a lock on the entire file.
+fn fcntl_unlock(file: &File) -> io::Result<()> {
+    let fl = libc::flock {
+        l_type: libc::F_UNLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 /// Policy mode controlling key/value size limits for writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,11 +236,11 @@ impl KvpPoolStore {
                 Err(e) => return Err(e.into()),
             };
 
-        FileExt::lock_exclusive(&file).map_err(|e| {
+        fcntl_lock_exclusive(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
         let result = file.set_len(0).map_err(KvpError::from);
-        let _ = FileExt::unlock(&file);
+        let _ = fcntl_unlock(&file);
         result
     }
 
@@ -208,6 +257,7 @@ impl KvpPoolStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&self.path)
     }
 }
@@ -255,7 +305,7 @@ fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
         return Ok(Vec::new());
     }
 
-    if len % RECORD_SIZE != 0 {
+    if !len.is_multiple_of(RECORD_SIZE) {
         return Err(io::Error::other(format!(
             "file size ({len}) is not a multiple of record size ({RECORD_SIZE})"
         )));
@@ -301,7 +351,7 @@ impl KvpStore for KvpPoolStore {
         self.validate_value(value)?;
 
         let mut file = self.open_for_read_write_create()?;
-        FileExt::lock_exclusive(&file).map_err(|e| {
+        fcntl_lock_exclusive(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
 
@@ -321,7 +371,7 @@ impl KvpStore for KvpPoolStore {
             Ok(())
         })();
 
-        let _ = FileExt::unlock(&file);
+        let _ = fcntl_unlock(&file);
         result
     }
 
@@ -334,11 +384,11 @@ impl KvpStore for KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
 
-        FileExt::lock_shared(&file).map_err(|e| {
+        fcntl_lock_shared(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
         let records = read_all_records(&mut file);
-        let _ = FileExt::unlock(&file);
+        let _ = fcntl_unlock(&file);
         let records = records?;
 
         Ok(records.into_iter().find(|(k, _)| k == key).map(|(_, v)| v))
@@ -353,11 +403,11 @@ impl KvpStore for KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
 
-        FileExt::lock_shared(&file).map_err(|e| {
+        fcntl_lock_shared(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
         let records = read_all_records(&mut file);
-        let _ = FileExt::unlock(&file);
+        let _ = fcntl_unlock(&file);
         let records = records?;
 
         Ok(records.into_iter().collect())
@@ -370,7 +420,7 @@ impl KvpStore for KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
 
-        FileExt::lock_exclusive(&file).map_err(|e| {
+        fcntl_lock_exclusive(&file).map_err(|e| {
             io::Error::other(format!("failed to lock KVP file: {e}"))
         })?;
 
@@ -393,7 +443,7 @@ impl KvpStore for KvpPoolStore {
             Ok(true)
         })();
 
-        let _ = FileExt::unlock(&file);
+        let _ = fcntl_unlock(&file);
         result
     }
 
