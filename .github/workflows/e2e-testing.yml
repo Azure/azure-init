@@ -18,6 +18,7 @@ jobs:
           - ubuntu:24.04
           - debian:13
           - mcr.microsoft.com/azurelinux/base/core:3.0
+          - azlpubstagingacroxz2o4gw.azurecr.io/azurelinux/base/core:4.0  # AZL 4
 
     name: Testinit E2E
     runs-on: ubuntu-latest
