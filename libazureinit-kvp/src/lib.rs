@@ -80,7 +80,10 @@ pub trait KvpStore: Send + Sync {
     fn max_value_size(&self) -> usize;
 
     /// Insert a new key-value pair or update an existing key's value.
-    fn upsert(&self, key: &str, value: &str) -> Result<(), KvpError>;
+    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError>;
+
+    /// Append a key-value pair without checking for an existing key.
+    fn append(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
     /// Read the value for a key. Returns `Ok(None)` when absent.
     fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
@@ -94,7 +97,11 @@ pub trait KvpStore: Send + Sync {
     /// Return all key-value pairs.
     fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
 
-    /// Return the number of entries in the store.
+    /// Return the number of records in the store.
+    ///
+    /// This counts on-disk records, not unique keys. If [`append`](Self::append)
+    /// was used to write duplicate keys, this may exceed the number of
+    /// unique keys returned by [`entries`](Self::entries).
     fn len(&self) -> Result<usize, KvpError>;
 
     /// Return whether the store is empty.

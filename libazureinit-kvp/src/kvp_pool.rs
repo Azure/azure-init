@@ -17,7 +17,7 @@
 //! ## Reference
 //! - [Hyper-V Data Exchange Service (KVP)](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/reference/integration-services#hyper-v-data-exchange-service-kvp)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::os::unix::fs::MetadataExt;
@@ -260,6 +260,18 @@ impl KvpPoolStore {
             .truncate(false)
             .open(&self.path)
     }
+
+    /// Create a read-only iterator over all records.
+    fn iter(&self) -> Result<KvpPoolIter, KvpError> {
+        let file = self.open_for_read()?;
+        KvpPoolIter::new(file, false)
+    }
+
+    /// Create a read-write iterator over all records.
+    fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
+        let file = self.open_for_read_write_create()?;
+        KvpPoolIter::new(file, true)
+    }
 }
 
 pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
@@ -299,42 +311,173 @@ pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
     Ok((key, value))
 }
 
-fn read_all_records(file: &mut File) -> io::Result<Vec<(String, String)>> {
-    let len = file.metadata()?.len() as usize;
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-
-    if !len.is_multiple_of(RECORD_SIZE) {
-        return Err(io::Error::other(format!(
-            "file size ({len}) is not a multiple of record size ({RECORD_SIZE})"
-        )));
-    }
-
-    file.seek(io::SeekFrom::Start(0))?;
-    let record_count = len / RECORD_SIZE;
-    let mut records = Vec::with_capacity(record_count);
-    let mut buf = [0u8; RECORD_SIZE];
-
-    for _ in 0..record_count {
-        file.read_exact(&mut buf)?;
-        records.push(decode_record(&buf)?);
-    }
-
-    Ok(records)
+/// A record-at-a-time iterator over a KVP pool file.
+///
+/// Uses file I/O with seek semantics for memory-efficient iteration
+/// without loading all records into memory. Supports in-place value
+/// overwrites and record removal for the last-yielded record.
+///
+/// The underlying file is locked for the lifetime of the iterator;
+/// the lock is released on drop.
+#[derive(Debug)]
+struct KvpPoolIter {
+    file: File,
+    record_count: usize,
+    current_index: usize,
 }
 
-fn rewrite_file(
-    file: &mut File,
-    map: &HashMap<String, String>,
-) -> Result<(), KvpError> {
-    file.set_len(0)?;
-    file.seek(io::SeekFrom::Start(0))?;
-    for (k, v) in map {
-        file.write_all(&encode_record(k, v))?;
+impl KvpPoolIter {
+    fn new(mut file: File, lock_exclusive: bool) -> Result<Self, KvpError> {
+        let lock_result = if lock_exclusive {
+            fcntl_lock_exclusive(&file)
+        } else {
+            fcntl_lock_shared(&file)
+        };
+        lock_result.map_err(|e| {
+            io::Error::other(format!("failed to lock KVP file: {e}"))
+        })?;
+
+        let len = file.metadata()?.len() as usize;
+        if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
+            let _ = fcntl_unlock(&file);
+            return Err(io::Error::other(format!(
+                "file size ({len}) is not a multiple of record size \
+                 ({RECORD_SIZE})"
+            ))
+            .into());
+        }
+
+        let record_count = len / RECORD_SIZE;
+        file.seek(io::SeekFrom::Start(0))?;
+
+        Ok(Self {
+            file,
+            record_count,
+            current_index: 0,
+        })
     }
-    file.flush()?;
-    Ok(())
+
+    /// The number of records in the file (updated by
+    /// [`append`](Self::append) and
+    /// [`remove_current`](Self::remove_current)).
+    fn record_count(&self) -> usize {
+        self.record_count
+    }
+
+    /// Overwrite the value field of the record last returned by
+    /// [`next()`](Iterator::next), zero-padding to fill the
+    /// fixed-width 2048-byte field.
+    ///
+    /// After the write the file position is at the start of the next
+    /// record, so iteration can continue normally.
+    ///
+    /// Returns `InvalidInput` if called before the first `next()`.
+    fn overwrite_current_value(&mut self, value: &str) -> io::Result<()> {
+        if self.current_index == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "no record has been read yet",
+            ));
+        }
+
+        let record_start = (self.current_index - 1) as u64 * RECORD_SIZE as u64;
+        let value_offset = record_start + WIRE_MAX_KEY_BYTES as u64;
+
+        self.file.seek(io::SeekFrom::Start(value_offset))?;
+
+        let mut buf = [0u8; WIRE_MAX_VALUE_BYTES];
+        let bytes = value.as_bytes();
+        let len = bytes.len().min(WIRE_MAX_VALUE_BYTES);
+        buf[..len].copy_from_slice(&bytes[..len]);
+
+        self.file.write_all(&buf)?;
+        Ok(())
+    }
+
+    /// Append a new record at the end of the file, zero-padded to the
+    /// fixed-width wire format.
+    fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
+        self.file.seek(io::SeekFrom::End(0))?;
+        self.file.write_all(&encode_record(key, value))?;
+        self.record_count += 1;
+        Ok(())
+    }
+
+    /// Remove the record last returned by [`next()`](Iterator::next)
+    /// by swapping it with the final record and truncating the file.
+    ///
+    /// After removal the file position rewinds so that the next call
+    /// to `next()` reads the record that was swapped into this slot
+    /// (unless the removed record was already the last one).
+    ///
+    /// Returns `InvalidInput` if called before the first `next()`.
+    fn remove_current(&mut self) -> io::Result<()> {
+        if self.current_index == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "no record has been read yet",
+            ));
+        }
+
+        let delete_index = self.current_index - 1;
+        let last_index = self.record_count - 1;
+
+        if delete_index != last_index {
+            self.file.seek(io::SeekFrom::Start(
+                last_index as u64 * RECORD_SIZE as u64,
+            ))?;
+            let mut buf = [0u8; RECORD_SIZE];
+            self.file.read_exact(&mut buf)?;
+
+            self.file.seek(io::SeekFrom::Start(
+                delete_index as u64 * RECORD_SIZE as u64,
+            ))?;
+            self.file.write_all(&buf)?;
+
+            self.file.seek(io::SeekFrom::Start(
+                delete_index as u64 * RECORD_SIZE as u64,
+            ))?;
+            self.current_index = delete_index;
+        }
+
+        self.file.set_len(last_index as u64 * RECORD_SIZE as u64)?;
+        self.record_count -= 1;
+        Ok(())
+    }
+
+    /// Flush any buffered writes to the underlying file.
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Drop for KvpPoolIter {
+    fn drop(&mut self) {
+        let _ = fcntl_unlock(&self.file);
+    }
+}
+
+impl Iterator for KvpPoolIter {
+    type Item = io::Result<(String, String)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.record_count {
+            return None;
+        }
+        let mut buf = [0u8; RECORD_SIZE];
+        match self.file.read_exact(&mut buf) {
+            Ok(()) => {
+                self.current_index += 1;
+                Some(decode_record(&buf))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.record_count - self.current_index;
+        (remaining, Some(remaining))
+    }
 }
 
 impl KvpStore for KvpPoolStore {
@@ -346,105 +489,109 @@ impl KvpStore for KvpPoolStore {
         self.mode.max_value_size()
     }
 
-    fn upsert(&self, key: &str, value: &str) -> Result<(), KvpError> {
+    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError> {
         self.validate_key(key)?;
         self.validate_value(value)?;
 
-        let mut file = self.open_for_read_write_create()?;
-        fcntl_lock_exclusive(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
+        let mut iter = self.iter_mut()?;
+        let mut found = false;
+        let mut unique_keys = HashSet::new();
 
-        let result = (|| -> Result<(), KvpError> {
-            let records = read_all_records(&mut file)?;
-            let mut map: HashMap<String, String> =
-                records.into_iter().collect();
+        while let Some(record) = iter.next() {
+            let (k, _) = record?;
+            let is_target = k == key;
+            unique_keys.insert(k);
+            if is_target {
+                iter.overwrite_current_value(value)?;
+                found = true;
+                break;
+            }
+        }
 
-            if !map.contains_key(key) && map.len() >= MAX_UNIQUE_KEYS {
+        if !found {
+            if unique_keys.len() >= MAX_UNIQUE_KEYS {
                 return Err(KvpError::MaxUniqueKeysExceeded {
                     max: MAX_UNIQUE_KEYS,
                 });
             }
+            iter.append(key, value)?;
+        }
 
-            map.insert(key.to_string(), value.to_string());
-            rewrite_file(&mut file, &map)?;
-            Ok(())
-        })();
+        iter.flush()?;
+        Ok(())
+    }
 
-        let _ = fcntl_unlock(&file);
-        result
+    fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        self.validate_key(key)?;
+        self.validate_value(value)?;
+
+        let mut iter = self.iter_mut()?;
+        iter.append(key, value)?;
+        iter.flush()?;
+        Ok(())
     }
 
     fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
         Self::validate_key_for_read(key)?;
 
-        let mut file = match self.open_for_read() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
         };
 
-        fcntl_lock_shared(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
-        let records = read_all_records(&mut file);
-        let _ = fcntl_unlock(&file);
-        let records = records?;
+        for record in iter {
+            let (k, v) = record?;
+            if k == key {
+                return Ok(Some(v));
+            }
+        }
 
-        Ok(records.into_iter().find(|(k, _)| k == key).map(|(_, v)| v))
+        Ok(None)
     }
 
     fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
-        let mut file = match self.open_for_read() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(HashMap::new())
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(HashMap::new());
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
 
-        fcntl_lock_shared(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
-        let records = read_all_records(&mut file);
-        let _ = fcntl_unlock(&file);
-        let records = records?;
-
-        Ok(records.into_iter().collect())
+        let mut map = HashMap::with_capacity(iter.record_count());
+        for record in iter {
+            let (k, v) = record?;
+            map.entry(k).or_insert(v);
+        }
+        Ok(map)
     }
 
     fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        let mut file = match self.open_for_read_write() {
+        Self::validate_key_for_read(key)?;
+
+        let file = match self.open_for_read_write() {
             Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(false);
+            }
             Err(e) => return Err(e.into()),
         };
 
-        fcntl_lock_exclusive(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
+        let mut iter = KvpPoolIter::new(file, true)?;
 
-        let result = (|| -> Result<bool, KvpError> {
-            let records = read_all_records(&mut file)?;
-            let original_count = records.len();
-            let kept: Vec<_> =
-                records.into_iter().filter(|(k, _)| k != key).collect();
-
-            if kept.len() == original_count {
-                return Ok(false);
+        while let Some(record) = iter.next() {
+            let (k, _) = record?;
+            if k == key {
+                iter.remove_current()?;
+                iter.flush()?;
+                return Ok(true);
             }
+        }
 
-            file.set_len(0)?;
-            file.seek(io::SeekFrom::Start(0))?;
-            for (k, v) in &kept {
-                file.write_all(&encode_record(k, v))?;
-            }
-            file.flush()?;
-            Ok(true)
-        })();
-
-        let _ = fcntl_unlock(&file);
-        result
+        Ok(false)
     }
 
     fn clear(&self) -> Result<(), KvpError> {
@@ -501,20 +648,20 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_rejects_empty_key() {
+    fn test_insert_rejects_empty_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        let err = store.upsert("", "value").unwrap_err();
+        let err = store.insert("", "value").unwrap_err();
         assert!(matches!(err, KvpError::EmptyKey));
     }
 
     #[test]
-    fn test_upsert_rejects_null_in_key() {
+    fn test_insert_rejects_null_in_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        let err = store.upsert("bad\0key", "value").unwrap_err();
+        let err = store.insert("bad\0key", "value").unwrap_err();
         assert!(matches!(err, KvpError::KeyContainsNull));
     }
 
@@ -543,10 +690,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         let ok_key = "k".repeat(254);
-        store.upsert(&ok_key, "v").unwrap();
+        store.insert(&ok_key, "v").unwrap();
 
         let bad_key = "k".repeat(255);
-        let err = store.upsert(&bad_key, "v").unwrap_err();
+        let err = store.insert(&bad_key, "v").unwrap_err();
         assert!(matches!(err, KvpError::KeyTooLarge { .. }));
     }
 
@@ -556,10 +703,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         let ok_val = "v".repeat(1022);
-        store.upsert("k", &ok_val).unwrap();
+        store.insert("k", &ok_val).unwrap();
 
         let bad_val = "v".repeat(1023);
-        let err = store.upsert("k2", &bad_val).unwrap_err();
+        let err = store.insert("k2", &bad_val).unwrap_err();
         assert!(matches!(err, KvpError::ValueTooLarge { .. }));
     }
 
@@ -569,10 +716,10 @@ mod tests {
         let store = full_store(tmp.path());
 
         let ok_key = "k".repeat(512);
-        store.upsert(&ok_key, "v").unwrap();
+        store.insert(&ok_key, "v").unwrap();
 
         let bad_key = "k".repeat(513);
-        let err = store.upsert(&bad_key, "v").unwrap_err();
+        let err = store.insert(&bad_key, "v").unwrap_err();
         assert!(matches!(err, KvpError::KeyTooLarge { .. }));
     }
 
@@ -582,21 +729,21 @@ mod tests {
         let store = full_store(tmp.path());
 
         let ok_val = "v".repeat(2048);
-        store.upsert("k", &ok_val).unwrap();
+        store.insert("k", &ok_val).unwrap();
 
         let bad_val = "v".repeat(2049);
-        let err = store.upsert("k2", &bad_val).unwrap_err();
+        let err = store.insert("k2", &bad_val).unwrap_err();
         assert!(matches!(err, KvpError::ValueTooLarge { .. }));
     }
 
     #[test]
-    fn test_upsert_overwrites_existing_key() {
+    fn test_insert_overwrites_existing_key() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.upsert("key", "v1").unwrap();
-        store.upsert("key", "v2").unwrap();
-        store.upsert("other", "v3").unwrap();
+        store.insert("key", "v1").unwrap();
+        store.insert("key", "v2").unwrap();
+        store.insert("other", "v3").unwrap();
 
         let entries = store.entries().unwrap();
         assert_eq!(entries.len(), 2);
@@ -610,9 +757,9 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.upsert(&format!("k{i}"), "v").unwrap();
+            store.insert(&format!("k{i}"), "v").unwrap();
         }
-        let err = store.upsert("overflow", "v").unwrap_err();
+        let err = store.insert("overflow", "v").unwrap_err();
         assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
     }
 
@@ -622,10 +769,26 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.upsert(&format!("k{i}"), "v").unwrap();
+            store.insert(&format!("k{i}"), "v").unwrap();
         }
-        store.upsert("k0", "updated").unwrap();
+        store.insert("k0", "updated").unwrap();
         assert_eq!(store.read("k0").unwrap(), Some("updated".to_string()));
+    }
+
+    #[test]
+    fn test_insert_cap_uses_unique_keys_not_record_count() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        for i in 0..MAX_UNIQUE_KEYS - 1 {
+            store.insert(&format!("k{i}"), "v").unwrap();
+        }
+
+        store.append("k0", "dup").unwrap();
+        assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
+
+        store.insert("new_unique", "v").unwrap();
+        assert_eq!(store.read("new_unique").unwrap(), Some("v".to_string()));
     }
 
     #[test]
@@ -634,10 +797,10 @@ mod tests {
         let store = restricted_store(tmp.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
-            store.upsert(&format!("k{i}"), "v").unwrap();
+            store.insert(&format!("k{i}"), "v").unwrap();
         }
         assert!(store.delete("k0").unwrap());
-        store.upsert("new-key", "v").unwrap();
+        store.insert("new-key", "v").unwrap();
     }
 
     #[test]
@@ -645,7 +808,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.upsert("key", "value").unwrap();
+        store.insert("key", "value").unwrap();
         store.clear().unwrap();
         assert_eq!(store.read("key").unwrap(), None);
     }
@@ -655,8 +818,8 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.upsert("key", "v1").unwrap();
-        store.upsert("other", "v2").unwrap();
+        store.insert("key", "v1").unwrap();
+        store.insert("other", "v2").unwrap();
 
         assert!(store.delete("key").unwrap());
         assert_eq!(store.read("key").unwrap(), None);
@@ -667,7 +830,7 @@ mod tests {
     fn test_is_stale_and_pool_is_stale_at_boot_helpers() {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
-        store.upsert("key", "value").unwrap();
+        store.insert("key", "value").unwrap();
 
         assert!(!store.is_stale().unwrap());
         assert!(store.pool_is_stale_at_boot(i64::MAX).unwrap());
@@ -693,14 +856,14 @@ mod tests {
         assert!(store.is_empty().unwrap());
         assert_eq!(store.len().unwrap(), 0);
 
-        store.upsert("key", "value").unwrap();
+        store.insert("key", "value").unwrap();
         assert!(!store.is_empty().unwrap());
         assert_eq!(store.len().unwrap(), 1);
 
-        store.upsert("key2", "value2").unwrap();
+        store.insert("key2", "value2").unwrap();
         assert_eq!(store.len().unwrap(), 2);
 
-        store.upsert("key", "updated").unwrap();
+        store.insert("key", "updated").unwrap();
         assert_eq!(store.len().unwrap(), 2);
     }
 
@@ -712,7 +875,7 @@ mod tests {
         // Write a record using Full mode so a 300-byte key is accepted
         let full = full_store(tmp.path());
         let long_key = "k".repeat(300);
-        full.upsert(&long_key, "val").unwrap();
+        full.insert(&long_key, "val").unwrap();
 
         // Restricted store can still read the 300-byte key (> 254 safe limit)
         assert_eq!(store.read(&long_key).unwrap(), Some("val".to_string()));
@@ -728,8 +891,8 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = restricted_store(tmp.path());
 
-        store.upsert("key1", "value1").unwrap();
-        store.upsert("key2", "value2").unwrap();
+        store.insert("key1", "value1").unwrap();
+        store.insert("key2", "value2").unwrap();
 
         let dump_file = NamedTempFile::new().unwrap();
         store.dump(dump_file.path()).unwrap();
@@ -743,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn test_concurrent_upserts_to_different_keys() {
+    fn test_concurrent_inserts_to_different_keys() {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
         let threads: Vec<_> = (0..8)
@@ -755,7 +918,7 @@ mod tests {
                             .unwrap();
                     for i in 0..10 {
                         let key = format!("t{t}_k{i}");
-                        store.upsert(&key, &format!("val_{t}_{i}")).unwrap();
+                        store.insert(&key, &format!("val_{t}_{i}")).unwrap();
                     }
                 })
             })
@@ -781,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn test_concurrent_upserts_to_same_key() {
+    fn test_concurrent_inserts_to_same_key() {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
         let threads: Vec<_> = (0..8)
@@ -793,7 +956,7 @@ mod tests {
                             .unwrap();
                     for i in 0..10 {
                         store
-                            .upsert("shared_key", &format!("t{t}_v{i}"))
+                            .insert("shared_key", &format!("t{t}_v{i}"))
                             .unwrap();
                     }
                 })
@@ -812,7 +975,6 @@ mod tests {
             "unexpected value format: {val}"
         );
 
-        // File must be exactly one record (no duplicates)
         let file_len = std::fs::metadata(tmp.path()).unwrap().len() as usize;
         assert_eq!(file_len, RECORD_SIZE);
     }
@@ -822,10 +984,9 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
 
-        // Seed some initial data
         let store = restricted_store(tmp.path());
         for i in 0..10 {
-            store.upsert(&format!("k{i}"), &format!("v{i}")).unwrap();
+            store.insert(&format!("k{i}"), &format!("v{i}")).unwrap();
         }
 
         let writer_threads: Vec<_> = (0..4)
@@ -837,7 +998,7 @@ mod tests {
                             .unwrap();
                     for round in 0..5 {
                         let key = format!("k{t}");
-                        store.upsert(&key, &format!("w{t}_r{round}")).unwrap();
+                        store.insert(&key, &format!("w{t}_r{round}")).unwrap();
                     }
                 })
             })
@@ -852,9 +1013,7 @@ mod tests {
                             .unwrap();
                     for _ in 0..20 {
                         let entries = store.entries().unwrap();
-                        // Should always have 10 keys, never more
                         assert!(entries.len() <= 10);
-                        // File should be well-formed
                         for (k, v) in &entries {
                             assert!(!k.is_empty());
                             assert!(!v.is_empty());
@@ -880,13 +1039,11 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
 
-        // Fill to just under the cap
         let store = restricted_store(tmp.path());
         for i in 0..MAX_UNIQUE_KEYS - 4 {
-            store.upsert(&format!("pre{i}"), "v").unwrap();
+            store.insert(&format!("pre{i}"), "v").unwrap();
         }
 
-        // 4 threads each try to add one new unique key concurrently
         let threads: Vec<_> = (0..4)
             .map(|t| {
                 let p = path.clone();
@@ -894,7 +1051,7 @@ mod tests {
                     let store =
                         KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
                             .unwrap();
-                    store.upsert(&format!("new{t}"), "v")
+                    store.insert(&format!("new{t}"), "v")
                 })
             })
             .collect();
@@ -910,13 +1067,432 @@ mod tests {
             })
             .count();
 
-        // Exactly 4 should succeed (filling the last 4 slots)
         assert_eq!(successes, 4);
         assert_eq!(cap_errors, 0);
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
 
-        // One more should be rejected
-        let err = store.upsert("one_too_many", "v").unwrap_err();
+        let err = store.insert("one_too_many", "v").unwrap_err();
         assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
+    }
+
+    #[test]
+    fn test_iter_yields_all_records_in_order() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        let expected: Vec<(&str, &str)> =
+            vec![("a", "1"), ("b", "2"), ("c", "3"), ("d", "4"), ("e", "5")];
+        for (k, v) in &expected {
+            store.append(k, v).unwrap();
+        }
+
+        let iter = store.iter().unwrap();
+        assert_eq!(iter.record_count(), 5);
+
+        let records: Vec<(String, String)> = iter.map(|r| r.unwrap()).collect();
+        for (i, (k, v)) in records.iter().enumerate() {
+            assert_eq!(k, expected[i].0);
+            assert_eq!(v, expected[i].1);
+        }
+    }
+
+    #[test]
+    fn test_iter_empty_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        let iter = store.iter().unwrap();
+        assert_eq!(iter.record_count(), 0);
+        assert_eq!(iter.count(), 0);
+    }
+
+    #[test]
+    fn test_iter_malformed_file_error() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), [0u8; RECORD_SIZE + 1]).unwrap();
+
+        let store = restricted_store(tmp.path());
+        let err = store.iter().unwrap_err();
+        assert!(matches!(err, KvpError::Io(_)));
+    }
+
+    #[test]
+    fn test_overwrite_adjacent_records_untouched() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.append("first", "val_first").unwrap();
+        store.append("middle", "val_middle").unwrap();
+        store.append("last", "val_last").unwrap();
+
+        let raw_before = std::fs::read(tmp.path()).unwrap();
+        let first_before = &raw_before[..RECORD_SIZE];
+        let last_before = &raw_before[2 * RECORD_SIZE..3 * RECORD_SIZE];
+
+        {
+            let mut iter = store.iter_mut().unwrap();
+            iter.next().unwrap().unwrap(); // first
+            let (k, _) = iter.next().unwrap().unwrap(); // middle
+            assert_eq!(k, "middle");
+            iter.overwrite_current_value("UPDATED").unwrap();
+            iter.flush().unwrap();
+        }
+
+        let raw_after = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(&raw_after[..RECORD_SIZE], first_before);
+        assert_eq!(&raw_after[2 * RECORD_SIZE..3 * RECORD_SIZE], last_before);
+
+        assert_eq!(store.read("middle").unwrap(), Some("UPDATED".to_string()));
+    }
+
+    #[test]
+    fn test_overwrite_multiple_in_one_pass() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.append("a", "old_a").unwrap();
+        store.append("b", "old_b").unwrap();
+        store.append("c", "old_c").unwrap();
+
+        {
+            let mut iter = store.iter_mut().unwrap();
+            let mut idx = 0;
+            while let Some(record) = iter.next() {
+                record.unwrap();
+                if idx == 0 || idx == 2 {
+                    iter.overwrite_current_value("new").unwrap();
+                }
+                idx += 1;
+            }
+            iter.flush().unwrap();
+        }
+
+        assert_eq!(store.read("a").unwrap(), Some("new".to_string()));
+        assert_eq!(store.read("b").unwrap(), Some("old_b".to_string()));
+        assert_eq!(store.read("c").unwrap(), Some("new".to_string()));
+    }
+
+    #[test]
+    fn test_remove_swap_and_continue() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.append("A", "1").unwrap();
+        store.append("B", "2").unwrap();
+        store.append("C", "3").unwrap();
+        store.append("D", "4").unwrap();
+
+        let mut collected = Vec::new();
+        {
+            let mut iter = store.iter_mut().unwrap();
+            while let Some(record) = iter.next() {
+                let (k, v) = record.unwrap();
+                if k == "B" {
+                    iter.remove_current().unwrap();
+                } else {
+                    collected.push((k, v));
+                }
+            }
+            iter.flush().unwrap();
+        }
+
+        assert_eq!(collected.len(), 3);
+        assert!(collected.iter().any(|(k, _)| k == "A"));
+        assert!(collected.iter().any(|(k, _)| k == "C"));
+        assert!(collected.iter().any(|(k, _)| k == "D"));
+
+        assert_eq!(store.len().unwrap(), 3);
+        assert_eq!(store.read("B").unwrap(), None);
+    }
+
+    #[test]
+    fn test_remove_last_record_no_swap() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.append("a", "1").unwrap();
+        store.append("b", "2").unwrap();
+        store.append("c", "3").unwrap();
+
+        {
+            let mut iter = store.iter_mut().unwrap();
+            iter.next().unwrap().unwrap();
+            iter.next().unwrap().unwrap();
+            iter.next().unwrap().unwrap();
+            iter.remove_current().unwrap();
+            iter.flush().unwrap();
+        }
+
+        assert_eq!(store.len().unwrap(), 2);
+        assert_eq!(store.read("c").unwrap(), None);
+        assert_eq!(store.read("a").unwrap(), Some("1".to_string()));
+        assert_eq!(store.read("b").unwrap(), Some("2".to_string()));
+    }
+
+    #[test]
+    fn test_remove_only_record() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.append("solo", "val").unwrap();
+
+        {
+            let mut iter = store.iter_mut().unwrap();
+            iter.next().unwrap().unwrap();
+            iter.remove_current().unwrap();
+            iter.flush().unwrap();
+        }
+
+        assert!(store.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_append_no_key_cap() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        for i in 0..MAX_UNIQUE_KEYS {
+            store.insert(&format!("k{i}"), "v").unwrap();
+        }
+        store.append("extra", "val").unwrap();
+        assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS + 1);
+    }
+
+    #[test]
+    fn test_append_validates_sizes() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        let big_key = "k".repeat(255);
+        let err = store.append(&big_key, "v").unwrap_err();
+        assert!(matches!(err, KvpError::KeyTooLarge { .. }));
+
+        let big_val = "v".repeat(1023);
+        let err = store.append("k", &big_val).unwrap_err();
+        assert!(matches!(err, KvpError::ValueTooLarge { .. }));
+    }
+
+    #[test]
+    fn test_append_then_read() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        store.append("diag_001", "event_data").unwrap();
+        assert_eq!(
+            store.read("diag_001").unwrap(),
+            Some("event_data".to_string())
+        );
+    }
+
+    #[test]
+    fn test_append_duplicate_key_semantics() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        store.append("X", "first").unwrap();
+        store.append("X", "second").unwrap();
+
+        assert_eq!(store.read("X").unwrap(), Some("first".to_string()));
+
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.get("X"), Some(&"first".to_string()));
+    }
+
+    #[test]
+    fn test_insert_file_size_unchanged_on_overwrite() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        store.insert("key", "original").unwrap();
+        let size_before = std::fs::metadata(tmp.path()).unwrap().len();
+
+        store.insert("key", "updated").unwrap();
+        let size_after = std::fs::metadata(tmp.path()).unwrap().len();
+
+        assert_eq!(size_before, size_after);
+        assert_eq!(store.read("key").unwrap(), Some("updated".to_string()));
+    }
+
+    #[test]
+    fn test_insert_file_size_grows_on_new_key() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        store.insert("k1", "v1").unwrap();
+        let size_before = std::fs::metadata(tmp.path()).unwrap().len();
+
+        store.insert("k2", "v2").unwrap();
+        let size_after = std::fs::metadata(tmp.path()).unwrap().len();
+
+        assert_eq!(size_after - size_before, RECORD_SIZE as u64);
+    }
+
+    #[test]
+    fn test_insert_preserves_other_records() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        for i in 0..5 {
+            store.insert(&format!("k{i}"), &format!("v{i}")).unwrap();
+        }
+
+        let raw_before = std::fs::read(tmp.path()).unwrap();
+        store.insert("k2", "CHANGED").unwrap();
+        let raw_after = std::fs::read(tmp.path()).unwrap();
+
+        assert_eq!(raw_before.len(), raw_after.len());
+        for i in 0..5 {
+            if i == 2 {
+                continue;
+            }
+            let start = i * RECORD_SIZE;
+            let end = start + RECORD_SIZE;
+            assert_eq!(
+                &raw_before[start..end],
+                &raw_after[start..end],
+                "record {i} was modified unexpectedly"
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_integrity_after_mixed_ops() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+
+        for i in 0..10 {
+            store.insert(&format!("u{i}"), &format!("uv{i}")).unwrap();
+        }
+        for i in 0..5 {
+            store.append(&format!("a{i}"), &format!("av{i}")).unwrap();
+        }
+        store.delete("u3").unwrap();
+        store.delete("u7").unwrap();
+        store.insert("u0", "overwritten").unwrap();
+
+        let raw = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(raw.len() % RECORD_SIZE, 0);
+
+        let record_count = raw.len() / RECORD_SIZE;
+        for i in 0..record_count {
+            let start = i * RECORD_SIZE;
+            let end = start + RECORD_SIZE;
+            let result = decode_record(&raw[start..end]);
+            assert!(
+                result.is_ok(),
+                "record {i} failed to decode: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_concurrent_appends() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for i in 0..10 {
+                        store
+                            .append(
+                                &format!("t{t}_d{i}"),
+                                &format!("data_{t}_{i}"),
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let store = restricted_store(tmp.path());
+        assert_eq!(store.len().unwrap(), 80);
+
+        let entries = store.entries().unwrap();
+        for t in 0..8 {
+            for i in 0..10 {
+                let key = format!("t{t}_d{i}");
+                assert!(entries.contains_key(&key), "missing key {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_concurrent_mixed_insert_and_append() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let store = restricted_store(tmp.path());
+        for i in 0..4 {
+            store.insert(&format!("fixed{i}"), "init").unwrap();
+        }
+
+        let insert_threads: Vec<_> = (0..4)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for round in 0..5 {
+                        store
+                            .insert(&format!("fixed{t}"), &format!("r{round}"))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        let append_threads: Vec<_> = (0..4)
+            .map(|t| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new(Some(p), PoolMode::Restricted, false)
+                            .unwrap();
+                    for i in 0..5 {
+                        store
+                            .append(
+                                &format!("diag_t{t}_i{i}"),
+                                &format!("d{i}"),
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for t in insert_threads {
+            t.join().unwrap();
+        }
+        for t in append_threads {
+            t.join().unwrap();
+        }
+
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.len(), 24);
+        for t in 0..4 {
+            assert!(entries.contains_key(&format!("fixed{t}")));
+        }
+    }
+
+    #[test]
+    fn test_iter_drop_mid_iteration_releases_lock() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = restricted_store(tmp.path());
+        store.insert("k1", "v1").unwrap();
+        store.insert("k2", "v2").unwrap();
+
+        {
+            let mut iter = store.iter().unwrap();
+            iter.next().unwrap().unwrap();
+        }
+
+        store.insert("k3", "v3").unwrap();
+        assert_eq!(store.len().unwrap(), 3);
     }
 }
