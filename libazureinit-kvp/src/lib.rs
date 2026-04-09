@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::path::Path;
 
 pub mod kvp_pool;
 
@@ -86,16 +85,24 @@ pub trait KvpStore: Send + Sync {
     fn append(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
     /// Read the value for a key. Returns `Ok(None)` when absent.
+    ///
+    /// If multiple records share the same key (e.g. via
+    /// [`append`](Self::append)), the last (most recent) match wins.
     fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
 
-    /// Remove a key. Returns `true` if the key was present.
+    /// Remove all records matching the key. Returns `true` if at least
+    /// one record was present.
     fn delete(&self, key: &str) -> Result<bool, KvpError>;
 
     /// Remove all entries from the store.
     fn clear(&self) -> Result<(), KvpError>;
 
-    /// Return all key-value pairs.
+    /// Return all key-value pairs (deduplicated, last-write-wins).
     fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
+
+    /// Return all key-value records in on-disk order, including
+    /// duplicates from [`append`](Self::append) calls.
+    fn dump(&self) -> Result<Vec<(String, String)>, KvpError>;
 
     /// Return the number of records in the store.
     ///
@@ -109,7 +116,4 @@ pub trait KvpStore: Send + Sync {
 
     /// Whether the store's data is stale (e.g. predates current boot).
     fn is_stale(&self) -> Result<bool, KvpError>;
-
-    /// Dump all entries to a JSON file at the given path.
-    fn dump(&self, path: &Path) -> Result<(), KvpError>;
 }
