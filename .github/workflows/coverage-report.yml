@@ -49,7 +49,7 @@ jobs:
           hide_complexity: true
           indicators: true
           output: both
-          thresholds: '60 80'
+          thresholds: '90 95'
 
       - name: Post overall coverage to job summary
         if: always()
