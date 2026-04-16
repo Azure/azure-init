@@ -55,13 +55,6 @@ jobs:
         if: always()
         run: cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
 
-      # - name: Add Coverage PR Comment
-      #   uses: marocchino/sticky-pull-request-comment@v2
-      #   if: github.event_name == 'pull_request'
-      #   with:
-      #     recreate: true
-      #     path: code-coverage-results.md
-
       - name: Install diff-cover
         run: pip install diff-cover
 
@@ -72,7 +65,7 @@ jobs:
           diff-cover cobertura.xml \
             --compare-branch=origin/${{ github.base_ref }} \
             --show-uncovered \
-            --fail-under=80 \
+            --fail-under=95 \
             --format markdown:coverage-report.md
 
       - name: Post coverage report to job summary
@@ -82,5 +75,5 @@ jobs:
       - name: Fail if coverage threshold not met
         if: steps.diff-coverage.outcome == 'failure'
         run: |
-          echo "::error::Coverage on modified lines is below the 80% threshold."
+          echo "::error::Coverage on modified lines is below the 95% threshold."
           exit 1

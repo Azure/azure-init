@@ -122,6 +122,7 @@ async fn request(
                         match response.error_for_status() {
                             Ok(response) => {
                                 tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
+                                tracing::info!(target: "libazureinit::http::success", "Cade's coverage test");
                                 return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                             },
                             Err(error) => {
@@ -322,6 +323,7 @@ pub(crate) mod tests {
     async fn get_ok() {
         assert!(serve_valid_http_with(&StatusCode::OK, BODY_CONTENTS).await);
         assert!(logs_contain("HTTP response succeeded with status 200 OK"));
+        assert!(logs_contain("Cade's coverage test"));
     }
 
     // Assert status codes in the list are retried

@@ -90,8 +90,6 @@ pub(crate) fn provision_ssh(
             "Attempting to get authorized keys path via sshd -G as configured."
         );
 
-        tracing::info!("Temporary line to set up coverage.");
-
         match get_authorized_keys_path_from_sshd(|| {
             Command::new("sshd").arg("-G").output()
         }) {
