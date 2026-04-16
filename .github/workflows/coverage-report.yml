@@ -1,7 +1,7 @@
 name: "Code Coverage Report"
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 on:
