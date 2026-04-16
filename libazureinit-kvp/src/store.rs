@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
 use crate::KvpError;
+
 /// Default base directory for KVP pool files.
 const DEFAULT_KVP_DIR: &str = "/var/lib/hyperv";
 
@@ -40,6 +41,7 @@ const SAFE_MAX_VALUE_BYTES: usize = 1022;
 const MAX_UNIQUE_KEYS: usize = 1024;
 
 const RECORD_SIZE: usize = WIRE_MAX_KEY_BYTES + WIRE_MAX_VALUE_BYTES;
+
 /// Hyper-V KVP pool indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -57,6 +59,16 @@ pub enum KvpPool {
 }
 
 impl KvpPool {
+    /// Default base directory for KVP pool files.
+    pub fn default_dir() -> &'static Path {
+        Path::new(DEFAULT_KVP_DIR)
+    }
+
+    /// The conventional on-disk path (`/var/lib/hyperv/<pool_file>`).
+    pub fn default_path(self) -> PathBuf {
+        Self::default_dir().join(self.file_name())
+    }
+
     /// File name of the pool file, e.g. `.kvp_pool_1`.
     pub fn file_name(self) -> &'static str {
         match self {
@@ -66,16 +78,6 @@ impl KvpPool {
             Self::AutoExternal => ".kvp_pool_3",
             Self::AutoInternal => ".kvp_pool_4",
         }
-    }
-
-    /// Default base directory for KVP pool files.
-    pub fn default_dir() -> &'static Path {
-        Path::new(DEFAULT_KVP_DIR)
-    }
-
-    /// The conventional on-disk path (`/var/lib/hyperv/<pool_file>`).
-    pub fn default_path(self) -> PathBuf {
-        Self::default_dir().join(self.file_name())
     }
 }
 
@@ -108,37 +110,31 @@ impl PoolMode {
 
 /// Key-value store with Hyper-V KVP semantics.
 pub trait KvpStore: Send + Sync {
-    /// Maximum key size in bytes for writes.
-    fn max_key_size(&self) -> usize;
-
-    /// Maximum value size in bytes for writes.
-    fn max_value_size(&self) -> usize;
-
-    /// Insert a new key-value pair or update an existing key's value.
-    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError>;
-
     /// Append a key-value pair without checking for an existing key.
     fn append(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
-    /// Read the value for a key. Returns `Ok(None)` when absent.
-    ///
-    /// If multiple records share the same key (e.g. via
-    /// [`append`](Self::append)), the last (most recent) match wins.
-    fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
+    /// Remove all entries from the store.
+    fn clear(&self) -> Result<(), KvpError>;
 
     /// Remove all records matching the key. Returns `true` if at least
     /// one record was present.
     fn delete(&self, key: &str) -> Result<bool, KvpError>;
 
-    /// Remove all entries from the store.
-    fn clear(&self) -> Result<(), KvpError>;
+    /// Return all key-value records in on-disk order, including
+    /// duplicates from [`append`](Self::append) calls.
+    fn dump(&self) -> Result<Vec<(String, String)>, KvpError>;
 
     /// Return all key-value pairs (deduplicated, last-write-wins).
     fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
 
-    /// Return all key-value records in on-disk order, including
-    /// duplicates from [`append`](Self::append) calls.
-    fn dump(&self) -> Result<Vec<(String, String)>, KvpError>;
+    /// Insert a new key-value pair or update an existing key's value.
+    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError>;
+
+    /// Return whether the store is empty.
+    fn is_empty(&self) -> Result<bool, KvpError>;
+
+    /// Whether the store's data is stale (e.g. predates current boot).
+    fn is_stale(&self) -> Result<bool, KvpError>;
 
     /// Return the number of records in the store.
     ///
@@ -148,11 +144,17 @@ pub trait KvpStore: Send + Sync {
     /// [`entries`](Self::entries).
     fn len(&self) -> Result<usize, KvpError>;
 
-    /// Return whether the store is empty.
-    fn is_empty(&self) -> Result<bool, KvpError>;
+    /// Maximum key size in bytes for writes.
+    fn max_key_size(&self) -> usize;
 
-    /// Whether the store's data is stale (e.g. predates current boot).
-    fn is_stale(&self) -> Result<bool, KvpError>;
+    /// Maximum value size in bytes for writes.
+    fn max_value_size(&self) -> usize;
+
+    /// Read the value for a key. Returns `Ok(None)` when absent.
+    ///
+    /// If multiple records share the same key (e.g. via
+    /// [`append`](Self::append)), the last (most recent) match wins.
+    fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
 }
 
 /// Unified KVP pool file store.
@@ -164,37 +166,6 @@ pub struct KvpPoolStore {
 }
 
 impl KvpPoolStore {
-    /// Open using the default Hyper-V directory
-    /// ([`/var/lib/hyperv`](KvpPool::default_dir)).
-    pub fn new(pool: KvpPool, mode: PoolMode) -> Result<Self, KvpError> {
-        Self::new_in(pool, KvpPool::default_dir(), mode)
-    }
-
-    /// Open using a custom directory (file name derived from `pool`).
-    pub fn new_in(
-        pool: KvpPool,
-        dir: impl AsRef<Path>,
-        mode: PoolMode,
-    ) -> Result<Self, KvpError> {
-        let path = dir.as_ref().join(pool.file_name());
-        Ok(Self { pool, path, mode })
-    }
-
-    /// The pool this store was created for.
-    pub fn pool(&self) -> KvpPool {
-        self.pool
-    }
-
-    /// Return a reference to the pool file path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// The policy mode this store was created with.
-    pub fn mode(&self) -> PoolMode {
-        self.mode
-    }
-
     /// Clear the pool file if it contains data from a previous boot.
     pub fn clear_if_stale(&self) -> Result<(), KvpError> {
         if self.is_stale()? {
@@ -212,57 +183,6 @@ impl KvpPoolStore {
         Ok(())
     }
 
-    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
-        if key.is_empty() {
-            return Err(KvpError::EmptyKey);
-        }
-        if key.as_bytes().contains(&0) {
-            return Err(KvpError::KeyContainsNull);
-        }
-        let actual = key.len();
-        let max = self.mode.max_key_size();
-        if actual > max {
-            return Err(KvpError::KeyTooLarge { max, actual });
-        }
-        Ok(())
-    }
-
-    /// Looser validation for reads: accepts keys up to the full
-    /// wire-format maximum regardless of [`PoolMode`].
-    fn validate_key_for_read(key: &str) -> Result<(), KvpError> {
-        if key.is_empty() {
-            return Err(KvpError::EmptyKey);
-        }
-        if key.as_bytes().contains(&0) {
-            return Err(KvpError::KeyContainsNull);
-        }
-        let actual = key.len();
-        if actual > WIRE_MAX_KEY_BYTES {
-            return Err(KvpError::KeyTooLarge {
-                max: WIRE_MAX_KEY_BYTES,
-                actual,
-            });
-        }
-        Ok(())
-    }
-
-    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
-        let actual = value.len();
-        let max = self.mode.max_value_size();
-        if actual > max {
-            return Err(KvpError::ValueTooLarge { max, actual });
-        }
-        Ok(())
-    }
-
-    fn boot_time() -> Result<i64, KvpError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is before UNIX epoch")
-            .as_secs();
-        Ok(now.saturating_sub(System::uptime()) as i64)
-    }
-
     /// Test-only variant of [`is_stale`](KvpStore::is_stale) that accepts
     /// an explicit boot time for deterministic assertions.
     #[cfg(test)]
@@ -273,6 +193,39 @@ impl KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
         Ok(metadata.mtime() < boot_time)
+    }
+
+    /// Create a read-only iterator over all records.
+    fn iter(&self) -> Result<KvpPoolIter, KvpError> {
+        let file = self.open_for_read()?;
+        KvpPoolIter::new(file, false)
+    }
+
+    /// Create a read-write iterator over all records.
+    fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
+        let file = self.open_for_read_write_create()?;
+        KvpPoolIter::new(file, true)
+    }
+
+    /// The policy mode this store was created with.
+    pub fn mode(&self) -> PoolMode {
+        self.mode
+    }
+
+    /// Open using the default Hyper-V directory
+    /// ([`/var/lib/hyperv`](KvpPool::default_dir)).
+    pub fn new(pool: KvpPool, mode: PoolMode) -> Result<Self, KvpError> {
+        Self::new_in(pool, KvpPool::default_dir(), mode)
+    }
+
+    /// Open using a custom directory (file name derived from `pool`).
+    pub fn new_in(
+        pool: KvpPool,
+        dir: impl AsRef<Path>,
+        mode: PoolMode,
+    ) -> Result<Self, KvpError> {
+        let path = dir.as_ref().join(pool.file_name());
+        Ok(Self { pool, path, mode })
     }
 
     fn open_for_read(&self) -> io::Result<File> {
@@ -292,26 +245,125 @@ impl KvpPoolStore {
             .open(&self.path)
     }
 
-    /// Create a read-only iterator over all records.
-    fn iter(&self) -> Result<KvpPoolIter, KvpError> {
-        let file = self.open_for_read()?;
-        KvpPoolIter::new(file, false)
+    /// Return a reference to the pool file path.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
-    /// Create a read-write iterator over all records.
-    fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
-        let file = self.open_for_read_write_create()?;
-        KvpPoolIter::new(file, true)
+    /// The pool this store was created for.
+    pub fn pool(&self) -> KvpPool {
+        self.pool
+    }
+
+    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
+        if key.is_empty() {
+            return Err(KvpError::EmptyKey);
+        }
+        if key.as_bytes().contains(&0) {
+            return Err(KvpError::KeyContainsNull);
+        }
+        let actual = key.len();
+        let max = self.mode.max_key_size();
+        if actual > max {
+            return Err(KvpError::KeyTooLarge { max, actual });
+        }
+        Ok(())
+    }
+
+    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
+        let actual = value.len();
+        let max = self.mode.max_value_size();
+        if actual > max {
+            return Err(KvpError::ValueTooLarge { max, actual });
+        }
+        Ok(())
     }
 }
 
 impl KvpStore for KvpPoolStore {
-    fn max_key_size(&self) -> usize {
-        self.mode.max_key_size()
+    fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        self.validate_key(key)?;
+        self.validate_value(value)?;
+
+        let mut iter = self.iter_mut()?;
+        iter.append(key, value)?;
+        iter.flush()?;
+        Ok(())
     }
 
-    fn max_value_size(&self) -> usize {
-        self.mode.max_value_size()
+    fn clear(&self) -> Result<(), KvpError> {
+        let file =
+            match OpenOptions::new().read(true).write(true).open(&self.path) {
+                Ok(f) => f,
+                Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+
+        fcntl_lock_exclusive(&file)?;
+        let result = file.set_len(0).map_err(KvpError::from);
+        fcntl_unlock(&file);
+        result
+    }
+
+    fn delete(&self, key: &str) -> Result<bool, KvpError> {
+        validate_key_for_read(key)?;
+
+        let file = match self.open_for_read_write() {
+            Ok(f) => f,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut iter = KvpPoolIter::new(file, true)?;
+        let mut found = false;
+
+        while let Some(record) = iter.next() {
+            let (k, _) = record?;
+            if k == key {
+                iter.remove_current()?;
+                found = true;
+            }
+        }
+
+        if found {
+            iter.flush()?;
+        }
+        Ok(found)
+    }
+
+    fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut records = Vec::with_capacity(iter.record_count());
+        for record in iter {
+            records.push(record?);
+        }
+        Ok(records)
+    }
+
+    fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(HashMap::new());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut map = HashMap::with_capacity(iter.record_count());
+        for record in iter {
+            let (k, v) = record?;
+            map.insert(k, v);
+        }
+        Ok(map)
     }
 
     fn insert(&self, key: &str, value: &str) -> Result<(), KvpError> {
@@ -349,18 +401,38 @@ impl KvpStore for KvpPoolStore {
         Ok(())
     }
 
-    fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        self.validate_key(key)?;
-        self.validate_value(value)?;
+    fn is_empty(&self) -> Result<bool, KvpError> {
+        Ok(self.len()? == 0)
+    }
 
-        let mut iter = self.iter_mut()?;
-        iter.append(key, value)?;
-        iter.flush()?;
-        Ok(())
+    fn is_stale(&self) -> Result<bool, KvpError> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let boot = boot_time()?;
+        Ok(metadata.mtime() < boot)
+    }
+
+    fn len(&self) -> Result<usize, KvpError> {
+        match std::fs::metadata(&self.path) {
+            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn max_key_size(&self) -> usize {
+        self.mode.max_key_size()
+    }
+
+    fn max_value_size(&self) -> usize {
+        self.mode.max_value_size()
     }
 
     fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        Self::validate_key_for_read(key)?;
+        validate_key_for_read(key)?;
 
         let iter = match self.iter() {
             Ok(it) => it,
@@ -380,103 +452,51 @@ impl KvpStore for KvpPoolStore {
 
         Ok(result)
     }
+}
 
-    fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        Self::validate_key_for_read(key)?;
+fn boot_time() -> Result<i64, KvpError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before UNIX epoch")
+        .as_secs();
+    Ok(now.saturating_sub(System::uptime()) as i64)
+}
 
-        let file = match self.open_for_read_write() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(false);
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let mut iter = KvpPoolIter::new(file, true)?;
-        let mut found = false;
-
-        while let Some(record) = iter.next() {
-            let (k, _) = record?;
-            if k == key {
-                iter.remove_current()?;
-                found = true;
-            }
-        }
-
-        if found {
-            iter.flush()?;
-        }
-        Ok(found)
+pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
+    if data.len() != RECORD_SIZE {
+        return Err(io::Error::other(format!(
+            "record size mismatch: expected {RECORD_SIZE}, got {}",
+            data.len()
+        )));
     }
 
-    fn clear(&self) -> Result<(), KvpError> {
-        let file =
-            match OpenOptions::new().read(true).write(true).open(&self.path) {
-                Ok(f) => f,
-                Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e.into()),
-            };
+    let (key_bytes, value_bytes) = data.split_at(WIRE_MAX_KEY_BYTES);
 
-        fcntl_lock_exclusive(&file)?;
-        let result = file.set_len(0).map_err(KvpError::from);
-        fcntl_unlock(&file);
-        result
-    }
+    let key = std::str::from_utf8(key_bytes)
+        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
+        .trim_end_matches('\0')
+        .to_string();
+    let value = std::str::from_utf8(value_bytes)
+        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
+        .trim_end_matches('\0')
+        .to_string();
 
-    fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(HashMap::new());
-            }
-            Err(e) => return Err(e),
-        };
+    Ok((key, value))
+}
 
-        let mut map = HashMap::with_capacity(iter.record_count());
-        for record in iter {
-            let (k, v) = record?;
-            map.insert(k, v);
-        }
-        Ok(map)
-    }
+pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
+    let mut buf = vec![0u8; RECORD_SIZE];
 
-    fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(Vec::new());
-            }
-            Err(e) => return Err(e),
-        };
+    let key_bytes = key.as_bytes();
+    let key_len = key_bytes.len().min(WIRE_MAX_KEY_BYTES);
+    buf[..key_len].copy_from_slice(&key_bytes[..key_len]);
 
-        let mut records = Vec::with_capacity(iter.record_count());
-        for record in iter {
-            records.push(record?);
-        }
-        Ok(records)
-    }
+    let value_bytes = value.as_bytes();
+    let value_len = value_bytes.len().min(WIRE_MAX_VALUE_BYTES);
+    buf[WIRE_MAX_KEY_BYTES..WIRE_MAX_KEY_BYTES + value_len]
+        .copy_from_slice(&value_bytes[..value_len]);
 
-    fn len(&self) -> Result<usize, KvpError> {
-        match std::fs::metadata(&self.path) {
-            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn is_empty(&self) -> Result<bool, KvpError> {
-        Ok(self.len()? == 0)
-    }
-
-    fn is_stale(&self) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(m) => m,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
-        };
-        let boot = Self::boot_time()?;
-        Ok(metadata.mtime() < boot)
-    }
+    buf
 }
 
 /// Acquire an exclusive (write) lock on the entire file.
@@ -534,41 +554,23 @@ fn fcntl_unlock(file: &File) {
     let _ = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
 }
 
-pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
-    let mut buf = vec![0u8; RECORD_SIZE];
-
-    let key_bytes = key.as_bytes();
-    let key_len = key_bytes.len().min(WIRE_MAX_KEY_BYTES);
-    buf[..key_len].copy_from_slice(&key_bytes[..key_len]);
-
-    let value_bytes = value.as_bytes();
-    let value_len = value_bytes.len().min(WIRE_MAX_VALUE_BYTES);
-    buf[WIRE_MAX_KEY_BYTES..WIRE_MAX_KEY_BYTES + value_len]
-        .copy_from_slice(&value_bytes[..value_len]);
-
-    buf
-}
-
-pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
-    if data.len() != RECORD_SIZE {
-        return Err(io::Error::other(format!(
-            "record size mismatch: expected {RECORD_SIZE}, got {}",
-            data.len()
-        )));
+/// Looser validation for reads: accepts keys up to the full
+/// wire-format maximum regardless of [`PoolMode`].
+fn validate_key_for_read(key: &str) -> Result<(), KvpError> {
+    if key.is_empty() {
+        return Err(KvpError::EmptyKey);
     }
-
-    let (key_bytes, value_bytes) = data.split_at(WIRE_MAX_KEY_BYTES);
-
-    let key = std::str::from_utf8(key_bytes)
-        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
-        .trim_end_matches('\0')
-        .to_string();
-    let value = std::str::from_utf8(value_bytes)
-        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?
-        .trim_end_matches('\0')
-        .to_string();
-
-    Ok((key, value))
+    if key.as_bytes().contains(&0) {
+        return Err(KvpError::KeyContainsNull);
+    }
+    let actual = key.len();
+    if actual > WIRE_MAX_KEY_BYTES {
+        return Err(KvpError::KeyTooLarge {
+            max: WIRE_MAX_KEY_BYTES,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 /// A record-at-a-time iterator over a KVP pool file.
@@ -587,6 +589,21 @@ struct KvpPoolIter {
 }
 
 impl KvpPoolIter {
+    /// Append a new record at the end of the file, zero-padded to the
+    /// fixed-width wire format.
+    fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
+        let pos = self.file.seek(io::SeekFrom::End(0))?;
+        debug_assert!((pos as usize).is_multiple_of(RECORD_SIZE));
+        self.file.write_all(&encode_record(key, value))?;
+        self.record_count += 1;
+        Ok(())
+    }
+
+    /// Flush any buffered writes to the underlying file.
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+
     fn new(mut file: File, lock_exclusive: bool) -> Result<Self, KvpError> {
         let lock_result = if lock_exclusive {
             fcntl_lock_exclusive(&file)
@@ -613,13 +630,6 @@ impl KvpPoolIter {
             record_count,
             current_index: 0,
         })
-    }
-
-    /// The number of records in the file (updated by
-    /// [`append`](Self::append) and
-    /// [`remove_current`](Self::remove_current)).
-    fn record_count(&self) -> usize {
-        self.record_count
     }
 
     /// Overwrite the value field of the record last returned by
@@ -652,14 +662,11 @@ impl KvpPoolIter {
         Ok(())
     }
 
-    /// Append a new record at the end of the file, zero-padded to the
-    /// fixed-width wire format.
-    fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
-        let pos = self.file.seek(io::SeekFrom::End(0))?;
-        debug_assert!((pos as usize).is_multiple_of(RECORD_SIZE));
-        self.file.write_all(&encode_record(key, value))?;
-        self.record_count += 1;
-        Ok(())
+    /// The number of records in the file (updated by
+    /// [`append`](Self::append) and
+    /// [`remove_current`](Self::remove_current)).
+    fn record_count(&self) -> usize {
+        self.record_count
     }
 
     /// Remove the record last returned by [`next()`](Iterator::next)
@@ -702,11 +709,6 @@ impl KvpPoolIter {
         self.file.set_len(last_index as u64 * RECORD_SIZE as u64)?;
         self.record_count -= 1;
         Ok(())
-    }
-
-    /// Flush any buffered writes to the underlying file.
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
     }
 }
 
