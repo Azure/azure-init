@@ -49,7 +49,7 @@ pub enum KvpPool {
 }
 
 impl KvpPool {
-    /// The pool file name, e.g. `.kvp_pool_1`.
+    /// File name of the pool file, e.g. `.kvp_pool_1`.
     pub fn file_name(self) -> &'static str {
         match self {
             Self::External => ".kvp_pool_0",
@@ -60,9 +60,14 @@ impl KvpPool {
         }
     }
 
+    /// Default base directory for KVP pool files.
+    pub fn default_dir() -> &'static Path {
+        Path::new(DEFAULT_KVP_DIR)
+    }
+
     /// The conventional on-disk path (`/var/lib/hyperv/<pool_file>`).
     pub fn default_path(self) -> PathBuf {
-        Path::new(DEFAULT_KVP_DIR).join(self.file_name())
+        Self::default_dir().join(self.file_name())
     }
 }
 
@@ -155,36 +160,42 @@ impl PoolMode {
 /// Unified KVP pool file store.
 #[derive(Clone, Debug)]
 pub struct KvpPoolStore {
+    pool: KvpPool,
     path: PathBuf,
     mode: PoolMode,
 }
 
 impl KvpPoolStore {
-    /// Create a new KVP pool store.
-    ///
-    /// - `pool`: which Hyper-V pool to open (see [`KvpPool`]).
-    /// - `path`: override pool file path; defaults to
-    ///   [`KvpPool::default_path`].
-    /// - `mode`: size-limit policy (see [`PoolMode`]).
-    /// - `truncate_on_stale`: if `true`, clears stale data from a
-    ///   previous boot.
-    pub fn new(
-        pool: KvpPool,
-        path: Option<PathBuf>,
-        mode: PoolMode,
-        truncate_on_stale: bool,
-    ) -> Result<Self, KvpError> {
-        let store = Self {
-            path: path.unwrap_or_else(|| pool.default_path()),
-            mode,
-        };
-        if truncate_on_stale && store.is_stale_inner()? {
-            store.clear()?;
-        }
-        Ok(store)
+    /// Open using the default Hyper-V directory
+    /// ([`/var/lib/hyperv`](KvpPool::default_dir)).
+    pub fn new(pool: KvpPool, mode: PoolMode) -> Result<Self, KvpError> {
+        Self::new_in(pool, KvpPool::default_dir(), mode)
     }
 
-    /// Return a reference to the pool path.
+    /// Open using a custom directory (file name derived from `pool`).
+    pub fn new_in(
+        pool: KvpPool,
+        dir: impl AsRef<Path>,
+        mode: PoolMode,
+    ) -> Result<Self, KvpError> {
+        let path = dir.as_ref().join(pool.file_name());
+        Ok(Self { pool, path, mode })
+    }
+
+    /// Clear the pool file if it contains data from a previous boot.
+    pub fn clear_if_stale(&self) -> Result<(), KvpError> {
+        if self.is_stale()? {
+            self.clear()?;
+        }
+        Ok(())
+    }
+
+    /// The pool this store was created for.
+    pub fn pool(&self) -> KvpPool {
+        self.pool
+    }
+
+    /// Return a reference to the pool file path.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -245,16 +256,8 @@ impl KvpPoolStore {
         Ok(now.saturating_sub(get_uptime().as_secs()) as i64)
     }
 
-    fn is_stale_inner(&self) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(m) => m,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
-        };
-        let boot = Self::boot_time()?;
-        Ok(metadata.mtime() < boot)
-    }
-
+    /// Test-only variant of [`is_stale`](KvpStore::is_stale) that accepts
+    /// an explicit boot time for deterministic assertions.
     #[cfg(test)]
     fn is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
         let metadata = match std::fs::metadata(&self.path) {
@@ -655,7 +658,13 @@ impl KvpStore for KvpPoolStore {
     }
 
     fn is_stale(&self) -> Result<bool, KvpError> {
-        self.is_stale_inner()
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let boot = Self::boot_time()?;
+        Ok(metadata.mtime() < boot)
     }
 
     fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
@@ -694,32 +703,20 @@ fn get_uptime() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, TempDir};
 
-    fn safe_store(path: &Path) -> KvpPoolStore {
-        KvpPoolStore::new(
-            KvpPool::Guest,
-            Some(path.to_path_buf()),
-            PoolMode::Safe,
-            false,
-        )
-        .unwrap()
+    fn safe_store(dir: &Path) -> KvpPoolStore {
+        KvpPoolStore::new_in(KvpPool::Guest, dir, PoolMode::Safe).unwrap()
     }
 
-    fn unsafe_store(path: &Path) -> KvpPoolStore {
-        KvpPoolStore::new(
-            KvpPool::Guest,
-            Some(path.to_path_buf()),
-            PoolMode::Unsafe,
-            false,
-        )
-        .unwrap()
+    fn unsafe_store(dir: &Path) -> KvpPoolStore {
+        KvpPoolStore::new_in(KvpPool::Guest, dir, PoolMode::Unsafe).unwrap()
     }
 
     #[test]
     fn test_insert_rejects_empty_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let err = store.insert("", "value").unwrap_err();
         assert!(matches!(err, KvpError::EmptyKey));
@@ -727,8 +724,8 @@ mod tests {
 
     #[test]
     fn test_insert_rejects_null_in_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let err = store.insert("bad\0key", "value").unwrap_err();
         assert!(matches!(err, KvpError::KeyContainsNull));
@@ -736,29 +733,23 @@ mod tests {
 
     #[test]
     fn test_default_path_is_used() {
-        let store =
-            KvpPoolStore::new(KvpPool::Guest, None, PoolMode::Safe, false)
-                .unwrap();
+        let store = KvpPoolStore::new(KvpPool::Guest, PoolMode::Safe).unwrap();
         assert_eq!(store.path(), KvpPool::Guest.default_path());
     }
 
     #[test]
-    fn test_explicit_path_is_used() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = KvpPoolStore::new(
-            KvpPool::Guest,
-            Some(tmp.path().to_path_buf()),
-            PoolMode::Safe,
-            false,
-        )
-        .unwrap();
-        assert_eq!(store.path(), tmp.path());
+    fn test_new_in_derives_path_from_pool() {
+        let dir = TempDir::new().unwrap();
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)
+                .unwrap();
+        assert_eq!(store.path(), dir.path().join(KvpPool::Guest.file_name()));
     }
 
     #[test]
     fn test_safe_limits_key_254_pass_255_fail() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let ok_key = "k".repeat(254);
         store.insert(&ok_key, "v").unwrap();
@@ -770,8 +761,8 @@ mod tests {
 
     #[test]
     fn test_safe_limits_value_1022_pass_1023_fail() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let ok_val = "v".repeat(1022);
         store.insert("k", &ok_val).unwrap();
@@ -783,8 +774,8 @@ mod tests {
 
     #[test]
     fn test_unsafe_limits_key_512_pass_513_fail() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = unsafe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = unsafe_store(dir.path());
 
         let ok_key = "k".repeat(512);
         store.insert(&ok_key, "v").unwrap();
@@ -796,8 +787,8 @@ mod tests {
 
     #[test]
     fn test_unsafe_limits_value_2048_pass_2049_fail() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = unsafe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = unsafe_store(dir.path());
 
         let ok_val = "v".repeat(2048);
         store.insert("k", &ok_val).unwrap();
@@ -809,8 +800,8 @@ mod tests {
 
     #[test]
     fn test_insert_overwrites_existing_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("key", "v1").unwrap();
         store.insert("key", "v2").unwrap();
@@ -824,8 +815,8 @@ mod tests {
 
     #[test]
     fn test_unique_key_cap_allows_1024_then_rejects_1025th() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
             store.insert(&format!("k{i}"), "v").unwrap();
@@ -836,8 +827,8 @@ mod tests {
 
     #[test]
     fn test_unique_key_cap_allows_overwrite_at_limit() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
             store.insert(&format!("k{i}"), "v").unwrap();
@@ -848,8 +839,8 @@ mod tests {
 
     #[test]
     fn test_insert_cap_uses_unique_keys_not_record_count() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..MAX_UNIQUE_KEYS - 1 {
             store.insert(&format!("k{i}"), "v").unwrap();
@@ -864,8 +855,8 @@ mod tests {
 
     #[test]
     fn test_unique_key_cap_allows_new_key_after_delete() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
             store.insert(&format!("k{i}"), "v").unwrap();
@@ -876,8 +867,8 @@ mod tests {
 
     #[test]
     fn test_clear_empties_store() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("key", "value").unwrap();
         store.clear().unwrap();
@@ -886,8 +877,8 @@ mod tests {
 
     #[test]
     fn test_delete_removes_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("key", "v1").unwrap();
         store.insert("other", "v2").unwrap();
@@ -899,8 +890,8 @@ mod tests {
 
     #[test]
     fn test_is_stale_and_is_stale_at_boot_helpers() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.insert("key", "value").unwrap();
 
         assert!(!store.is_stale().unwrap());
@@ -910,19 +901,19 @@ mod tests {
 
     #[test]
     fn test_mode_getter() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store_safe = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store_safe = safe_store(dir.path());
         assert_eq!(store_safe.mode(), PoolMode::Safe);
 
-        let tmp2 = NamedTempFile::new().unwrap();
-        let store_unsafe = unsafe_store(tmp2.path());
+        let dir2 = TempDir::new().unwrap();
+        let store_unsafe = unsafe_store(dir2.path());
         assert_eq!(store_unsafe.mode(), PoolMode::Unsafe);
     }
 
     #[test]
     fn test_len_and_is_empty() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         assert!(store.is_empty().unwrap());
         assert_eq!(store.len().unwrap(), 0);
@@ -940,11 +931,11 @@ mod tests {
 
     #[test]
     fn test_read_accepts_wire_max_key_in_safe_mode() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         // Write a record using Unsafe mode so a 300-byte key is accepted
-        let store_unsafe = unsafe_store(tmp.path());
+        let store_unsafe = unsafe_store(dir.path());
         let long_key = "k".repeat(300);
         store_unsafe.insert(&long_key, "val").unwrap();
 
@@ -959,8 +950,8 @@ mod tests {
 
     #[test]
     fn test_dump_json_writes_json() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("key1", "value1").unwrap();
         store.insert("key2", "value2").unwrap();
@@ -978,8 +969,8 @@ mod tests {
 
     #[test]
     fn test_dump_returns_all_records_with_duplicates() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.append("key", "val1").unwrap();
         store.append("key", "val2").unwrap();
@@ -1002,19 +993,15 @@ mod tests {
 
     #[test]
     fn test_concurrent_inserts_to_different_keys() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
         let threads: Vec<_> = (0..8)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for i in 0..10 {
                         let key = format!("t{t}_k{i}");
                         store.insert(&key, &format!("val_{t}_{i}")).unwrap();
@@ -1027,7 +1014,7 @@ mod tests {
             t.join().unwrap();
         }
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         let entries = store.entries().unwrap();
         assert_eq!(entries.len(), 80);
         for t in 0..8 {
@@ -1044,19 +1031,15 @@ mod tests {
 
     #[test]
     fn test_concurrent_inserts_to_same_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
         let threads: Vec<_> = (0..8)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for i in 0..10 {
                         store
                             .insert("shared_key", &format!("t{t}_v{i}"))
@@ -1070,7 +1053,7 @@ mod tests {
             t.join().unwrap();
         }
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         assert_eq!(store.len().unwrap(), 1);
         let val = store.read("shared_key").unwrap().unwrap();
         assert!(
@@ -1078,31 +1061,27 @@ mod tests {
             "unexpected value format: {val}"
         );
 
-        let file_len = std::fs::metadata(tmp.path()).unwrap().len() as usize;
+        let file_len = std::fs::metadata(store.path()).unwrap().len() as usize;
         assert_eq!(file_len, RECORD_SIZE);
     }
 
     #[test]
     fn test_concurrent_readers_and_writers() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         for i in 0..10 {
             store.insert(&format!("k{i}"), &format!("v{i}")).unwrap();
         }
 
         let writer_threads: Vec<_> = (0..4)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for round in 0..5 {
                         let key = format!("k{t}");
                         store.insert(&key, &format!("w{t}_r{round}")).unwrap();
@@ -1113,15 +1092,11 @@ mod tests {
 
         let reader_threads: Vec<_> = (0..4)
             .map(|_| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for _ in 0..20 {
                         let entries = store.entries().unwrap();
                         assert!(entries.len() <= 10);
@@ -1147,25 +1122,21 @@ mod tests {
 
     #[test]
     fn test_concurrent_writers_at_key_cap() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         for i in 0..MAX_UNIQUE_KEYS - 4 {
             store.insert(&format!("pre{i}"), "v").unwrap();
         }
 
         let threads: Vec<_> = (0..4)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     store.insert(&format!("new{t}"), "v")
                 })
             })
@@ -1192,8 +1163,8 @@ mod tests {
 
     #[test]
     fn test_iter_yields_all_records_in_order() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let expected: Vec<(&str, &str)> =
             vec![("a", "1"), ("b", "2"), ("c", "3"), ("d", "4"), ("e", "5")];
@@ -1213,8 +1184,9 @@ mod tests {
 
     #[test]
     fn test_iter_empty_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        File::create(store.path()).unwrap();
 
         let iter = store.iter().unwrap();
         assert_eq!(iter.record_count(), 0);
@@ -1223,23 +1195,23 @@ mod tests {
 
     #[test]
     fn test_iter_malformed_file_error() {
-        let tmp = NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), [0u8; RECORD_SIZE + 1]).unwrap();
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        std::fs::write(store.path(), [0u8; RECORD_SIZE + 1]).unwrap();
 
-        let store = safe_store(tmp.path());
         let err = store.iter().unwrap_err();
         assert!(matches!(err, KvpError::Io(_)));
     }
 
     #[test]
     fn test_overwrite_adjacent_records_untouched() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.append("first", "val_first").unwrap();
         store.append("middle", "val_middle").unwrap();
         store.append("last", "val_last").unwrap();
 
-        let raw_before = std::fs::read(tmp.path()).unwrap();
+        let raw_before = std::fs::read(store.path()).unwrap();
         let first_before = &raw_before[..RECORD_SIZE];
         let last_before = &raw_before[2 * RECORD_SIZE..3 * RECORD_SIZE];
 
@@ -1252,7 +1224,7 @@ mod tests {
             iter.flush().unwrap();
         }
 
-        let raw_after = std::fs::read(tmp.path()).unwrap();
+        let raw_after = std::fs::read(store.path()).unwrap();
         assert_eq!(&raw_after[..RECORD_SIZE], first_before);
         assert_eq!(&raw_after[2 * RECORD_SIZE..3 * RECORD_SIZE], last_before);
 
@@ -1261,8 +1233,8 @@ mod tests {
 
     #[test]
     fn test_overwrite_multiple_in_one_pass() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.append("a", "old_a").unwrap();
         store.append("b", "old_b").unwrap();
         store.append("c", "old_c").unwrap();
@@ -1287,8 +1259,8 @@ mod tests {
 
     #[test]
     fn test_remove_swap_and_continue() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.append("A", "1").unwrap();
         store.append("B", "2").unwrap();
         store.append("C", "3").unwrap();
@@ -1319,8 +1291,8 @@ mod tests {
 
     #[test]
     fn test_remove_last_record_no_swap() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.append("a", "1").unwrap();
         store.append("b", "2").unwrap();
         store.append("c", "3").unwrap();
@@ -1342,8 +1314,8 @@ mod tests {
 
     #[test]
     fn test_remove_only_record() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.append("solo", "val").unwrap();
 
         {
@@ -1358,8 +1330,8 @@ mod tests {
 
     #[test]
     fn test_append_no_key_cap() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..MAX_UNIQUE_KEYS {
             store.insert(&format!("k{i}"), "v").unwrap();
@@ -1370,8 +1342,8 @@ mod tests {
 
     #[test]
     fn test_append_validates_sizes() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         let big_key = "k".repeat(255);
         let err = store.append(&big_key, "v").unwrap_err();
@@ -1384,8 +1356,8 @@ mod tests {
 
     #[test]
     fn test_append_then_read() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.append("diag_001", "event_data").unwrap();
         assert_eq!(
@@ -1396,8 +1368,8 @@ mod tests {
 
     #[test]
     fn test_append_duplicate_key_semantics() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.append("X", "first").unwrap();
         store.append("X", "second").unwrap();
@@ -1411,8 +1383,8 @@ mod tests {
 
     #[test]
     fn test_insert_after_append_duplicates_collapses_to_one() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.append("k", "v1").unwrap();
         store.append("k", "v2").unwrap();
@@ -1430,8 +1402,8 @@ mod tests {
 
     #[test]
     fn test_delete_removes_all_duplicates() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.append("k", "v1").unwrap();
         store.append("other", "x").unwrap();
@@ -1447,14 +1419,14 @@ mod tests {
 
     #[test]
     fn test_insert_file_size_unchanged_on_overwrite() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("key", "original").unwrap();
-        let size_before = std::fs::metadata(tmp.path()).unwrap().len();
+        let size_before = std::fs::metadata(store.path()).unwrap().len();
 
         store.insert("key", "updated").unwrap();
-        let size_after = std::fs::metadata(tmp.path()).unwrap().len();
+        let size_after = std::fs::metadata(store.path()).unwrap().len();
 
         assert_eq!(size_before, size_after);
         assert_eq!(store.read("key").unwrap(), Some("updated".to_string()));
@@ -1462,30 +1434,30 @@ mod tests {
 
     #[test]
     fn test_insert_file_size_grows_on_new_key() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         store.insert("k1", "v1").unwrap();
-        let size_before = std::fs::metadata(tmp.path()).unwrap().len();
+        let size_before = std::fs::metadata(store.path()).unwrap().len();
 
         store.insert("k2", "v2").unwrap();
-        let size_after = std::fs::metadata(tmp.path()).unwrap().len();
+        let size_after = std::fs::metadata(store.path()).unwrap().len();
 
         assert_eq!(size_after - size_before, RECORD_SIZE as u64);
     }
 
     #[test]
     fn test_insert_preserves_other_records() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..5 {
             store.insert(&format!("k{i}"), &format!("v{i}")).unwrap();
         }
 
-        let raw_before = std::fs::read(tmp.path()).unwrap();
+        let raw_before = std::fs::read(store.path()).unwrap();
         store.insert("k2", "CHANGED").unwrap();
-        let raw_after = std::fs::read(tmp.path()).unwrap();
+        let raw_after = std::fs::read(store.path()).unwrap();
 
         assert_eq!(raw_before.len(), raw_after.len());
         for i in 0..5 {
@@ -1504,8 +1476,8 @@ mod tests {
 
     #[test]
     fn test_file_integrity_after_mixed_ops() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
 
         for i in 0..10 {
             store.insert(&format!("u{i}"), &format!("uv{i}")).unwrap();
@@ -1517,7 +1489,7 @@ mod tests {
         store.delete("u7").unwrap();
         store.insert("u0", "overwritten").unwrap();
 
-        let raw = std::fs::read(tmp.path()).unwrap();
+        let raw = std::fs::read(store.path()).unwrap();
         assert_eq!(raw.len() % RECORD_SIZE, 0);
 
         let record_count = raw.len() / RECORD_SIZE;
@@ -1535,20 +1507,16 @@ mod tests {
 
     #[test]
     fn test_concurrent_appends() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
 
         let threads: Vec<_> = (0..8)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for i in 0..10 {
                         store
                             .append(
@@ -1565,7 +1533,7 @@ mod tests {
             t.join().unwrap();
         }
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         assert_eq!(store.len().unwrap(), 80);
 
         let entries = store.entries().unwrap();
@@ -1579,25 +1547,21 @@ mod tests {
 
     #[test]
     fn test_concurrent_mixed_insert_and_append() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
 
-        let store = safe_store(tmp.path());
+        let store = safe_store(dir.path());
         for i in 0..4 {
             store.insert(&format!("fixed{i}"), "init").unwrap();
         }
 
         let insert_threads: Vec<_> = (0..4)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for round in 0..5 {
                         store
                             .insert(&format!("fixed{t}"), &format!("r{round}"))
@@ -1609,15 +1573,11 @@ mod tests {
 
         let append_threads: Vec<_> = (0..4)
             .map(|t| {
-                let p = path.clone();
+                let d = dir_path.clone();
                 std::thread::spawn(move || {
-                    let store = KvpPoolStore::new(
-                        KvpPool::Guest,
-                        Some(p),
-                        PoolMode::Safe,
-                        false,
-                    )
-                    .unwrap();
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
                     for i in 0..5 {
                         store
                             .append(
@@ -1646,8 +1606,8 @@ mod tests {
 
     #[test]
     fn test_iter_drop_mid_iteration_releases_lock() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = safe_store(tmp.path());
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
         store.insert("k1", "v1").unwrap();
         store.insert("k2", "v2").unwrap();
 
