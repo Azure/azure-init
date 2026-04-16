@@ -1,0 +1,62 @@
+name: "Code Coverage Report"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  coverage:
+    name: Modified lines coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch for diff
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run tests and generate LCOV coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Install diff-cover
+        run: pip install diff-cover
+
+      - name: Check coverage on modified lines
+        id: diff-coverage
+        continue-on-error: true
+        run: |
+          diff-cover lcov.info \
+            --compare-branch=origin/${{ github.base_ref }} \
+            --markdown-report=coverage-report.md \
+            --fail-under=80
+
+      - name: Post coverage report to PR
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: diff-coverage
+          path: coverage-report.md
+
+      - name: Fail if coverage threshold not met
+        if: steps.diff-coverage.outcome == 'failure'
+        run: |
+          echo "::error::Coverage on modified lines is below the 80% threshold."
+          exit 1
