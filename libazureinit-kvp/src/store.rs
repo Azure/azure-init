@@ -258,7 +258,7 @@ impl KvpPoolStore {
     fn boot_time() -> Result<i64, KvpError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| io::Error::other(format!("clock error: {e}")))?
+            .expect("system clock is before UNIX epoch")
             .as_secs();
         Ok(now.saturating_sub(System::uptime()) as i64)
     }
@@ -417,11 +417,9 @@ impl KvpStore for KvpPoolStore {
                 Err(e) => return Err(e.into()),
             };
 
-        fcntl_lock_exclusive(&file).map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
+        fcntl_lock_exclusive(&file)?;
         let result = file.set_len(0).map_err(KvpError::from);
-        let _ = fcntl_unlock(&file);
+        fcntl_unlock(&file);
         result
     }
 
@@ -495,7 +493,10 @@ fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
         l_pid: 0,
     };
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::other(format!(
+            "failed to lock KVP file: {}",
+            io::Error::last_os_error()
+        )));
     }
     Ok(())
 }
@@ -510,13 +511,19 @@ fn fcntl_lock_shared(file: &File) -> io::Result<()> {
         l_pid: 0,
     };
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::other(format!(
+            "failed to lock KVP file: {}",
+            io::Error::last_os_error()
+        )));
     }
     Ok(())
 }
 
 /// Release a lock on the entire file.
-fn fcntl_unlock(file: &File) -> io::Result<()> {
+///
+/// Unlock errors are non-actionable (the fd is about to close, which
+/// releases the lock unconditionally), so the return value is discarded.
+fn fcntl_unlock(file: &File) {
     let fl = libc::flock {
         l_type: libc::F_UNLCK as libc::c_short,
         l_whence: libc::SEEK_SET as libc::c_short,
@@ -524,10 +531,7 @@ fn fcntl_unlock(file: &File) -> io::Result<()> {
         l_len: 0,
         l_pid: 0,
     };
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    let _ = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
 }
 
 pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
@@ -589,13 +593,11 @@ impl KvpPoolIter {
         } else {
             fcntl_lock_shared(&file)
         };
-        lock_result.map_err(|e| {
-            io::Error::other(format!("failed to lock KVP file: {e}"))
-        })?;
+        lock_result?;
 
         let len = file.metadata()?.len() as usize;
         if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
-            let _ = fcntl_unlock(&file);
+            fcntl_unlock(&file);
             return Err(io::Error::other(format!(
                 "file size ({len}) is not a multiple of record size \
                  ({RECORD_SIZE})"
@@ -654,10 +656,7 @@ impl KvpPoolIter {
     /// fixed-width wire format.
     fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
         let pos = self.file.seek(io::SeekFrom::End(0))?;
-        debug_assert!(
-            (pos as usize).is_multiple_of(RECORD_SIZE),
-            "file position {pos} is not aligned to record size {RECORD_SIZE}"
-        );
+        debug_assert!((pos as usize).is_multiple_of(RECORD_SIZE));
         self.file.write_all(&encode_record(key, value))?;
         self.record_count += 1;
         Ok(())
@@ -713,7 +712,7 @@ impl KvpPoolIter {
 
 impl Drop for KvpPoolIter {
     fn drop(&mut self) {
-        let _ = fcntl_unlock(&self.file);
+        fcntl_unlock(&self.file);
     }
 }
 
@@ -1021,11 +1020,7 @@ mod tests {
             }
             let start = i * RECORD_SIZE;
             let end = start + RECORD_SIZE;
-            assert_eq!(
-                &raw_before[start..end],
-                &raw_after[start..end],
-                "record {i} was modified unexpectedly"
-            );
+            assert_eq!(&raw_before[start..end], &raw_after[start..end]);
         }
     }
 
@@ -1639,9 +1634,7 @@ mod tests {
         for i in 0..record_count {
             let start = i * RECORD_SIZE;
             let end = start + RECORD_SIZE;
-            decode_record(&raw[start..end]).unwrap_or_else(|e| {
-                panic!("record {i} failed to decode: {e:?}")
-            });
+            decode_record(&raw[start..end]).unwrap();
         }
     }
 
@@ -1727,11 +1720,7 @@ mod tests {
         for t in 0..8 {
             for i in 0..10 {
                 let key = format!("t{t}_k{i}");
-                assert_eq!(
-                    entries.get(&key),
-                    Some(&format!("val_{t}_{i}")),
-                    "missing or wrong value for {key}"
-                );
+                assert_eq!(entries.get(&key), Some(&format!("val_{t}_{i}")));
             }
         }
     }
@@ -1763,10 +1752,7 @@ mod tests {
         let store = safe_store(dir.path());
         assert_eq!(store.len().unwrap(), 1);
         let val = store.read("shared_key").unwrap().unwrap();
-        assert!(
-            val.starts_with('t') && val.contains("_v"),
-            "unexpected value format: {val}"
-        );
+        assert!(val.starts_with('t') && val.contains("_v"));
 
         let file_len = std::fs::metadata(store.path()).unwrap().len() as usize;
         assert_eq!(file_len, RECORD_SIZE);
@@ -2101,5 +2087,126 @@ mod tests {
         let err = store.is_stale_at_boot(i64::MAX).unwrap_err();
         unlock_dir(dir.path());
         assert!(matches!(err, KvpError::Io(_)));
+    }
+
+    /// F_WRLCK needs a writable fd; read-only fd returns EBADF.
+    #[test]
+    fn test_fcntl_lock_exclusive_fails_on_read_only_fd() {
+        let tmp = NamedTempFile::new().unwrap();
+        let file = OpenOptions::new().read(true).open(tmp.path()).unwrap();
+        let err = fcntl_lock_exclusive(&file).unwrap_err();
+        assert!(err.to_string().contains("failed to lock KVP file"));
+    }
+
+    /// F_RDLCK needs a readable fd; write-only fd returns EBADF.
+    #[test]
+    fn test_fcntl_lock_shared_fails_on_write_only_fd() {
+        let tmp = NamedTempFile::new().unwrap();
+        let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
+        let err = fcntl_lock_shared(&file).unwrap_err();
+        assert!(err.to_string().contains("failed to lock KVP file"));
+    }
+
+    /// FIFO at the pool path: `ftruncate` fails with EINVAL on
+    /// a FIFO, verifying that `clear()` propagates the I/O error.
+    #[test]
+    fn test_clear_truncate_error_on_fifo() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        let c_path =
+            std::ffi::CString::new(store.path().as_os_str().as_encoded_bytes())
+                .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+        let err = store.clear().unwrap_err();
+        assert!(
+            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(libc::EINVAL))
+        );
+    }
+
+    /// FIFO at the pool path: `lseek` fails with ESPIPE inside
+    /// `KvpPoolIter::new`, verifying that `append()` propagates it.
+    #[test]
+    fn test_append_seek_error_on_fifo() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        let c_path =
+            std::ffi::CString::new(store.path().as_os_str().as_encoded_bytes())
+                .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+        let err = store.append("k", "v").unwrap_err();
+        assert!(
+            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(libc::ESPIPE))
+        );
+    }
+
+    #[test]
+    fn test_decode_record_invalid_utf8_key() {
+        let mut buf = vec![0u8; RECORD_SIZE];
+        buf[0] = 0xFF;
+        buf[1] = 0xFE;
+        let err = decode_record(&buf).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_decode_record_invalid_utf8_value() {
+        let mut buf = vec![0u8; RECORD_SIZE];
+        // Key region is valid (all zeros = empty after trim).
+        // Put invalid UTF-8 in the value region.
+        buf[WIRE_MAX_KEY_BYTES] = 0xFF;
+        buf[WIRE_MAX_KEY_BYTES + 1] = 0xFE;
+        let err = decode_record(&buf).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_size_hint_tracks_iteration() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.append("a", "1").unwrap();
+        store.append("b", "2").unwrap();
+        store.append("c", "3").unwrap();
+
+        let mut iter = store.iter().unwrap();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+
+        iter.next().unwrap().unwrap();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+
+        iter.next().unwrap().unwrap();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+
+        iter.next().unwrap().unwrap();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+
+        assert!(iter.next().is_none());
+    }
+
+    /// Covers the `Err(e) => Some(Err(e))` branch in `Iterator::next`
+    /// by truncating the file after the iterator caches its record count.
+    #[test]
+    fn test_iter_read_error_on_truncated_file() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.append("a", "1").unwrap();
+        store.append("b", "2").unwrap();
+
+        // Open a mutable iterator (exclusive lock) so we can manipulate the file.
+        let mut iter = store.iter_mut().unwrap();
+        assert_eq!(iter.record_count(), 2);
+
+        // Read the first record successfully.
+        let (k, _) = iter.next().unwrap().unwrap();
+        assert_eq!(k, "a");
+
+        // Truncate via the iterator's own file to remove the second record.
+        // The iterator still thinks record_count == 2, so the next
+        // read_exact will hit an unexpected EOF.
+        iter.file.set_len(0).unwrap();
+
+        // The iterator's cached record_count (2) > current_index (1),
+        // so it attempts read_exact, which fails.
+        let err = iter.next().unwrap().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
     }
 }
