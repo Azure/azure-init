@@ -1,10 +1,5 @@
 name: "Code Coverage Report"
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 on:
   pull_request:
     branches:
