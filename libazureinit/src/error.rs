@@ -313,8 +313,7 @@ mod tests {
 
     #[test]
     fn test_reason_block_utils() {
-        let inner =
-            block_utils::BlockUtilsError::Error("test".to_string());
+        let inner = block_utils::BlockUtilsError::Error("test".to_string());
         assert_eq!(Error::BlockUtils(inner).reason(), "block device error");
     }
 
