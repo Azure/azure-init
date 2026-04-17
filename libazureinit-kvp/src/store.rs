@@ -131,7 +131,9 @@ pub trait KvpStore: Send + Sync {
     fn insert(&self, key: &str, value: &str) -> Result<(), KvpError>;
 
     /// Return whether the store is empty.
-    fn is_empty(&self) -> Result<bool, KvpError>;
+    fn is_empty(&self) -> Result<bool, KvpError> {
+        Ok(self.len()? == 0)
+    }
 
     /// Whether the store's data is stale (e.g. predates current boot).
     fn is_stale(&self) -> Result<bool, KvpError>;
@@ -254,36 +256,12 @@ impl KvpPoolStore {
     pub fn pool(&self) -> KvpPool {
         self.pool
     }
-
-    fn validate_key(&self, key: &str) -> Result<(), KvpError> {
-        if key.is_empty() {
-            return Err(KvpError::EmptyKey);
-        }
-        if key.as_bytes().contains(&0) {
-            return Err(KvpError::KeyContainsNull);
-        }
-        let actual = key.len();
-        let max = self.mode.max_key_size();
-        if actual > max {
-            return Err(KvpError::KeyTooLarge { max, actual });
-        }
-        Ok(())
-    }
-
-    fn validate_value(&self, value: &str) -> Result<(), KvpError> {
-        let actual = value.len();
-        let max = self.mode.max_value_size();
-        if actual > max {
-            return Err(KvpError::ValueTooLarge { max, actual });
-        }
-        Ok(())
-    }
 }
 
 impl KvpStore for KvpPoolStore {
     fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        self.validate_key(key)?;
-        self.validate_value(value)?;
+        validate_key(key, self.mode.max_key_size())?;
+        validate_value(value, self.mode.max_value_size())?;
 
         let mut iter = self.iter_mut()?;
         iter.append(key, value)?;
@@ -292,12 +270,11 @@ impl KvpStore for KvpPoolStore {
     }
 
     fn clear(&self) -> Result<(), KvpError> {
-        let file =
-            match OpenOptions::new().read(true).write(true).open(&self.path) {
-                Ok(f) => f,
-                Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e.into()),
-            };
+        let file = match self.open_for_read_write() {
+            Ok(f) => f,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
 
         fcntl_lock_exclusive(&file)?;
         let result = file.set_len(0).map_err(KvpError::from);
@@ -306,8 +283,6 @@ impl KvpStore for KvpPoolStore {
     }
 
     fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        validate_key_for_read(key)?;
-
         let file = match self.open_for_read_write() {
             Ok(f) => f,
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
@@ -367,8 +342,8 @@ impl KvpStore for KvpPoolStore {
     }
 
     fn insert(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        self.validate_key(key)?;
-        self.validate_value(value)?;
+        validate_key(key, self.mode.max_key_size())?;
+        validate_value(value, self.mode.max_value_size())?;
 
         let mut iter = self.iter_mut()?;
         let mut found = false;
@@ -401,10 +376,6 @@ impl KvpStore for KvpPoolStore {
         Ok(())
     }
 
-    fn is_empty(&self) -> Result<bool, KvpError> {
-        Ok(self.len()? == 0)
-    }
-
     fn is_stale(&self) -> Result<bool, KvpError> {
         let metadata = match std::fs::metadata(&self.path) {
             Ok(m) => m,
@@ -432,8 +403,6 @@ impl KvpStore for KvpPoolStore {
     }
 
     fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        validate_key_for_read(key)?;
-
         let iter = match self.iter() {
             Ok(it) => it,
             Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
@@ -462,7 +431,7 @@ fn boot_time() -> Result<i64, KvpError> {
     Ok(now.saturating_sub(System::uptime()) as i64)
 }
 
-pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
+fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
     if data.len() != RECORD_SIZE {
         return Err(io::Error::other(format!(
             "record size mismatch: expected {RECORD_SIZE}, got {}",
@@ -484,7 +453,7 @@ pub(crate) fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
     Ok((key, value))
 }
 
-pub(crate) fn encode_record(key: &str, value: &str) -> Vec<u8> {
+fn encode_record(key: &str, value: &str) -> Vec<u8> {
     let mut buf = vec![0u8; RECORD_SIZE];
 
     let key_bytes = key.as_bytes();
@@ -554,9 +523,7 @@ fn fcntl_unlock(file: &File) {
     let _ = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
 }
 
-/// Looser validation for reads: accepts keys up to the full
-/// wire-format maximum regardless of [`PoolMode`].
-fn validate_key_for_read(key: &str) -> Result<(), KvpError> {
+fn validate_key(key: &str, max: usize) -> Result<(), KvpError> {
     if key.is_empty() {
         return Err(KvpError::EmptyKey);
     }
@@ -564,11 +531,16 @@ fn validate_key_for_read(key: &str) -> Result<(), KvpError> {
         return Err(KvpError::KeyContainsNull);
     }
     let actual = key.len();
-    if actual > WIRE_MAX_KEY_BYTES {
-        return Err(KvpError::KeyTooLarge {
-            max: WIRE_MAX_KEY_BYTES,
-            actual,
-        });
+    if actual > max {
+        return Err(KvpError::KeyTooLarge { max, actual });
+    }
+    Ok(())
+}
+
+fn validate_value(value: &str, max: usize) -> Result<(), KvpError> {
+    let actual = value.len();
+    if actual > max {
+        return Err(KvpError::ValueTooLarge { max, actual });
     }
     Ok(())
 }
@@ -940,8 +912,7 @@ mod tests {
         assert_eq!(store.read(&long_key).unwrap(), Some("val".to_string()));
 
         let too_long = "k".repeat(513);
-        let err = store.read(&too_long).unwrap_err();
-        assert!(matches!(err, KvpError::KeyTooLarge { .. }));
+        assert_eq!(store.read(&too_long).unwrap(), None);
     }
 
     #[test]
@@ -1139,24 +1110,6 @@ mod tests {
     }
 
     #[test]
-    fn test_read_rejects_empty_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.read("").unwrap_err();
-        assert!(matches!(err, KvpError::EmptyKey));
-    }
-
-    #[test]
-    fn test_read_rejects_null_in_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.read("bad\0key").unwrap_err();
-        assert!(matches!(err, KvpError::KeyContainsNull));
-    }
-
-    #[test]
     fn test_delete_removes_key() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1192,24 +1145,6 @@ mod tests {
         let store = safe_store(dir.path());
 
         assert!(!store.delete("anything").unwrap());
-    }
-
-    #[test]
-    fn test_delete_rejects_empty_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.delete("").unwrap_err();
-        assert!(matches!(err, KvpError::EmptyKey));
-    }
-
-    #[test]
-    fn test_delete_rejects_null_in_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.delete("bad\0key").unwrap_err();
-        assert!(matches!(err, KvpError::KeyContainsNull));
     }
 
     #[test]
