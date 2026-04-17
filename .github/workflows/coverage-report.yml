@@ -72,5 +72,5 @@ jobs:
       - name: Fail if coverage threshold not met
         if: steps.diff-coverage.outcome == 'failure'
         run: |
-          echo "::error::Coverage on modified lines is below the 95% threshold."
+          echo "::error::Coverage on modified lines is below the 100% threshold."
           exit 1
