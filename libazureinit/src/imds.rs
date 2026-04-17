@@ -446,9 +446,47 @@ mod tests {
         assert!(logs_contain(
             "The response body was invalid and could not be deserialized"
         ));
-        match res {
-            Err(crate::error::Error::Timeout) => {}
-            _ => panic!("Response should have timed out"),
-        };
+        let err = res.expect_err("Response should have timed out");
+        assert!(matches!(err, crate::error::Error::Timeout));
+    }
+
+    #[test]
+    fn public_keys_from_str() {
+        let key = super::PublicKeys::from("ssh-rsa AAAA...");
+        assert_eq!(key.key_data, "ssh-rsa AAAA...");
+        assert!(key.path.is_empty());
+    }
+
+    #[test]
+    fn deserialization_disable_password_bool_true() {
+        let os_profile = json!({
+            "adminUsername": "user",
+            "computerName": "host",
+            "disablePasswordAuthentication": true
+        });
+        let os_profile: OsProfile = serde_json::from_value(os_profile).unwrap();
+        assert!(os_profile.disable_password_authentication);
+    }
+
+    #[test]
+    fn deserialization_disable_password_bool_false() {
+        let os_profile = json!({
+            "adminUsername": "user",
+            "computerName": "host",
+            "disablePasswordAuthentication": false
+        });
+        let os_profile: OsProfile = serde_json::from_value(os_profile).unwrap();
+        assert!(!os_profile.disable_password_authentication);
+    }
+
+    #[test]
+    fn deserialization_disable_password_unexpected_type() {
+        let os_profile = json!({
+            "adminUsername": "user",
+            "computerName": "host",
+            "disablePasswordAuthentication": 42
+        });
+        let result: Result<OsProfile, _> = serde_json::from_value(os_profile);
+        assert!(result.is_err());
     }
 }
