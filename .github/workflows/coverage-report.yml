@@ -59,6 +59,8 @@ jobs:
         run: |
           diff-cover cobertura.xml \
             --compare-branch=origin/${{ github.base_ref }} \
+            --ignore-staged \
+            --ignore-unstaged \
             --show-uncovered \
             --fail-under=95 \
             --format markdown:coverage-report.md
