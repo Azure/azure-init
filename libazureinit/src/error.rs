@@ -229,4 +229,150 @@ mod tests {
         assert!(encoded.contains("test_unhandled_exception"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
     }
+
+    #[test]
+    fn test_reason_json() {
+        let inner = serde_json::from_str::<String>("invalid").unwrap_err();
+        assert_eq!(Error::Json(inner).reason(), "JSON error");
+    }
+
+    #[test]
+    fn test_reason_xml() {
+        let inner = serde_xml_rs::from_str::<String>("<").unwrap_err();
+        assert_eq!(Error::Xml(inner).reason(), "XML error");
+    }
+
+    #[tokio::test]
+    async fn test_reason_http() {
+        // Connect to a port that should refuse connections
+        let inner = reqwest::get("http://[::1]:1").await.unwrap_err();
+        assert_eq!(Error::Http(inner).reason(), "HTTP error");
+    }
+
+    #[test]
+    fn test_reason_io() {
+        let inner = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        assert_eq!(Error::Io(inner).reason(), "I/O error");
+    }
+
+    #[test]
+    fn test_reason_subprocess_failed() {
+        let status = std::process::Command::new("false").status().unwrap();
+        let err = Error::SubprocessFailed {
+            command: "false".to_string(),
+            status,
+        };
+        assert_eq!(err.reason(), "subprocess failed");
+    }
+
+    #[test]
+    fn test_reason_nul_error() {
+        let inner = std::ffi::CString::new("hello\0world").unwrap_err();
+        assert_eq!(Error::NulError(inner).reason(), "C string nul byte");
+    }
+
+    #[test]
+    fn test_reason_rustix() {
+        assert_eq!(
+            Error::Rustix(rustix::io::Errno::ACCESS).reason(),
+            "rustix error"
+        );
+    }
+
+    #[test]
+    fn test_reason_user_missing() {
+        let err = Error::UserMissing {
+            user: "nobody".to_string(),
+        };
+        assert_eq!(err.reason(), "user not found");
+    }
+
+    #[test]
+    fn test_reason_username_failure() {
+        assert_eq!(
+            Error::UsernameFailure.reason(),
+            "failed to determine username"
+        );
+    }
+
+    #[test]
+    fn test_reason_instance_metadata_failure() {
+        assert_eq!(
+            Error::InstanceMetadataFailure.reason(),
+            "failed to retrieve instance metadata"
+        );
+    }
+
+    #[test]
+    fn test_reason_non_empty_password() {
+        assert_eq!(
+            Error::NonEmptyPassword.reason(),
+            "provisioning with non-empty password is unsupported"
+        );
+    }
+
+    #[test]
+    fn test_reason_block_utils() {
+        let inner =
+            block_utils::BlockUtilsError::Error("test".to_string());
+        assert_eq!(Error::BlockUtils(inner).reason(), "block device error");
+    }
+
+    #[test]
+    fn test_reason_no_hostname_provisioner() {
+        assert_eq!(
+            Error::NoHostnameProvisioner.reason(),
+            "failed to provision hostname"
+        );
+    }
+
+    #[test]
+    fn test_reason_no_user_provisioner() {
+        assert_eq!(
+            Error::NoUserProvisioner.reason(),
+            "failed to provision user"
+        );
+    }
+
+    #[test]
+    fn test_reason_no_password_provisioner() {
+        assert_eq!(
+            Error::NoPasswordProvisioner.reason(),
+            "failed to provision password"
+        );
+    }
+
+    #[test]
+    fn test_reason_timeout() {
+        assert_eq!(Error::Timeout.reason(), "operation timed out");
+    }
+
+    #[test]
+    fn test_reason_update_sshd_config() {
+        assert_eq!(
+            Error::UpdateSshdConfig.reason(),
+            "failed to update sshd config"
+        );
+    }
+
+    #[test]
+    fn test_supporting_data_subprocess_failed() {
+        let status = std::process::Command::new("false").status().unwrap();
+        let err = Error::SubprocessFailed {
+            command: "false".to_string(),
+            status,
+        };
+        let data = err.supporting_data();
+        assert_eq!(data.get("command").unwrap(), "false");
+        assert!(data.contains_key("exit_status"));
+    }
+
+    #[test]
+    fn test_supporting_data_user_missing() {
+        let err = Error::UserMissing {
+            user: "testuser".to_string(),
+        };
+        let data = err.supporting_data();
+        assert_eq!(data.get("user").unwrap(), "testuser");
+    }
 }
