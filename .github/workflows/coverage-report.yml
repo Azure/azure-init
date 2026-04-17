@@ -44,7 +44,7 @@ jobs:
           hide_complexity: true
           indicators: true
           output: both
-          thresholds: '90 95'
+          thresholds: '95 100'
 
       - name: Post overall coverage to job summary
         if: always()
@@ -62,7 +62,7 @@ jobs:
             --ignore-staged \
             --ignore-unstaged \
             --show-uncovered \
-            --fail-under=95 \
+            --fail-under=100 \
             --format markdown:coverage-report.md
 
       - name: Post coverage report to job summary
