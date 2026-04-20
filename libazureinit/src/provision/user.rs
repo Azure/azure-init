@@ -228,6 +228,7 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
     use tempfile::tempdir;
 
+    use crate::config::UserProvisioner;
     use crate::User;
 
     use super::add_user_for_passwordless_sudo;
@@ -259,10 +260,7 @@ mod tests {
             add_user_for_passwordless_sudo(&_user_insecure.name, path_str);
 
         assert!(ret.is_ok());
-        assert!(
-            fs::metadata(path.clone()).is_ok(),
-            "{path_str} file not created"
-        );
+        assert!(fs::metadata(path.clone()).is_ok());
         let mode = fs::metadata(path_str)
             .expect("Sudoer file not created")
             .permissions()
@@ -270,8 +268,22 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "Permissions are not set properly");
         assert_eq!(
             fs::read_to_string(path).unwrap(),
-            "azureuser ALL=(ALL) NOPASSWD: ALL\n",
-            "Contents of the file are not as expected"
+            "azureuser ALL=(ALL) NOPASSWD: ALL\n"
         );
+    }
+
+    #[test]
+    fn test_user_provisioner_fake_create() {
+        let user = User::new("azureuser", []);
+        let provisioner = UserProvisioner::FakeUseradd;
+        assert!(provisioner.create(&user).is_ok());
+    }
+
+    #[test]
+    fn test_user_provisioner_useradd_create() {
+        let user = User::new("azureuser", []);
+        let provisioner = UserProvisioner::Useradd;
+        // Without root, useradd will fail — just exercising the match arm.
+        let _ = provisioner.create(&user);
     }
 }
