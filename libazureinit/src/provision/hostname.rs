@@ -37,3 +37,26 @@ fn hostnamectl(hostname: &str) -> Result<(), Error> {
     command.arg("set-hostname").arg(hostname);
     crate::run(command)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fake_hostnamectl_succeeds() {
+        let provisioner = HostnameProvisioner::FakeHostnamectl;
+        assert!(provisioner.set("myhostname").is_ok());
+        assert!(provisioner.set("").is_ok());
+    }
+
+    #[test]
+    fn test_hostnamectl_fails_without_root() {
+        let provisioner = HostnameProvisioner::Hostnamectl;
+        let err = provisioner.set("testhostname").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::SubprocessFailed { ref command, .. }
+                if command.contains("set-hostname")
+        ));
+    }
+}
