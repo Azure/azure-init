@@ -75,8 +75,6 @@ jobs:
           def indicator(pct):
               if pct >= 100:
                   return "✔"
-              elif pct >= 95:
-                  return "-"
               else:
                   return "❌"
 
