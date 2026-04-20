@@ -68,8 +68,7 @@ jobs:
                   continue
               covered = sum(1 for l in lines if int(l.get("hits", 0)) > 0)
               line_rate = covered / total * 100
-              branch_rate = float(cls.get("branch-rate", 0)) * 100
-              files.append((filename, line_rate, branch_rate, covered, total))
+              files.append((filename, line_rate, covered, total))
 
           files.sort(key=lambda f: f[0])
 
@@ -82,12 +81,11 @@ jobs:
                   return "❌"
 
           print("\n## Per-File Coverage\n")
-          print("| File | Line Coverage | Branch Coverage | Lines Covered / Total |")
-          print("|------|-------------:|----------------:|----------------------:|")
-          for name, line_pct, branch_pct, covered, total in files:
+          print("| File | Line Coverage | Lines Covered / Total |")
+          print("|------|-------------:|----------------------:|")
+          for name, line_pct, covered, total in files:
               li = indicator(line_pct)
-              bi = indicator(branch_pct)
-              print(f"| `{name}` | {li} {line_pct:.1f}% | {bi} {branch_pct:.1f}% | {covered}/{total} |")
+              print(f"| `{name}` | {li} {line_pct:.1f}% | {covered}/{total} |")
           PYEOF
 
       - name: Install diff-cover
