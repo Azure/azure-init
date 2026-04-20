@@ -21,6 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         container:
+          - ubuntu:26.04
           - ubuntu:24.04
           - debian:13
           - mcr.microsoft.com/azurelinux/base/core:3.0
