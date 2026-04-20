@@ -344,18 +344,20 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
-    let mounted = mount_media.mount().map_err(|e| {
+    let mount_result = mount_media.mount();
+    if let Err(ref e) = mount_result {
         tracing::error!(error = ?e, "Failed to mount media.");
-        e
-    })?;
+    }
+    let mounted = mount_result?;
 
     let ovf_body = mounted.read_ovf_env_to_string()?;
     let environment = parse_ovf_env(ovf_body.as_str())?;
 
-    mounted.unmount().map_err(|e| {
+    let unmount_result = mounted.unmount();
+    if let Err(ref e) = unmount_result {
         tracing::error!(error = ?e, "Failed to remove media.");
-        e
-    })?;
+    }
+    unmount_result?;
 
     Ok(environment)
 }
@@ -545,10 +547,10 @@ mod tests {
                 </PlatformSettings>
             </wa:PlatformSettingsSection>
         </Environment>"#;
-        match parse_ovf_env(ovf_body) {
-            Err(Error::NonEmptyPassword) => {}
-            _ => panic!("Non-empty passwords aren't allowed"),
-        };
+        assert!(matches!(
+            parse_ovf_env(ovf_body),
+            Err(Error::NonEmptyPassword)
+        ));
     }
 
     #[test]
@@ -625,5 +627,89 @@ mod tests {
 
         let list_devices = result.unwrap();
         assert!(list_devices.is_empty());
+    }
+
+    #[test]
+    fn test_default_password_when_field_absent() {
+        // OVF XML with <UserPassword> entirely absent triggers default_password()
+        let ovf_body = r#"
+        <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+            xmlns:wa="http://schemas.microsoft.com/windowsazure">
+            <wa:ProvisioningSection>
+                <wa:Version>1.0</wa:Version>
+                <LinuxProvisioningConfigurationSet
+                    xmlns="http://schemas.microsoft.com/windowsazure">
+                    <UserName>testuser</UserName>
+                    <HostName>testhost</HostName>
+                </LinuxProvisioningConfigurationSet>
+            </wa:ProvisioningSection>
+            <wa:PlatformSettingsSection>
+                <wa:Version>1.0</wa:Version>
+                <PlatformSettings
+                    xmlns="http://schemas.microsoft.com/windowsazure">
+                    <PreprovisionedVm>false</PreprovisionedVm>
+                    <PreprovisionedVmType>None</PreprovisionedVmType>
+                </PlatformSettings>
+            </wa:PlatformSettingsSection>
+        </Environment>"#;
+
+        let env = parse_ovf_env(ovf_body).unwrap();
+        assert_eq!(env.provisioning_section.linux_prov_conf_set.password, "");
+    }
+
+    #[test]
+    fn test_default_preprov_when_field_absent() {
+        // OVF XML with <PreprovisionedVm> absent triggers default_preprov()
+        let ovf_body = r#"
+        <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+            xmlns:wa="http://schemas.microsoft.com/windowsazure">
+            <wa:ProvisioningSection>
+                <wa:Version>1.0</wa:Version>
+                <LinuxProvisioningConfigurationSet
+                    xmlns="http://schemas.microsoft.com/windowsazure">
+                    <UserName>testuser</UserName>
+                    <UserPassword></UserPassword>
+                    <HostName>testhost</HostName>
+                </LinuxProvisioningConfigurationSet>
+            </wa:ProvisioningSection>
+            <wa:PlatformSettingsSection>
+                <wa:Version>1.0</wa:Version>
+                <PlatformSettings
+                    xmlns="http://schemas.microsoft.com/windowsazure">
+                </PlatformSettings>
+            </wa:PlatformSettingsSection>
+        </Environment>"#;
+
+        let env = parse_ovf_env(ovf_body).unwrap();
+        assert_eq!(
+            env.platform_settings_section
+                .platform_settings
+                .preprovisioned_vm,
+            false
+        );
+    }
+
+    #[test]
+    fn test_get_mount_device_none_uses_default_path() {
+        // Exercises the unwrap_or_else closure that falls back to MTAB_PATH.
+        // The result depends on the system's /etc/mtab; we just ensure it
+        // doesn't panic and the closure itself is covered.
+        let _ = get_mount_device(None);
+    }
+
+    #[test]
+    fn test_media_new() {
+        let media =
+            Media::new(PathBuf::from("/dev/sr0"), PathBuf::from("/mnt/cdrom"));
+        assert_eq!(media.device_path, PathBuf::from("/dev/sr0"));
+        assert_eq!(media.mount_path, PathBuf::from("/mnt/cdrom"));
+    }
+
+    #[test]
+    fn test_mount_parse_ovf_env_mount_failure() {
+        // A nonexistent device causes mount() to fail, exercising the
+        // error branch that logs "Failed to mount media."
+        let result = mount_parse_ovf_env("/dev/nonexistent_device".to_string());
+        assert!(result.is_err());
     }
 }
