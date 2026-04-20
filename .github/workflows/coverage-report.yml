@@ -50,6 +50,46 @@ jobs:
         if: always()
         run: cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Generate per-file coverage table
+        if: always()
+        run: |
+          python3 - <<'PYEOF' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("cobertura.xml")
+          root = tree.getroot()
+
+          files = []
+          for cls in root.iter("class"):
+              filename = cls.get("filename", "")
+              lines = cls.findall(".//line")
+              total = len(lines)
+              if total == 0:
+                  continue
+              covered = sum(1 for l in lines if int(l.get("hits", 0)) > 0)
+              line_rate = covered / total * 100
+              branch_rate = float(cls.get("branch-rate", 0)) * 100
+              files.append((filename, line_rate, branch_rate, covered, total))
+
+          files.sort(key=lambda f: f[0])
+
+          def indicator(pct):
+              if pct >= 100:
+                  return "✔"
+              elif pct >= 95:
+                  return "-"
+              else:
+                  return "❌"
+
+          print("\n## Per-File Coverage\n")
+          print("| File | Line Coverage | Branch Coverage | Lines Covered / Total |")
+          print("|------|-------------:|----------------:|----------------------:|")
+          for name, line_pct, branch_pct, covered, total in files:
+              li = indicator(line_pct)
+              bi = indicator(branch_pct)
+              print(f"| `{name}` | {li} {line_pct:.1f}% | {bi} {branch_pct:.1f}% | {covered}/{total} |")
+          PYEOF
+
       - name: Install diff-cover
         run: pip install diff-cover
 
