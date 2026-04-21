@@ -1,6 +1,9 @@
 name: "Code Coverage Report"
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -35,5 +38,6 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           fail_ci_if_error: true
