@@ -118,7 +118,7 @@ async fn request(
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
                         tracing::info!(target: "libazureinit::http::received", url=response.url().as_str(), "HTTP response received");
-                       
+
                         match response.error_for_status() {
                             Ok(response) => {
                                 tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
