@@ -76,14 +76,9 @@ pub fn encode_report(data: &[String]) -> String {
         .quote_style(csv::QuoteStyle::Necessary)
         .from_writer(vec![]);
     wtr.write_record(data).expect("CSV write failed");
-    let mut bytes = wtr.into_inner().unwrap();
-    if let Some(b'\n') = bytes.last() {
-        bytes.pop();
-    }
-    if let Some(b'\r') = bytes.last() {
-        bytes.pop();
-    }
-    String::from_utf8(bytes).expect("CSV was not utf-8")
+    let bytes = wtr.into_inner().unwrap();
+    let s = String::from_utf8(bytes).expect("CSV was not utf-8");
+    s.trim_end_matches(['\r', '\n']).to_string()
 }
 
 /// Reports provisioning as successfully completed to the wireserver and/or KVP.
@@ -366,10 +361,7 @@ mod tests {
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let res = report_in_progress(&cfg, test_vm_id).await;
-        assert!(
-            res.is_ok(),
-            "201 Created (or 200 OK) should be accepted as success"
-        );
+        res.expect("201 Created (or 200 OK) should be accepted as success");
 
         cancel.cancel();
     }
@@ -396,15 +388,10 @@ mod tests {
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let r2 = report_failure(report_str, &cfg).await;
-        assert!(
-            r1.is_err(),
-            "report_ready should fail against a dead server"
-        );
+        r1.expect_err("report_ready should fail against a dead server");
         assert!(r2.is_err(), "report_failure should also fail");
     }
 
-    // Verifies encoded_success_report() creates the correct
-    // success KVP string format, including optional custom key-value pairs.
     #[test]
     fn test_encoded_success_report_format() {
         let vm_id = "00000000-0000-0000-0000-000000000abc";

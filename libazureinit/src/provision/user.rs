@@ -129,12 +129,28 @@ impl UserProvisioner {
     /// fails (for example, running the underlying system commands or writing the
     /// sudoers file), an appropriate `Err(Error)` is returned.
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
+        self.create_user_account(user)?;
+        self.configure_sudoers(
+            user.name.as_str(),
+            "/etc/sudoers.d/azure-init-user",
+        )
+    }
+
+    fn create_user_account(&self, user: &User) -> Result<(), Error> {
         match self {
-            Self::Useradd => {
-                useradd(user)?;
-                let path = "/etc/sudoers.d/azure-init-user";
-                add_user_for_passwordless_sudo(user.name.as_str(), path)
-            }
+            Self::Useradd => useradd(user),
+            #[cfg(test)]
+            Self::FakeUseradd => Ok(()),
+        }
+    }
+
+    fn configure_sudoers(
+        &self,
+        username: &str,
+        path: &str,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Useradd => add_user_for_passwordless_sudo(username, path),
             #[cfg(test)]
             Self::FakeUseradd => Ok(()),
         }
@@ -285,5 +301,19 @@ mod tests {
         let provisioner = UserProvisioner::Useradd;
         // Without root, useradd will fail — just exercising the match arm.
         let _ = provisioner.create(&user);
+    }
+
+    #[test]
+    fn test_useradd_configure_sudoers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sudoers");
+        let path_str = path.to_str().unwrap();
+        UserProvisioner::Useradd
+            .configure_sudoers("testuser", path_str)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "testuser ALL=(ALL) NOPASSWD: ALL\n"
+        );
     }
 }
