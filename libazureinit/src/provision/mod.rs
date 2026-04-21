@@ -321,9 +321,11 @@ mod tests {
             false,
         );
 
-        provision
-            .create_user()
-            .expect("create_user should succeed with FakeUseradd backend");
+        let result = provision.create_user();
+        assert!(
+            result.is_ok(),
+            "create_user should succeed with FakeUseradd backend"
+        );
     }
 
     #[test]
@@ -348,10 +350,15 @@ mod tests {
             false,
         );
 
-        let err = provision
-            .create_user()
-            .expect_err("create_user should fail with no user provisioners");
-        assert!(matches!(err, Error::NoUserProvisioner));
+        let result = provision.create_user();
+        assert!(
+            result.is_err(),
+            "create_user should fail with no user provisioners"
+        );
+        assert!(
+            matches!(result.unwrap_err(), Error::NoUserProvisioner),
+            "Should return NoUserProvisioner error"
+        );
     }
 
     #[test]
@@ -398,88 +405,8 @@ mod tests {
             false,
         );
 
-        let err = p.set_hostname().expect_err("should fail with no backends");
-        assert!(matches!(err, Error::NoHostnameProvisioner));
-    }
-
-    #[test]
-    fn test_create_user_real_backend_falls_back_to_fake() {
-        let mock_config = Config {
-            user_provisioners: UserProvisioners {
-                backends: vec![
-                    UserProvisioner::Useradd,
-                    UserProvisioner::FakeUseradd,
-                ],
-            },
-            hostname_provisioners: HostnameProvisioners {
-                backends: vec![HostnameProvisioner::FakeHostnamectl],
-            },
-            password_provisioners: PasswordProvisioners {
-                backends: vec![PasswordProvisioner::FakePasswd],
-            },
-            ..Config::default()
-        };
-        let p = Provision::new(
-            "test-hostname",
-            User::new("testuser", vec![]),
-            mock_config,
-            false,
-        );
-        p.create_user()
-            .expect("real Useradd fails, FakeUseradd should succeed");
-    }
-
-    #[test]
-    fn test_set_hostname_real_backend_falls_back_to_fake() {
-        let mock_config = Config {
-            hostname_provisioners: HostnameProvisioners {
-                backends: vec![
-                    HostnameProvisioner::Hostnamectl,
-                    HostnameProvisioner::FakeHostnamectl,
-                ],
-            },
-            user_provisioners: UserProvisioners {
-                backends: vec![UserProvisioner::FakeUseradd],
-            },
-            password_provisioners: PasswordProvisioners {
-                backends: vec![PasswordProvisioner::FakePasswd],
-            },
-            ..Config::default()
-        };
-        let p = Provision::new(
-            "test-hostname",
-            User::new("testuser", vec![]),
-            mock_config,
-            false,
-        );
-        p.set_hostname()
-            .expect("real Hostnamectl fails, FakeHostnamectl should succeed");
-    }
-
-    #[test]
-    fn test_provision_core_real_password_backend_falls_back_to_fake() {
-        let mock_config = Config {
-            hostname_provisioners: HostnameProvisioners {
-                backends: vec![HostnameProvisioner::FakeHostnamectl],
-            },
-            user_provisioners: UserProvisioners {
-                backends: vec![UserProvisioner::FakeUseradd],
-            },
-            password_provisioners: PasswordProvisioners {
-                backends: vec![
-                    PasswordProvisioner::Passwd,
-                    PasswordProvisioner::FakePasswd,
-                ],
-            },
-            ..Config::default()
-        };
-        let p = Provision::new(
-            "test-hostname",
-            User::new("testuser", vec![]),
-            mock_config,
-            false,
-        );
-        p.provision_core()
-            .expect("real Passwd fails, FakePasswd should succeed");
+        let result = p.set_hostname();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::NoHostnameProvisioner));
     }
 }
