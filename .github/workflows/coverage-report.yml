@@ -29,84 +29,11 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Run tests and generate Cobertura coverage
-        run: cargo llvm-cov --workspace --cobertura --output-path cobertura.xml
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
-      - name: Code coverage summary
-        if: always()
-        uses: irongut/CodeCoverageSummary@v1.3.0
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
         with:
-          filename: cobertura.xml
-          badge: true
-          fail_below_min: false
-          format: markdown
-          hide_branch_rate: false
-          hide_complexity: true
-          indicators: true
-          output: both
-          thresholds: '95 100'
-
-      - name: Post overall coverage to job summary
-        if: always()
-        run: cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Generate per-file coverage table
-        if: always()
-        run: |
-          python3 - <<'PYEOF' >> "$GITHUB_STEP_SUMMARY"
-          import xml.etree.ElementTree as ET
-
-          tree = ET.parse("cobertura.xml")
-          root = tree.getroot()
-
-          files = []
-          for cls in root.iter("class"):
-              filename = cls.get("filename", "")
-              lines = cls.findall(".//line")
-              total = len(lines)
-              if total == 0:
-                  continue
-              covered = sum(1 for l in lines if int(l.get("hits", 0)) > 0)
-              line_rate = covered / total * 100
-              files.append((filename, line_rate, covered, total))
-
-          files.sort(key=lambda f: f[0])
-
-          def indicator(pct):
-              if pct >= 100:
-                  return "✔"
-              else:
-                  return "❌"
-
-          print("\n## Per-File Coverage\n")
-          print("| File | Line Coverage | Lines Covered / Total |")
-          print("|------|-------------:|----------------------:|")
-          for name, line_pct, covered, total in files:
-              li = indicator(line_pct)
-              print(f"| `{name}` | {li} {line_pct:.1f}% | {covered}/{total} |")
-          PYEOF
-
-      - name: Install diff-cover
-        run: pip install diff-cover
-
-      - name: Check coverage on modified lines
-        id: diff-coverage
-        continue-on-error: true
-        run: |
-          diff-cover cobertura.xml \
-            --compare-branch=origin/${{ github.base_ref }} \
-            --ignore-staged \
-            --ignore-unstaged \
-            --show-uncovered \
-            --fail-under=100 \
-            --format markdown:coverage-report.md
-
-      - name: Post coverage report to job summary
-        if: always() && hashFiles('coverage-report.md') != ''
-        run: cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Fail if coverage threshold not met
-        if: steps.diff-coverage.outcome == 'failure'
-        run: |
-          echo "::error::Coverage on modified lines is below the 100% threshold."
-          exit 1
+          files: lcov.info
+          fail_ci_if_error: true
