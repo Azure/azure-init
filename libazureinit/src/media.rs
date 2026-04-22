@@ -236,6 +236,19 @@ impl Media<Unmounted> {
 }
 
 impl Media<Mounted> {
+    /// Creates a `Media<Mounted>` for testing without running real mount commands.
+    #[cfg(test)]
+    pub(crate) fn fake_mounted(
+        device_path: PathBuf,
+        mount_path: PathBuf,
+    ) -> Media<Mounted> {
+        Media {
+            device_path,
+            mount_path,
+            state: std::marker::PhantomData,
+        }
+    }
+
     /// Unmounts the media device.
     ///
     /// # Returns
@@ -344,16 +357,28 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
-    let mount_result = mount_media.mount();
+    orchestrate_ovf_env(
+        || mount_media.mount(),
+        Media::<Mounted>::read_ovf_env_to_string,
+        Media::<Mounted>::unmount,
+    )
+}
+
+fn orchestrate_ovf_env(
+    mount_fn: impl FnOnce() -> Result<Media<Mounted>, Error>,
+    read_fn: impl FnOnce(&Media<Mounted>) -> Result<String, Error>,
+    unmount_fn: impl FnOnce(Media<Mounted>) -> Result<(), Error>,
+) -> Result<Environment, Error> {
+    let mount_result = mount_fn();
     if let Err(ref e) = mount_result {
         tracing::error!(error = ?e, "Failed to mount media.");
     }
     let mounted = mount_result?;
 
-    let ovf_body = mounted.read_ovf_env_to_string()?;
+    let ovf_body = read_fn(&mounted)?;
     let environment = parse_ovf_env(ovf_body.as_str())?;
 
-    let unmount_result = mounted.unmount();
+    let unmount_result = unmount_fn(mounted);
     if let Err(ref e) = unmount_result {
         tracing::error!(error = ?e, "Failed to remove media.");
     }
@@ -547,10 +572,12 @@ mod tests {
                 </PlatformSettings>
             </wa:PlatformSettingsSection>
         </Environment>"#;
-        assert!(matches!(
-            parse_ovf_env(ovf_body),
-            Err(Error::NonEmptyPassword)
-        ));
+        let err = parse_ovf_env(ovf_body)
+            .expect_err("Expected NonEmptyPassword error");
+        assert_eq!(
+            err.to_string(),
+            "Provisioning a user with a non-empty password is not supported"
+        );
     }
 
     #[test]
@@ -711,5 +738,127 @@ mod tests {
         // error branch that logs "Failed to mount media."
         let result = mount_parse_ovf_env("/dev/nonexistent_device".to_string());
         assert!(result.is_err());
+    }
+
+    /// Valid OVF body used across orchestrate_ovf_env tests.
+    const TEST_OVF: &str = r#"
+    <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+        xmlns:wa="http://schemas.microsoft.com/windowsazure">
+        <wa:ProvisioningSection><wa:Version>1.0</wa:Version>
+            <LinuxProvisioningConfigurationSet
+                xmlns="http://schemas.microsoft.com/windowsazure">
+                <UserName>u</UserName><UserPassword></UserPassword><HostName>h</HostName>
+            </LinuxProvisioningConfigurationSet>
+        </wa:ProvisioningSection>
+        <wa:PlatformSettingsSection><wa:Version>1.0</wa:Version>
+            <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure">
+                <PreprovisionedVm>false</PreprovisionedVm>
+            </PlatformSettings>
+        </wa:PlatformSettingsSection>
+    </Environment>"#;
+
+    #[test]
+    fn test_orchestrate_mount_failure() {
+        // Exercises the mount error log branch in orchestrate_ovf_env.
+        let result = orchestrate_ovf_env(
+            || {
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "mock mount failure",
+                )))
+            },
+            |_| unreachable!(),
+            |_| unreachable!(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_orchestrate_unmount_failure() {
+        // Exercises the unmount error log branch in orchestrate_ovf_env.
+        let fake = Media::fake_mounted(
+            PathBuf::from("/dev/fake"),
+            PathBuf::from("/mnt/fake"),
+        );
+        let result = orchestrate_ovf_env(
+            || Ok(fake),
+            |_| Ok(TEST_OVF.to_string()),
+            |_| {
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "mock unmount failure",
+                )))
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_orchestrate_read_failure() {
+        // Exercises the read error path in orchestrate_ovf_env.
+        let fake = Media::fake_mounted(
+            PathBuf::from("/dev/fake"),
+            PathBuf::from("/mnt/fake"),
+        );
+        let result = orchestrate_ovf_env(
+            || Ok(fake),
+            |_| {
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "mock read failure",
+                )))
+            },
+            |_| unreachable!(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_orchestrate_parse_failure() {
+        // Exercises the parse_ovf_env error path in orchestrate_ovf_env
+        // (read succeeds but parse returns NonEmptyPassword).
+        let fake = Media::fake_mounted(
+            PathBuf::from("/dev/fake"),
+            PathBuf::from("/mnt/fake"),
+        );
+        let ovf_with_password = r#"
+        <Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+            xmlns:wa="http://schemas.microsoft.com/windowsazure">
+            <wa:ProvisioningSection><wa:Version>1.0</wa:Version>
+                <LinuxProvisioningConfigurationSet
+                    xmlns="http://schemas.microsoft.com/windowsazure">
+                    <UserName>u</UserName><UserPassword>secret</UserPassword><HostName>h</HostName>
+                </LinuxProvisioningConfigurationSet>
+            </wa:ProvisioningSection>
+            <wa:PlatformSettingsSection><wa:Version>1.0</wa:Version>
+                <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure">
+                    <PreprovisionedVm>false</PreprovisionedVm>
+                </PlatformSettings>
+            </wa:PlatformSettingsSection>
+        </Environment>"#;
+        let result = orchestrate_ovf_env(
+            || Ok(fake),
+            |_| Ok(ovf_with_password.to_string()),
+            |_| unreachable!(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_orchestrate_success() {
+        // Exercises the full happy path through orchestrate_ovf_env,
+        // including the Ok(environment) return.
+        let fake = Media::fake_mounted(
+            PathBuf::from("/dev/fake"),
+            PathBuf::from("/mnt/fake"),
+        );
+        let result = orchestrate_ovf_env(
+            || Ok(fake),
+            |_| Ok(TEST_OVF.to_string()),
+            |_| Ok(()),
+        );
+        let env = result.unwrap();
+        assert_eq!(env.provisioning_section.linux_prov_conf_set.username, "u");
+        assert_eq!(env.provisioning_section.linux_prov_conf_set.hostname, "h");
     }
 }

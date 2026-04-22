@@ -721,9 +721,10 @@ mod tests {
     #[test]
     fn test_get_sshd_config_path() {
         let path = get_sshd_config_path();
-        assert!(
-            path == "/etc/ssh/sshd_config.d/50-azure-init.conf"
-                || path == "/etc/ssh/sshd_config"
-        );
+        let valid_paths = [
+            "/etc/ssh/sshd_config.d/50-azure-init.conf",
+            "/etc/ssh/sshd_config",
+        ];
+        assert!(valid_paths.contains(&path));
     }
 }

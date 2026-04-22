@@ -153,7 +153,13 @@ pub fn lock_user(username: &str) -> Result<(), Error> {
     let path_passwd = env!("PATH_PASSWD");
     let mut command = Command::new(path_passwd);
     command.arg("-l").arg(username);
-    let result = crate::run(command);
+    handle_lock_result(username, crate::run(command))
+}
+
+fn handle_lock_result(
+    username: &str,
+    result: Result<(), Error>,
+) -> Result<(), Error> {
     if let Err(ref e) = result {
         tracing::error!(username = %username, error = ?e, "Failed to lock account via passwd -l");
     }
@@ -297,6 +303,22 @@ mod tests {
         let provisioner = PasswordProvisioner::Passwd;
         let user = User::new("azureuser", []);
         let result = provisioner.set(&user);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_handle_lock_result_success() {
+        let result = handle_lock_result("testuser", Ok(()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_handle_lock_result_failure() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "mock passwd failure",
+        ));
+        let result = handle_lock_result("testuser", Err(err));
         assert!(result.is_err());
     }
 }
