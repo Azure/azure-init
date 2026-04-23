@@ -108,57 +108,6 @@ impl PoolMode {
     }
 }
 
-/// Key-value store with Hyper-V KVP semantics.
-pub trait KvpStore: Send + Sync {
-    /// Append a key-value pair without checking for an existing key.
-    fn append(&self, key: &str, value: &str) -> Result<(), KvpError>;
-
-    /// Remove all entries from the store.
-    fn clear(&self) -> Result<(), KvpError>;
-
-    /// Remove all records matching the key. Returns `true` if at least
-    /// one record was present.
-    fn delete(&self, key: &str) -> Result<bool, KvpError>;
-
-    /// Return all key-value records in on-disk order, including
-    /// duplicates from [`append`](Self::append) calls.
-    fn dump(&self) -> Result<Vec<(String, String)>, KvpError>;
-
-    /// Return all key-value pairs (deduplicated, last-write-wins).
-    fn entries(&self) -> Result<HashMap<String, String>, KvpError>;
-
-    /// Insert a new key-value pair or update an existing key's value.
-    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError>;
-
-    /// Return whether the store is empty.
-    fn is_empty(&self) -> Result<bool, KvpError> {
-        Ok(self.len()? == 0)
-    }
-
-    /// Whether the store's data is stale (e.g. predates current boot).
-    fn is_stale(&self) -> Result<bool, KvpError>;
-
-    /// Return the number of records in the store.
-    ///
-    /// This counts on-disk records, not unique keys. If
-    /// [`append`](Self::append) was used to write duplicate keys, this
-    /// may exceed the number of unique keys returned by
-    /// [`entries`](Self::entries).
-    fn len(&self) -> Result<usize, KvpError>;
-
-    /// Maximum key size in bytes for writes.
-    fn max_key_size(&self) -> usize;
-
-    /// Maximum value size in bytes for writes.
-    fn max_value_size(&self) -> usize;
-
-    /// Read the value for a key. Returns `Ok(None)` when absent.
-    ///
-    /// If multiple records share the same key (e.g. via
-    /// [`append`](Self::append)), the last (most recent) match wins.
-    fn read(&self, key: &str) -> Result<Option<String>, KvpError>;
-}
-
 /// Unified KVP pool file store.
 #[derive(Clone, Debug)]
 pub struct KvpPoolStore {
@@ -168,12 +117,83 @@ pub struct KvpPoolStore {
 }
 
 impl KvpPoolStore {
+    /// Append a key-value pair without checking for an existing key.
+    pub fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        validate_key(key, self.mode.max_key_size())?;
+        validate_value(value, self.mode.max_value_size())?;
+
+        let mut iter = self.iter_mut()?;
+        iter.append(key, value)?;
+        iter.flush()?;
+        Ok(())
+    }
+
+    /// Remove all entries from the store.
+    pub fn clear(&self) -> Result<(), KvpError> {
+        let file = match self.open_for_read_write() {
+            Ok(f) => f,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+
+        fcntl_lock_exclusive(&file)?;
+        let write_result = file.set_len(0).map_err(KvpError::from);
+        let unlock_result = fcntl_unlock(&file).map_err(KvpError::from);
+        write_result.and(unlock_result)
+    }
+
     /// Clear the pool file if it contains data from a previous boot.
     pub fn clear_if_stale(&self) -> Result<(), KvpError> {
         if self.is_stale()? {
             self.clear()?;
         }
         Ok(())
+    }
+
+    /// Remove all records matching the key. Returns `true` if at least
+    /// one record was present.
+    pub fn delete(&self, key: &str) -> Result<bool, KvpError> {
+        let file = match self.open_for_read_write() {
+            Ok(f) => f,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut iter = KvpPoolIter::new(file, true)?;
+        let mut found = false;
+
+        while let Some(record) = iter.next() {
+            let (k, _) = record?;
+            if k == key {
+                iter.remove_current()?;
+                found = true;
+            }
+        }
+
+        if found {
+            iter.flush()?;
+        }
+        Ok(found)
+    }
+
+    /// Return all key-value records in on-disk order, including
+    /// duplicates from [`append`](Self::append) calls.
+    pub fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut records = Vec::with_capacity(iter.record_count());
+        for record in iter {
+            records.push(record?);
+        }
+        Ok(records)
     }
 
     /// Dump all entries (deduplicated) to a JSON file at the given path.
@@ -185,7 +205,77 @@ impl KvpPoolStore {
         Ok(())
     }
 
-    /// Test-only variant of [`is_stale`](KvpStore::is_stale) that accepts
+    /// Return all key-value pairs (deduplicated, last-write-wins).
+    pub fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
+        let iter = match self.iter() {
+            Ok(it) => it,
+            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                return Ok(HashMap::new());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut map = HashMap::with_capacity(iter.record_count());
+        for record in iter {
+            let (k, v) = record?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
+
+    /// Insert a new key-value pair or update an existing key's value.
+    pub fn insert(&self, key: &str, value: &str) -> Result<(), KvpError> {
+        validate_key(key, self.mode.max_key_size())?;
+        validate_value(value, self.mode.max_value_size())?;
+
+        let mut iter = self.iter_mut()?;
+        let mut found = false;
+        let mut unique_keys = HashSet::new();
+
+        while let Some(record) = iter.next() {
+            let (k, _) = record?;
+            let is_target = k == key;
+            unique_keys.insert(k);
+            if is_target {
+                if !found {
+                    iter.overwrite_current_value(value)?;
+                    found = true;
+                } else {
+                    iter.remove_current()?;
+                }
+            }
+        }
+
+        if !found {
+            if unique_keys.len() >= MAX_UNIQUE_KEYS {
+                return Err(KvpError::MaxUniqueKeysExceeded {
+                    max: MAX_UNIQUE_KEYS,
+                });
+            }
+            iter.append(key, value)?;
+        }
+
+        iter.flush()?;
+        Ok(())
+    }
+
+    /// Return whether the store is empty.
+    pub fn is_empty(&self) -> Result<bool, KvpError> {
+        Ok(self.len()? == 0)
+    }
+
+    /// Whether the store's data is stale (e.g. predates current boot).
+    pub fn is_stale(&self) -> Result<bool, KvpError> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let boot = boot_time()?;
+        Ok(metadata.mtime() < boot)
+    }
+
+    /// Test-only variant of [`is_stale`](Self::is_stale) that accepts
     /// an explicit boot time for deterministic assertions.
     #[cfg(test)]
     fn is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
@@ -197,16 +287,38 @@ impl KvpPoolStore {
         Ok(metadata.mtime() < boot_time)
     }
 
-    /// Create a read-only iterator over all records.
     fn iter(&self) -> Result<KvpPoolIter, KvpError> {
         let file = self.open_for_read()?;
         KvpPoolIter::new(file, false)
     }
 
-    /// Create a read-write iterator over all records.
     fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
         let file = self.open_for_read_write_create()?;
         KvpPoolIter::new(file, true)
+    }
+
+    /// Return the number of records in the store.
+    ///
+    /// This counts on-disk records, not unique keys. If
+    /// [`append`](Self::append) was used to write duplicate keys, this
+    /// may exceed the number of unique keys returned by
+    /// [`entries`](Self::entries).
+    pub fn len(&self) -> Result<usize, KvpError> {
+        match std::fs::metadata(&self.path) {
+            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Maximum key size in bytes for writes.
+    pub fn max_key_size(&self) -> usize {
+        self.mode.max_key_size()
+    }
+
+    /// Maximum value size in bytes for writes.
+    pub fn max_value_size(&self) -> usize {
+        self.mode.max_value_size()
     }
 
     /// The policy mode this store was created with.
@@ -256,153 +368,17 @@ impl KvpPoolStore {
     pub fn pool(&self) -> KvpPool {
         self.pool
     }
-}
 
-impl KvpStore for KvpPoolStore {
-    fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        validate_key(key, self.mode.max_key_size())?;
-        validate_value(value, self.mode.max_value_size())?;
-
-        let mut iter = self.iter_mut()?;
-        iter.append(key, value)?;
-        iter.flush()?;
-        Ok(())
-    }
-
-    fn clear(&self) -> Result<(), KvpError> {
-        let file = match self.open_for_read_write() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-
-        fcntl_lock_exclusive(&file)?;
-        let result = file.set_len(0).map_err(KvpError::from);
-        fcntl_unlock(&file);
-        result
-    }
-
-    fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        let file = match self.open_for_read_write() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(false);
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let mut iter = KvpPoolIter::new(file, true)?;
-        let mut found = false;
-
-        while let Some(record) = iter.next() {
-            let (k, _) = record?;
-            if k == key {
-                iter.remove_current()?;
-                found = true;
-            }
-        }
-
-        if found {
-            iter.flush()?;
-        }
-        Ok(found)
-    }
-
-    fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(Vec::new());
-            }
-            Err(e) => return Err(e),
-        };
-
-        let mut records = Vec::with_capacity(iter.record_count());
-        for record in iter {
-            records.push(record?);
-        }
-        Ok(records)
-    }
-
-    fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(HashMap::new());
-            }
-            Err(e) => return Err(e),
-        };
-
-        let mut map = HashMap::with_capacity(iter.record_count());
-        for record in iter {
-            let (k, v) = record?;
-            map.insert(k, v);
-        }
-        Ok(map)
-    }
-
-    fn insert(&self, key: &str, value: &str) -> Result<(), KvpError> {
-        validate_key(key, self.mode.max_key_size())?;
-        validate_value(value, self.mode.max_value_size())?;
-
-        let mut iter = self.iter_mut()?;
-        let mut found = false;
-        let mut unique_keys = HashSet::new();
-
-        while let Some(record) = iter.next() {
-            let (k, _) = record?;
-            let is_target = k == key;
-            unique_keys.insert(k);
-            if is_target {
-                if !found {
-                    iter.overwrite_current_value(value)?;
-                    found = true;
-                } else {
-                    iter.remove_current()?;
-                }
-            }
-        }
-
-        if !found {
-            if unique_keys.len() >= MAX_UNIQUE_KEYS {
-                return Err(KvpError::MaxUniqueKeysExceeded {
-                    max: MAX_UNIQUE_KEYS,
-                });
-            }
-            iter.append(key, value)?;
-        }
-
-        iter.flush()?;
-        Ok(())
-    }
-
-    fn is_stale(&self) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(m) => m,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
-        };
-        let boot = boot_time()?;
-        Ok(metadata.mtime() < boot)
-    }
-
-    fn len(&self) -> Result<usize, KvpError> {
-        match std::fs::metadata(&self.path) {
-            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn max_key_size(&self) -> usize {
-        self.mode.max_key_size()
-    }
-
-    fn max_value_size(&self) -> usize {
-        self.mode.max_value_size()
-    }
-
-    fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
+    /// Read the value for a key. Returns `Ok(None)` when absent.
+    ///
+    /// If multiple records share the same key (e.g. via
+    /// [`append`](Self::append)), the last (most recent) match wins.
+    ///
+    /// Unlike write operations, `read` does **not** enforce
+    /// [`PoolMode`] key-size limits, so a [`Safe`](PoolMode::Safe)-mode
+    /// store can read keys that were written in
+    /// [`Unsafe`](PoolMode::Unsafe) mode.
+    pub fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
         let iter = match self.iter() {
             Ok(it) => it,
             Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
@@ -510,9 +486,10 @@ fn fcntl_lock_shared(file: &File) -> io::Result<()> {
 
 /// Release a lock on the entire file.
 ///
-/// Unlock errors are non-actionable (the fd is about to close, which
-/// releases the lock unconditionally), so the return value is discarded.
-fn fcntl_unlock(file: &File) {
+/// Callers that are about to close the file descriptor (e.g. a
+/// [`Drop`] impl) may safely ignore the error, since closing the fd
+/// releases the lock unconditionally.
+fn fcntl_unlock(file: &File) -> io::Result<()> {
     let fl = libc::flock {
         l_type: libc::F_UNLCK as libc::c_short,
         l_whence: libc::SEEK_SET as libc::c_short,
@@ -520,7 +497,13 @@ fn fcntl_unlock(file: &File) {
         l_len: 0,
         l_pid: 0,
     };
-    let _ = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == -1 {
+        return Err(io::Error::other(format!(
+            "failed to unlock KVP file: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_key(key: &str, max: usize) -> Result<(), KvpError> {
@@ -586,7 +569,6 @@ impl KvpPoolIter {
 
         let len = file.metadata()?.len() as usize;
         if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
-            fcntl_unlock(&file);
             return Err(io::Error::other(format!(
                 "file size ({len}) is not a multiple of record size \
                  ({RECORD_SIZE})"
@@ -686,7 +668,9 @@ impl KvpPoolIter {
 
 impl Drop for KvpPoolIter {
     fn drop(&mut self) {
-        fcntl_unlock(&self.file);
+        // Drop cannot return a Result; the fd closes immediately
+        // after, which releases the lock unconditionally.
+        let _ = fcntl_unlock(&self.file);
     }
 }
 

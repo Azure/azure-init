@@ -4,7 +4,7 @@
 use std::fmt;
 use std::io;
 
-/// Errors returned by [`KvpStore`](crate::KvpStore) operations.
+/// Errors returned by [`KvpPoolStore`](crate::KvpPoolStore) operations.
 #[derive(Debug)]
 pub enum KvpError {
     /// The key was empty.
