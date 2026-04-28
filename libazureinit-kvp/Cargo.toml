@@ -13,6 +13,7 @@ libc = "0.2"
 sysinfo = "0.38"
 
 [dev-dependencies]
+rstest = { version = "0.23", default-features = false }
 tempfile = "3"
 
 [lib]
