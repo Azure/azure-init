@@ -88,15 +88,20 @@ impl KvpPool {
 
 /// Policy mode controlling key/value size limits for writes.
 ///
-/// All limits are UTF-8 byte counts.
+/// All limits are **UTF-8 byte counts** measured against the on-disk
+/// pool format. The Windows-side Hyper-V wire spec expresses limits
+/// in UTF-16 code units (256 / 1024), which equal 512 / 2048 bytes
+/// when stored as UTF-8 by `hv_kvp_daemon` on Linux.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolMode {
-    /// Conservative limits for Linux kernel compatibility
-    /// (key <= 254 bytes, value <= 1022 bytes — 2 bytes under the
-    /// kernel `HV_KVP_EXCHANGE_MAX_*` maximums).
+    /// Conservative limits for Linux kernel compatibility:
+    /// key <= 254 UTF-8 bytes, value <= 1022 UTF-8 bytes — 2 bytes
+    /// under the kernel `HV_KVP_EXCHANGE_MAX_*` maximums to leave room
+    /// for a NUL terminator on either side of the boundary.
     Safe,
-    /// Full Hyper-V wire-format limits
-    /// (key <= 512 bytes, value <= 2048 bytes).
+    /// Full Hyper-V wire-format limits expressed in UTF-8 bytes:
+    /// key <= 512 bytes (== 256 UTF-16 code units),
+    /// value <= 2048 bytes (== 1024 UTF-16 code units).
     Unsafe,
 }
 
@@ -788,11 +793,17 @@ impl KvpPoolIter {
             ))?;
             self.file.write_all(&buf)?;
 
+            // Rewind so the next `next()` re-reads `delete_index`,
+            // which now holds the swapped-in record. `write_all`
+            // advanced the cursor past it, hence this third seek.
             self.file.seek(io::SeekFrom::Start(
                 delete_index as u64 * RECORD_SIZE as u64,
             ))?;
             self.current_index = delete_index;
         }
+        // No-swap branch: `current_index` is left at the old
+        // `record_count`, so after the truncate below the iterator
+        // is naturally exhausted and the next `next()` returns None.
 
         self.file.set_len(last_index as u64 * RECORD_SIZE as u64)?;
         self.record_count -= 1;
