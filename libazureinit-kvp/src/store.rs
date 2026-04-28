@@ -3,8 +3,13 @@
 
 //! Unified KVP pool file backend for Hyper-V and Azure guests.
 //!
-//! The on-disk pool format is fixed-width and identical across
-//! environments:
+//! All sizes are UTF-8 byte counts — the on-disk pool stores keys and
+//! values as zero-padded UTF-8. The Windows-side Hyper-V wire spec is
+//! UTF-16 char-based (256 / 1024), but the Linux `hv_kvp_daemon`
+//! exchanges UTF-8 bytes with the kernel.
+//!
+//! Fixed-width record format (matches Linux kernel
+//! `HV_KVP_EXCHANGE_MAX_*`):
 //! - key field: 512 bytes
 //! - value field: 2048 bytes
 //! - record size: 2560 bytes
@@ -82,10 +87,13 @@ impl KvpPool {
 }
 
 /// Policy mode controlling key/value size limits for writes.
+///
+/// All limits are UTF-8 byte counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolMode {
     /// Conservative limits for Linux kernel compatibility
-    /// (key <= 254 bytes, value <= 1022 bytes).
+    /// (key <= 254 bytes, value <= 1022 bytes — 2 bytes under the
+    /// kernel `HV_KVP_EXCHANGE_MAX_*` maximums).
     Safe,
     /// Full Hyper-V wire-format limits
     /// (key <= 512 bytes, value <= 2048 bytes).
@@ -122,10 +130,12 @@ impl KvpPoolStore {
         validate_key(key, self.mode.max_key_size())?;
         validate_value(value, self.mode.max_value_size())?;
 
-        let mut iter = self.iter_mut()?;
-        iter.append(key, value)?;
-        iter.flush()?;
-        Ok(())
+        let iter = self.iter_mut()?;
+        run_with_iter(iter, |iter| {
+            iter.append(key, value)?;
+            iter.flush()?;
+            Ok(())
+        })
     }
 
     /// Remove all entries from the store.
@@ -136,9 +146,9 @@ impl KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
 
-        fcntl_lock_exclusive(&file)?;
+        lock_for_writing(&file)?;
         let write_result = file.set_len(0).map_err(KvpError::from);
-        let unlock_result = fcntl_unlock(&file).map_err(KvpError::from);
+        let unlock_result = unlock(&file).map_err(KvpError::from);
         write_result.and(unlock_result)
     }
 
@@ -161,21 +171,21 @@ impl KvpPoolStore {
             Err(e) => return Err(e.into()),
         };
 
-        let mut iter = KvpPoolIter::new(file, true)?;
-        let mut found = false;
-
-        while let Some(record) = iter.next() {
-            let (k, _) = record?;
-            if k == key {
-                iter.remove_current()?;
-                found = true;
+        let iter = KvpPoolIter::new(file, false)?;
+        run_with_iter(iter, |iter| {
+            let mut found = false;
+            while let Some(record) = iter.next() {
+                let (k, _) = record?;
+                if k == key {
+                    iter.remove_current()?;
+                    found = true;
+                }
             }
-        }
-
-        if found {
-            iter.flush()?;
-        }
-        Ok(found)
+            if found {
+                iter.flush()?;
+            }
+            Ok(found)
+        })
     }
 
     /// Return all key-value records in on-disk order, including
@@ -189,20 +199,13 @@ impl KvpPoolStore {
             Err(e) => return Err(e),
         };
 
-        let mut records = Vec::with_capacity(iter.record_count());
-        for record in iter {
-            records.push(record?);
-        }
-        Ok(records)
-    }
-
-    /// Dump all entries (deduplicated) to a JSON file at the given path.
-    pub fn dump_json(&self, path: &Path) -> Result<(), KvpError> {
-        let entries = self.entries()?;
-        let json = serde_json::to_string_pretty(&entries)
-            .expect("HashMap<String, String> serialization is infallible");
-        std::fs::write(path, json)?;
-        Ok(())
+        run_with_iter(iter, |iter| {
+            let mut records = Vec::with_capacity(iter.record_count());
+            for record in iter.by_ref() {
+                records.push(record?);
+            }
+            Ok(records)
+        })
     }
 
     /// Return all key-value pairs (deduplicated, last-write-wins).
@@ -215,12 +218,14 @@ impl KvpPoolStore {
             Err(e) => return Err(e),
         };
 
-        let mut map = HashMap::with_capacity(iter.record_count());
-        for record in iter {
-            let (k, v) = record?;
-            map.insert(k, v);
-        }
-        Ok(map)
+        run_with_iter(iter, |iter| {
+            let mut map = HashMap::with_capacity(iter.record_count());
+            for record in iter.by_ref() {
+                let (k, v) = record?;
+                map.insert(k, v);
+            }
+            Ok(map)
+        })
     }
 
     /// Insert a new key-value pair or update an existing key's value.
@@ -228,35 +233,40 @@ impl KvpPoolStore {
         validate_key(key, self.mode.max_key_size())?;
         validate_value(value, self.mode.max_value_size())?;
 
-        let mut iter = self.iter_mut()?;
-        let mut found = false;
-        let mut unique_keys = HashSet::new();
+        let iter = self.iter_mut()?;
+        run_with_iter(iter, |iter| {
+            let mut found = false;
+            let mut unique_keys = HashSet::new();
 
-        while let Some(record) = iter.next() {
-            let (k, _) = record?;
-            let is_target = k == key;
-            unique_keys.insert(k);
-            if is_target {
-                if !found {
-                    iter.overwrite_current_value(value)?;
-                    found = true;
-                } else {
-                    iter.remove_current()?;
+            // Continue past the first match to remove any duplicates
+            // left by prior `append` calls so the upsert collapses to
+            // a single record.
+            while let Some(record) = iter.next() {
+                let (k, _) = record?;
+                let is_target = k == key;
+                unique_keys.insert(k);
+                if is_target {
+                    if !found {
+                        iter.overwrite_current_value(value)?;
+                        found = true;
+                    } else {
+                        iter.remove_current()?;
+                    }
                 }
             }
-        }
 
-        if !found {
-            if unique_keys.len() >= MAX_UNIQUE_KEYS {
-                return Err(KvpError::MaxUniqueKeysExceeded {
-                    max: MAX_UNIQUE_KEYS,
-                });
+            if !found {
+                if unique_keys.len() >= MAX_UNIQUE_KEYS {
+                    return Err(KvpError::MaxUniqueKeysExceeded {
+                        max: MAX_UNIQUE_KEYS,
+                    });
+                }
+                iter.append(key, value)?;
             }
-            iter.append(key, value)?;
-        }
 
-        iter.flush()?;
-        Ok(())
+            iter.flush()?;
+            Ok(())
+        })
     }
 
     /// Return whether the store is empty.
@@ -266,18 +276,12 @@ impl KvpPoolStore {
 
     /// Whether the store's data is stale (e.g. predates current boot).
     pub fn is_stale(&self) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(m) => m,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e.into()),
-        };
-        let boot = boot_time()?;
-        Ok(metadata.mtime() < boot)
+        self.is_stale_at_boot(boot_time()?)
     }
 
-    /// Test-only variant of [`is_stale`](Self::is_stale) that accepts
-    /// an explicit boot time for deterministic assertions.
-    #[cfg(test)]
+    /// Variant of [`is_stale`](Self::is_stale) that takes an explicit
+    /// boot time, allowing tests to assert against a deterministic
+    /// reference point.
     fn is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
         let metadata = match std::fs::metadata(&self.path) {
             Ok(m) => m,
@@ -289,12 +293,12 @@ impl KvpPoolStore {
 
     fn iter(&self) -> Result<KvpPoolIter, KvpError> {
         let file = self.open_for_read()?;
-        KvpPoolIter::new(file, false)
+        KvpPoolIter::new(file, true)
     }
 
     fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
         let file = self.open_for_read_write_create()?;
-        KvpPoolIter::new(file, true)
+        KvpPoolIter::new(file, false)
     }
 
     /// Return the number of records in the store.
@@ -387,15 +391,31 @@ impl KvpPoolStore {
             Err(e) => return Err(e),
         };
 
-        let mut result = None;
-        for record in iter {
-            let (k, v) = record?;
-            if k == key {
-                result = Some(v);
+        run_with_iter(iter, |iter| {
+            let mut result = None;
+            for record in iter.by_ref() {
+                let (k, v) = record?;
+                if k == key {
+                    result = Some(v);
+                }
             }
-        }
+            Ok(result)
+        })
+    }
+}
 
-        Ok(result)
+/// Run `f` against `iter`, then unlock the iterator regardless of
+/// whether `f` succeeded. The first error (work or unlock) wins.
+fn run_with_iter<T, F>(mut iter: KvpPoolIter, f: F) -> Result<T, KvpError>
+where
+    F: FnOnce(&mut KvpPoolIter) -> Result<T, KvpError>,
+{
+    let work_result = f(&mut iter);
+    let unlock_result = iter.unlock().map_err(KvpError::from);
+    match (work_result, unlock_result) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(e),
     }
 }
 
@@ -444,11 +464,48 @@ fn encode_record(key: &str, value: &str) -> Vec<u8> {
     buf
 }
 
-/// Acquire an exclusive (write) lock on the entire file.
-///
-/// Uses `fcntl(F_OFD_SETLKW)` — open file description locks that are
-/// per-FD (safe for multi-threaded use) yet conflict with traditional
-/// `fcntl` record locks used by `hv_kvp_daemon.c` and cloud-init.
+// Locking: on Linux, take both `flock` and `fcntl` OFD locks together.
+//
+// Linux's `flock(2)` and `fcntl(2)` byte-range locks live in disjoint
+// kernel domains. `hv_kvp_daemon` uses `fcntl`; cloud-init uses
+// `flock(LOCK_EX)`. Hold both to coordinate with either.
+//
+// Acquire `flock` first, release `fcntl` first. The `fcntl` OFD
+// variant (`F_OFD_SETLKW`) shares a domain with classic POSIX `fcntl`
+// byte-range locks but is per-fd and thread-safe.
+//
+
+/// `flock(LOCK_EX)` then `fcntl(F_WRLCK)`. If `fcntl` fails, the
+/// `flock` is released before returning the error.
+fn lock_for_writing(file: &File) -> io::Result<()> {
+    flock_lock_exclusive(file)?;
+    if let Err(e) = fcntl_lock_exclusive(file) {
+        let _ = flock_unlock(file);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `flock(LOCK_SH)` then `fcntl(F_RDLCK)`. See [`lock_for_writing`]
+/// for the all-or-nothing semantics.
+fn lock_for_reading(file: &File) -> io::Result<()> {
+    flock_lock_shared(file)?;
+    if let Err(e) = fcntl_lock_shared(file) {
+        let _ = flock_unlock(file);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Release `fcntl` then `flock`. Both are attempted unconditionally;
+/// the first error is returned.
+fn unlock(file: &File) -> io::Result<()> {
+    let fcntl_result = fcntl_unlock(file);
+    let flock_result = flock_unlock(file);
+    fcntl_result.and(flock_result)
+}
+
+/// Acquire an exclusive (write) `fcntl` OFD lock on the entire file.
 fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
     let fl = libc::flock {
         l_type: libc::F_WRLCK as libc::c_short,
@@ -459,14 +516,14 @@ fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
     };
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
         return Err(io::Error::other(format!(
-            "failed to lock KVP file: {}",
+            "failed to fcntl-lock KVP file: {}",
             io::Error::last_os_error()
         )));
     }
     Ok(())
 }
 
-/// Acquire a shared (read) lock on the entire file.
+/// Acquire a shared (read) `fcntl` OFD lock on the entire file.
 fn fcntl_lock_shared(file: &File) -> io::Result<()> {
     let fl = libc::flock {
         l_type: libc::F_RDLCK as libc::c_short,
@@ -477,18 +534,14 @@ fn fcntl_lock_shared(file: &File) -> io::Result<()> {
     };
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
         return Err(io::Error::other(format!(
-            "failed to lock KVP file: {}",
+            "failed to fcntl-lock KVP file: {}",
             io::Error::last_os_error()
         )));
     }
     Ok(())
 }
 
-/// Release a lock on the entire file.
-///
-/// Callers that are about to close the file descriptor (e.g. a
-/// [`Drop`] impl) may safely ignore the error, since closing the fd
-/// releases the lock unconditionally.
+/// Release the `fcntl` OFD lock on the entire file.
 fn fcntl_unlock(file: &File) -> io::Result<()> {
     let fl = libc::flock {
         l_type: libc::F_UNLCK as libc::c_short,
@@ -499,7 +552,40 @@ fn fcntl_unlock(file: &File) -> io::Result<()> {
     };
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == -1 {
         return Err(io::Error::other(format!(
-            "failed to unlock KVP file: {}",
+            "failed to fcntl-unlock KVP file: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+/// Acquire a `flock(LOCK_EX)` exclusive lock on the entire file.
+fn flock_lock_exclusive(file: &File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(io::Error::other(format!(
+            "failed to flock KVP file: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+/// Acquire a `flock(LOCK_SH)` shared lock on the entire file.
+fn flock_lock_shared(file: &File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
+        return Err(io::Error::other(format!(
+            "failed to flock KVP file: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+/// Release the `flock` lock on the entire file.
+fn flock_unlock(file: &File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == -1 {
+        return Err(io::Error::other(format!(
+            "failed to flock-unlock KVP file: {}",
             io::Error::last_os_error()
         )));
     }
@@ -534,8 +620,8 @@ fn validate_value(value: &str, max: usize) -> Result<(), KvpError> {
 /// without loading all records into memory. Supports in-place value
 /// overwrites and record removal for the last-yielded record.
 ///
-/// The underlying file is locked for the lifetime of the iterator;
-/// the lock is released on drop.
+/// The underlying file is locked in [`new`](Self::new) and released
+/// by [`unlock`](Self::unlock) (or by fd close when dropped).
 #[derive(Debug)]
 struct KvpPoolIter {
     file: File,
@@ -559,13 +645,12 @@ impl KvpPoolIter {
         self.file.flush()
     }
 
-    fn new(mut file: File, lock_exclusive: bool) -> Result<Self, KvpError> {
-        let lock_result = if lock_exclusive {
-            fcntl_lock_exclusive(&file)
+    fn new(mut file: File, read_only: bool) -> Result<Self, KvpError> {
+        if read_only {
+            lock_for_reading(&file)?;
         } else {
-            fcntl_lock_shared(&file)
-        };
-        lock_result?;
+            lock_for_writing(&file)?;
+        }
 
         let len = file.metadata()?.len() as usize;
         if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
@@ -664,13 +749,11 @@ impl KvpPoolIter {
         self.record_count -= 1;
         Ok(())
     }
-}
 
-impl Drop for KvpPoolIter {
-    fn drop(&mut self) {
-        // Drop cannot return a Result; the fd closes immediately
-        // after, which releases the lock unconditionally.
-        let _ = fcntl_unlock(&self.file);
+    /// Release the locks taken by [`new`](Self::new) and consume the
+    /// iterator. Drop also releases via fd close, but errors are lost.
+    fn unlock(self) -> io::Result<()> {
+        unlock(&self.file)
     }
 }
 
@@ -1200,40 +1283,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dump_json_writes_json() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        store.insert("key1", "value1").unwrap();
-        store.insert("key2", "value2").unwrap();
-
-        let dump_file = NamedTempFile::new().unwrap();
-        store.dump_json(dump_file.path()).unwrap();
-
-        let contents = std::fs::read_to_string(dump_file.path()).unwrap();
-        let parsed: HashMap<String, String> =
-            serde_json::from_str(&contents).unwrap();
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed.get("key1"), Some(&"value1".to_string()));
-        assert_eq!(parsed.get("key2"), Some(&"value2".to_string()));
-    }
-
-    #[test]
-    fn test_dump_json_empty_store() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        File::create(store.path()).unwrap();
-
-        let dump_file = NamedTempFile::new().unwrap();
-        store.dump_json(dump_file.path()).unwrap();
-
-        let contents = std::fs::read_to_string(dump_file.path()).unwrap();
-        let parsed: HashMap<String, String> =
-            serde_json::from_str(&contents).unwrap();
-        assert!(parsed.is_empty());
-    }
-
-    #[test]
     fn test_len_and_is_empty() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1564,6 +1613,14 @@ mod tests {
         let cases: Vec<(KvpError, &str)> = vec![
             (KvpError::EmptyKey, "KVP key must not be empty"),
             (
+                KvpError::Io(io::Error::new(ErrorKind::NotFound, "gone")),
+                "gone",
+            ),
+            (
+                KvpError::KeyContainsNull,
+                "KVP key must not contain null bytes",
+            ),
+            (
                 KvpError::KeyTooLarge {
                     max: 254,
                     actual: 300,
@@ -1571,23 +1628,15 @@ mod tests {
                 "KVP key length (300) exceeds maximum (254)",
             ),
             (
+                KvpError::MaxUniqueKeysExceeded { max: 1024 },
+                "KVP unique key count exceeded maximum (1024)",
+            ),
+            (
                 KvpError::ValueTooLarge {
                     max: 1022,
                     actual: 2000,
                 },
                 "KVP value length (2000) exceeds maximum (1022)",
-            ),
-            (
-                KvpError::MaxUniqueKeysExceeded { max: 1024 },
-                "KVP unique key count exceeded maximum (1024)",
-            ),
-            (
-                KvpError::KeyContainsNull,
-                "KVP key must not contain null bytes",
-            ),
-            (
-                KvpError::Io(io::Error::new(ErrorKind::NotFound, "gone")),
-                "gone",
             ),
         ];
         for (err, expected) in cases {
@@ -2016,7 +2065,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().read(true).open(tmp.path()).unwrap();
         let err = fcntl_lock_exclusive(&file).unwrap_err();
-        assert!(err.to_string().contains("failed to lock KVP file"));
+        assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
     }
 
     /// F_RDLCK needs a readable fd; write-only fd returns EBADF.
@@ -2025,7 +2074,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
         let err = fcntl_lock_shared(&file).unwrap_err();
-        assert!(err.to_string().contains("failed to lock KVP file"));
+        assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
     }
 
     /// FIFO at the pool path: `ftruncate` fails with EINVAL on
