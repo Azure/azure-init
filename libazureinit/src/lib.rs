@@ -73,3 +73,24 @@ pub(crate) fn run(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod lib_tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn test_run_success() {
+        let cmd = Command::new("true");
+        assert!(run(cmd).is_ok());
+    }
+
+    #[test]
+    fn test_run_failure() {
+        let cmd = Command::new("false");
+        let result = run(cmd);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, error::Error::SubprocessFailed { .. }));
+    }
+}

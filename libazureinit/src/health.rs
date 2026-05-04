@@ -80,9 +80,6 @@ pub fn encode_report(data: &[String]) -> String {
     if let Some(b'\n') = bytes.last() {
         bytes.pop();
     }
-    if let Some(b'\r') = bytes.last() {
-        bytes.pop();
-    }
     String::from_utf8(bytes).expect("CSV was not utf-8")
 }
 
@@ -366,10 +363,8 @@ mod tests {
         let cfg = fast_config(Some(mock_url));
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let res = report_in_progress(&cfg, test_vm_id).await;
-        assert!(
-            res.is_ok(),
-            "201 Created (or 200 OK) should be accepted as success"
-        );
+        let ok = res.is_ok();
+        assert!(ok, "201 Created (or 200 OK) should be accepted as success");
 
         cancel.cancel();
     }
@@ -396,10 +391,8 @@ mod tests {
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let r2 = report_failure(report_str, &cfg).await;
-        assert!(
-            r1.is_err(),
-            "report_ready should fail against a dead server"
-        );
+        let failed = r1.is_err();
+        assert!(failed, "report_ready should fail against a dead server");
         assert!(r2.is_err(), "report_failure should also fail");
     }
 

@@ -322,10 +322,8 @@ mod tests {
         );
 
         let result = provision.create_user();
-        assert!(
-            result.is_ok(),
-            "create_user should succeed with FakeUseradd backend"
-        );
+        let ok = result.is_ok();
+        assert!(ok, "create_user should succeed with FakeUseradd backend");
     }
 
     #[test]
@@ -351,14 +349,9 @@ mod tests {
         );
 
         let result = provision.create_user();
-        assert!(
-            result.is_err(),
-            "create_user should fail with no user provisioners"
-        );
-        assert!(
-            matches!(result.unwrap_err(), Error::NoUserProvisioner),
-            "Should return NoUserProvisioner error"
-        );
+        let err = result.unwrap_err();
+        let is_no_user = matches!(err, Error::NoUserProvisioner);
+        assert!(is_no_user, "Should return NoUserProvisioner error");
     }
 
     #[test]
@@ -384,6 +377,47 @@ mod tests {
 
         let result = p.set_hostname();
         assert!(result.is_ok());
+    }
+
+    /// Exercises the real Hostnamectl and Passwd backends (which fail in test),
+    /// verifying that `.ok()` gracefully returns None and the fake backends
+    /// still succeed via fallback.
+    #[test]
+    fn test_provision_with_real_backends_fallback() {
+        let mock_config = Config {
+            hostname_provisioners: HostnameProvisioners {
+                backends: vec![
+                    HostnameProvisioner::Hostnamectl,
+                    HostnameProvisioner::FakeHostnamectl,
+                ],
+            },
+            user_provisioners: UserProvisioners {
+                backends: vec![
+                    UserProvisioner::Useradd,
+                    UserProvisioner::FakeUseradd,
+                ],
+            },
+            password_provisioners: PasswordProvisioners {
+                backends: vec![
+                    PasswordProvisioner::Passwd,
+                    PasswordProvisioner::FakePasswd,
+                ],
+            },
+            ssh: crate::config::Ssh {
+                configure_sshd_password_authentication: false,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let result = Provision::new(
+            "test-hostname".to_string(),
+            User::new("testuser", vec![]),
+            mock_config,
+            false,
+        )
+        .provision();
+        let ok = result.is_ok();
+        assert!(ok, "provision should succeed with fallback backends");
     }
 
     #[test]

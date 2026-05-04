@@ -153,10 +153,17 @@ pub fn lock_user(username: &str) -> Result<(), Error> {
     let path_passwd = env!("PATH_PASSWD");
     let mut command = Command::new(path_passwd);
     command.arg("-l").arg(username);
-    crate::run(command).map_err(|e| {
+    handle_lock_result(username, crate::run(command))
+}
+
+fn handle_lock_result(
+    username: &str,
+    result: Result<(), Error>,
+) -> Result<(), Error> {
+    if let Err(ref e) = result {
         tracing::error!(username = %username, error = ?e, "Failed to lock account via passwd -l");
-        e
-    })?;
+    }
+    result?;
     tracing::info!(target: "libazureinit::password::status", username = %username, "Locked account via passwd -l");
     Ok(())
 }
@@ -264,32 +271,54 @@ mod tests {
     fn test_set_user_password_empty_username() {
         let result = set_user_password("", "password123");
         assert!(result.is_err());
-        if let Err(crate::error::Error::UnhandledError { details }) = result {
-            assert!(details.contains("Username cannot be empty"));
-        } else {
-            panic!("Expected UnhandledError for empty username");
-        }
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::UnhandledError { ref details })
+                if details.contains("Username cannot be empty")
+        ));
     }
 
     #[test]
     fn test_set_user_password_empty_password() {
         let result = set_user_password("testuser", "");
-        assert!(result.is_err());
-        if let Err(crate::error::Error::UnhandledError { details }) = result {
-            assert!(details.contains("Password cannot be empty"));
-        } else {
-            panic!("Expected UnhandledError for empty password");
-        }
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::UnhandledError { ref details })
+                if details.contains("Password cannot be empty")
+        ));
     }
 
     #[test]
     fn test_lock_user_empty_username() {
         let result = lock_user("");
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::UnhandledError { ref details })
+                if details.contains("Username cannot be empty")
+        ));
+    }
+
+    #[test]
+    fn test_passwd_provisioner_match_arm() {
+        let provisioner = PasswordProvisioner::Passwd;
+        let user = User::new("azureuser", []);
+        let result = provisioner.set(&user);
         assert!(result.is_err());
-        if let Err(crate::error::Error::UnhandledError { details }) = result {
-            assert!(details.contains("Username cannot be empty"));
-        } else {
-            panic!("Expected UnhandledError for empty username");
-        }
+    }
+
+    #[test]
+    fn test_handle_lock_result_success() {
+        let result = handle_lock_result("testuser", Ok(()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_handle_lock_result_failure() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "mock passwd failure",
+        ));
+        let result = handle_lock_result("testuser", Err(err));
+        assert!(result.is_err());
     }
 }
