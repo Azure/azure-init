@@ -367,7 +367,7 @@ impl fmt::Display for Config {
             f,
             "{}",
             toml::to_string_pretty(self)
-                .unwrap_or_else(|_| "Unable to serialize config.".to_string())
+                .expect("Config serialization should not fail")
         )
     }
 }
@@ -488,7 +488,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::{Error, Ok};
+    use anyhow::Error;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
@@ -520,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_load_invalid_config() -> Result<(), Error> {
         tracing::debug!("Starting test_load_invalid_config...");
 
@@ -536,13 +537,14 @@ mod tests {
         authorized_keys_path = ".ssh/authorized_keys"
         query_sshd_config = "not_a_boolean"
         "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Attempting to load configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
 
-        assert!(result.is_err(), "Expected an error due to invalid config");
+        assert!(result.is_err());
 
         tracing::debug!(
             "test_load_invalid_config completed with expected error."
@@ -552,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_load_invalid_hostname_provisioner_config() -> Result<(), Error> {
         tracing::debug!(
             "Starting test_load_invalid_hostname_provisioner_config..."
@@ -572,15 +575,13 @@ mod tests {
             [hostname_provisioners]
             backends = ["invalid_backend"]
             "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Attempting to load hostname provisioner configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
-        assert!(
-            result.is_err(),
-            "Expected an error due to invalid hostname provisioner config"
-        );
+        assert!(result.is_err());
 
         tracing::debug!("test_load_invalid_hostname_provisioner_config completed with expected error.");
 
@@ -588,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_load_invalid_user_provisioner_config() -> Result<(), Error> {
         tracing::debug!(
             "Starting test_load_invalid_user_provisioner_config..."
@@ -607,17 +609,15 @@ mod tests {
             [user_provisioners]
             backends = ["invalid_user_backend"]
             "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!(
             "Attempting to load user provisioner configuration from file..."
         );
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
-        assert!(
-            result.is_err(),
-            "Expected an error due to invalid user provisioner config"
-        );
+        assert!(result.is_err());
 
         tracing::debug!("test_load_invalid_user_provisioner_config completed with expected error.");
 
@@ -625,6 +625,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_load_invalid_password_provisioner_config() -> Result<(), Error> {
         tracing::debug!(
             "Starting test_load_invalid_password_provisioner_config..."
@@ -645,15 +646,13 @@ mod tests {
             [password_provisioners]
             backends = ["invalid_password_backend"]
             "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Attempting to load password provisioner configuration from file...");
         let result: Result<Config, crate::error::Error> =
             Config::load_from(file_path, drop_in_path, None);
-        assert!(
-            result.is_err(),
-            "Expected an error due to invalid password provisioner config"
-        );
+        assert!(result.is_err());
 
         tracing::debug!("test_load_invalid_password_provisioner_config completed with expected error.");
 
@@ -661,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_empty_config_file() -> Result<(), Error> {
         tracing::debug!(
             "Starting test_empty_config_file_uses_defaults_when_merged..."
@@ -757,6 +757,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_custom_config() -> Result<(), Error> {
         let dir = tempdir()?;
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
@@ -792,17 +793,12 @@ mod tests {
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
         "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Loading override configuration from file...");
         let config = Config::load_from(override_file_path, drop_in_path, None)
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to load override configuration file: {:?}",
-                    e
-                );
-                e
-            })?;
+            .expect("Failed to load override configuration file");
 
         tracing::debug!("Verifying merged SSH configuration values...");
         assert_eq!(
@@ -875,6 +871,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_default_config() -> Result<(), Error> {
         let dir = tempdir()?;
         let drop_in_path: PathBuf = dir.path().join("drop_in_path");
@@ -999,7 +996,8 @@ mod tests {
         [azure_init_log_path]
         path = "/custom/path/azure-init.log"
         "#,
-        )?;
+        )
+        .unwrap();
 
         let args = vec![
             "azure-init",
@@ -1015,7 +1013,8 @@ mod tests {
             base_path,
             drop_in_path,
             Some(override_file_path),
-        )?;
+        )
+        .unwrap();
 
         assert_eq!(
             config.ssh.authorized_keys_path.to_str().unwrap(),
@@ -1082,6 +1081,7 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_merge_toml_basic_and_progressive() -> Result<(), Error> {
         tracing::debug!("Starting test_merge_toml_basic_and_progressive...");
 
@@ -1103,7 +1103,8 @@ mod tests {
         [telemetry]
         kvp_diagnostics = true
         "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Writing first override configuration...");
         let mut override_file_1 = fs::File::create(&override_file_path_1)?;
@@ -1113,7 +1114,8 @@ mod tests {
         [ssh]
         authorized_keys_path = "/custom/.ssh/authorized_keys"
         "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Writing second override configuration...");
         let mut override_file_2 = fs::File::create(&override_file_path_2)?;
@@ -1126,7 +1128,8 @@ mod tests {
         kvp_diagnostics = false
         kvp_filter = "final-filter"
         "#
-        )?;
+        )
+        .unwrap();
 
         tracing::debug!("Loading and merging configurations...");
         let config = Config::load_from(base_file_path, drop_in_path, None)?;
@@ -1147,5 +1150,63 @@ mod tests {
             "test_merge_toml_basic_and_progressive completed successfully."
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_config_display() {
+        let config = Config::default();
+        let output = format!("{}", config);
+        assert!(output.contains("[ssh]"));
+        assert!(output.contains("authorized_keys_path"));
+        assert!(output.contains("[imds]"));
+        assert!(output.contains("[wireserver]"));
+        assert!(output.contains("[telemetry]"));
+    }
+
+    #[test]
+    fn test_config_load_public_api() {
+        // Config::load uses hardcoded /etc/ paths which won't exist in test,
+        // so it falls back to defaults.
+        let config = Config::load(None).unwrap();
+        assert_eq!(
+            config.ssh.authorized_keys_path.to_str().unwrap(),
+            ".ssh/authorized_keys"
+        );
+        assert!(config.ssh.query_sshd_config);
+    }
+
+    #[test]
+    fn test_config_load_public_api_with_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("custom.toml");
+        fs::write(
+            &file_path,
+            r#"[ssh]
+query_sshd_config = false
+"#,
+        )
+        .unwrap();
+        let config = Config::load(Some(file_path)).unwrap();
+        assert!(!config.ssh.query_sshd_config);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_merge_toml_directory_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let unreadable = dir.path().join("noperm");
+        fs::create_dir(&unreadable).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000))
+            .unwrap();
+
+        let figment = figment::Figment::from(
+            figment::providers::Serialized::defaults(Config::default()),
+        );
+        let result = Config::merge_toml_directory(figment, unreadable.clone());
+        // Restore permissions so tempdir cleanup succeeds
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert!(result.is_err());
     }
 }

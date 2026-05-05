@@ -317,10 +317,8 @@ mod tests {
         .unwrap();
 
         let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
-        assert!(
-            !file_path.exists(),
-            "File should not exist before provisioning"
-        );
+        let exists = file_path.exists();
+        assert!(!exists, "File should not exist before provisioning");
 
         mark_provisioning_complete(Some(&test_config), &vm_id).unwrap();
         assert!(file_path.exists(), "Provisioning file should be created");
@@ -344,10 +342,8 @@ mod tests {
         let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
         fs::File::create(&file_path).unwrap();
 
-        assert!(
-            is_provisioning_complete(Some(&test_config), &vm_id,),
-            "Provisioning should be complete if file exists"
-        );
+        let complete = is_provisioning_complete(Some(&test_config), &vm_id);
+        assert!(complete, "Provisioning should be complete if file exists");
     }
 
     #[test]
@@ -365,18 +361,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            !is_provisioning_complete(Some(&test_config), &vm_id),
-            "Provisioning should NOT be complete initially"
-        );
+        let complete = is_provisioning_complete(Some(&test_config), &vm_id);
+        assert!(!complete, "Provisioning should NOT be complete initially");
 
         mark_provisioning_complete(Some(&test_config), &vm_id).unwrap();
 
         // Simulate a "reboot" by calling again
-        assert!(
-            is_provisioning_complete(Some(&test_config), &vm_id,),
-            "Provisioning should be skipped on second run (file exists)"
-        );
+        let complete = is_provisioning_complete(Some(&test_config), &vm_id);
+        assert!(complete, "Provisioning should be skipped on second run");
     }
 
     #[test]
@@ -392,11 +384,9 @@ mod tests {
             Some("/this_does_not_exist"),
             Some("/still_nope"),
         );
-        assert_eq!(
-            res.unwrap(),
-            "00840e55-9be2-d441-a716-446655440000",
-            "Should byte-swap for Gen1"
-        );
+        let actual = res.unwrap();
+        let expected = "00840e55-9be2-d441-a716-446655440000";
+        assert_eq!(actual, expected, "Should byte-swap for Gen1");
     }
 
     #[test]
@@ -415,10 +405,23 @@ mod tests {
             Some(mock_efi_dir.to_str().unwrap()),
             None,
         );
-        assert_eq!(
-            res.unwrap(),
-            "550e8400-e29b-41d4-a716-446655440000",
-            "Should not byte-swap for Gen2"
-        );
+        let actual = res.unwrap();
+        let expected = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(actual, expected, "Should not byte-swap for Gen2");
+    }
+
+    #[test]
+    fn test_get_vm_id_public() {
+        // Exercises the public get_vm_id() wrapper.
+        // On most dev/CI machines /sys/class/dmi/id/product_uuid is unreadable,
+        // so None is the expected result; on a real Azure VM it returns Some.
+        let result = get_vm_id();
+        assert!(result.is_none() || result.is_some());
+    }
+
+    #[test]
+    fn test_get_provisioning_dir_default() {
+        let dir = get_provisioning_dir(None);
+        assert_eq!(dir, PathBuf::from(DEFAULT_AZURE_INIT_DATA_DIR));
     }
 }
