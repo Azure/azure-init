@@ -10,7 +10,7 @@ description = "Hyper-V KVP (Key-Value Pair) storage library for azure-init."
 
 [dependencies]
 libc = "0.2"
-sysinfo = "0.38"
+tracing = "0.1.40"
 
 [dev-dependencies]
 rstest = { version = "0.23", default-features = false }

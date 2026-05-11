@@ -20,6 +20,9 @@ pub enum KvpError {
     MaxUniqueKeysExceeded { max: usize },
     /// The value exceeds the store's maximum value size.
     ValueTooLarge { max: usize, actual: usize },
+    /// The value contains a null byte, which is incompatible with the
+    /// null-padded KVP wire format.
+    ValueContainsNull,
 }
 
 impl fmt::Display for KvpError {
@@ -38,6 +41,9 @@ impl fmt::Display for KvpError {
             }
             Self::ValueTooLarge { max, actual } => {
                 write!(f, "KVP value length ({actual}) exceeds maximum ({max})")
+            }
+            Self::ValueContainsNull => {
+                write!(f, "KVP value must not contain null bytes")
             }
         }
     }

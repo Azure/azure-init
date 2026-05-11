@@ -25,12 +25,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use sysinfo::System;
 
 use crate::KvpError;
 
@@ -135,32 +132,44 @@ impl KvpPoolStore {
         validate_key(key, self.mode.max_key_size())?;
         validate_value(value, self.mode.max_value_size())?;
 
-        let iter = self.iter_mut()?;
-        run_with_iter(iter, |iter| {
+        {
+            let file = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(file, false)?;
             iter.append(key, value)?;
             iter.flush()?;
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     /// Remove all entries from the store.
     pub fn clear(&self) -> Result<(), KvpError> {
-        let file = match self.open_for_read_write() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
+        {
+            let file = match self.open_for_read_write() {
+                Ok(f) => f,
+                Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
 
-        lock_for_writing(&file)?;
-        let write_result = file.set_len(0).map_err(KvpError::from);
-        let unlock_result = unlock(&file).map_err(KvpError::from);
-        write_result.and(unlock_result)
+            lock_for_writing(&file)?;
+            file.set_len(0)?;
+        }
+        Ok(())
     }
 
     /// Clear the pool file if it contains data from a previous boot.
     pub fn clear_if_stale(&self) -> Result<(), KvpError> {
-        if self.is_stale()? {
-            self.clear()?;
+        {
+            let file = match self.open_for_read_write() {
+                Ok(f) => f,
+                Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+
+            let boot_time = boot_time()?;
+            lock_for_writing(&file)?;
+            if file.metadata()?.mtime() <= boot_time {
+                file.set_len(0)?;
+            }
         }
         Ok(())
     }
@@ -168,16 +177,26 @@ impl KvpPoolStore {
     /// Remove all records matching the key. Returns `true` if at least
     /// one record was present.
     pub fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        let file = match self.open_for_read_write() {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(false);
-            }
-            Err(e) => return Err(e.into()),
-        };
+        if key.is_empty() {
+            tracing::warn!("Ignoring KVP delete with an empty key");
+            return Ok(false);
+        }
+        if key.as_bytes().contains(&0) {
+            tracing::warn!(
+                "Ignoring KVP delete with a key containing null bytes"
+            );
+            return Ok(false);
+        }
 
-        let iter = KvpPoolIter::new(file, false)?;
-        run_with_iter(iter, |iter| {
+        let found = {
+            let mut iter = match self.iter_mut() {
+                Ok(it) => it,
+                Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            };
+
             let mut found = false;
             while let Some(record) = iter.next() {
                 let (k, _) = record?;
@@ -189,48 +208,51 @@ impl KvpPoolStore {
             if found {
                 iter.flush()?;
             }
-            Ok(found)
-        })
+            found
+        };
+        Ok(found)
     }
 
     /// Return all key-value records in on-disk order, including
     /// duplicates from [`append`](Self::append) calls.
     pub fn dump(&self) -> Result<Vec<(String, String)>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(Vec::new());
-            }
-            Err(e) => return Err(e),
-        };
+        let records = {
+            let mut iter = match self.iter() {
+                Ok(it) => it,
+                Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                    return Ok(Vec::new());
+                }
+                Err(e) => return Err(e),
+            };
 
-        run_with_iter(iter, |iter| {
             let mut records = Vec::with_capacity(iter.record_count());
             for record in iter.by_ref() {
                 records.push(record?);
             }
-            Ok(records)
-        })
+            records
+        };
+        Ok(records)
     }
 
     /// Return all key-value pairs (deduplicated, last-write-wins).
     pub fn entries(&self) -> Result<HashMap<String, String>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(HashMap::new());
-            }
-            Err(e) => return Err(e),
-        };
+        let map = {
+            let mut iter = match self.iter() {
+                Ok(it) => it,
+                Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                    return Ok(HashMap::new());
+                }
+                Err(e) => return Err(e),
+            };
 
-        run_with_iter(iter, |iter| {
             let mut map = HashMap::with_capacity(iter.record_count());
             for record in iter.by_ref() {
                 let (k, v) = record?;
                 map.insert(k, v);
             }
-            Ok(map)
-        })
+            map
+        };
+        Ok(map)
     }
 
     /// Insert a new key-value pair or update an existing key's value.
@@ -238,8 +260,9 @@ impl KvpPoolStore {
         validate_key(key, self.mode.max_key_size())?;
         validate_value(value, self.mode.max_value_size())?;
 
-        let iter = self.iter_mut()?;
-        run_with_iter(iter, |iter| {
+        {
+            let file = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(file, false)?;
             let mut found = false;
             let mut unique_keys = HashSet::new();
 
@@ -270,8 +293,8 @@ impl KvpPoolStore {
             }
 
             iter.flush()?;
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     /// Return whether the store is empty.
@@ -281,19 +304,25 @@ impl KvpPoolStore {
 
     /// Whether the store's data is stale (e.g. predates current boot).
     pub fn is_stale(&self) -> Result<bool, KvpError> {
-        self.is_stale_at_boot(boot_time()?)
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(m) => m,
+            Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(metadata.mtime() <= boot_time()?)
     }
 
     /// Variant of [`is_stale`](Self::is_stale) that takes an explicit
     /// boot time, allowing tests to assert against a deterministic
     /// reference point.
+    #[cfg(test)]
     fn is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
         let metadata = match std::fs::metadata(&self.path) {
             Ok(m) => m,
             Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         };
-        Ok(metadata.mtime() < boot_time)
+        Ok(metadata.mtime() <= boot_time)
     }
 
     fn iter(&self) -> Result<KvpPoolIter, KvpError> {
@@ -302,7 +331,7 @@ impl KvpPoolStore {
     }
 
     fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
-        let file = self.open_for_read_write_create()?;
+        let file = self.open_for_read_write()?;
         KvpPoolIter::new(file, false)
     }
 
@@ -314,7 +343,9 @@ impl KvpPoolStore {
     /// [`entries`](Self::entries).
     pub fn len(&self) -> Result<usize, KvpError> {
         match std::fs::metadata(&self.path) {
-            Ok(m) => Ok(m.len() as usize / RECORD_SIZE),
+            Ok(m) => {
+                record_count_from_len(m.len() as usize).map_err(Into::into)
+            }
             Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
             Err(e) => Err(e.into()),
         }
@@ -365,6 +396,7 @@ impl KvpPoolStore {
             .write(true)
             .create(true)
             .truncate(false)
+            .mode(0o600)
             .open(&self.path)
     }
 
@@ -415,16 +447,17 @@ impl KvpPoolStore {
             });
         }
 
-        let iter = self.iter_mut()?;
-        run_with_iter(iter, |iter| {
+        {
+            let file = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(file, false)?;
             iter.file.set_len(0)?;
             iter.record_count = 0;
             for (k, v) in &records {
                 iter.append(k, v)?;
             }
             iter.flush()?;
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     /// Read the value for a key. Returns `Ok(None)` when absent.
@@ -437,15 +470,26 @@ impl KvpPoolStore {
     /// store can read keys that were written in
     /// [`Unsafe`](PoolMode::Unsafe) mode.
     pub fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        let iter = match self.iter() {
-            Ok(it) => it,
-            Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-                return Ok(None);
-            }
-            Err(e) => return Err(e),
-        };
+        if key.is_empty() {
+            tracing::warn!("Ignoring KVP read with an empty key");
+            return Ok(None);
+        }
+        if key.as_bytes().contains(&0) {
+            tracing::warn!(
+                "Ignoring KVP read with a key containing null bytes"
+            );
+            return Ok(None);
+        }
 
-        run_with_iter(iter, |iter| {
+        let result = {
+            let mut iter = match self.iter() {
+                Ok(it) => it,
+                Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
+
             let mut result = None;
             for record in iter.by_ref() {
                 let (k, v) = record?;
@@ -453,32 +497,43 @@ impl KvpPoolStore {
                     result = Some(v);
                 }
             }
-            Ok(result)
-        })
-    }
-}
-
-/// Run `f` against `iter`, then unlock the iterator regardless of
-/// whether `f` succeeded. The first error (work or unlock) wins.
-fn run_with_iter<T, F>(mut iter: KvpPoolIter, f: F) -> Result<T, KvpError>
-where
-    F: FnOnce(&mut KvpPoolIter) -> Result<T, KvpError>,
-{
-    let work_result = f(&mut iter);
-    let unlock_result = iter.unlock().map_err(KvpError::from);
-    match (work_result, unlock_result) {
-        (Ok(v), Ok(())) => Ok(v),
-        (Err(e), _) => Err(e),
-        (Ok(_), Err(e)) => Err(e),
+            result
+        };
+        Ok(result)
     }
 }
 
 fn boot_time() -> Result<i64, KvpError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before UNIX epoch")
-        .as_secs();
-    Ok(now.saturating_sub(System::uptime()) as i64)
+    parse_proc_stat_btime(&std::fs::read_to_string("/proc/stat")?)
+        .map_err(Into::into)
+}
+
+fn parse_proc_stat_btime(contents: &str) -> io::Result<i64> {
+    for line in contents.lines() {
+        if let Some(value) = line.strip_prefix("btime ") {
+            return value.trim().parse::<i64>().map_err(|e| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("invalid /proc/stat btime value: {e}"),
+                )
+            });
+        }
+    }
+
+    Err(io::Error::new(
+        ErrorKind::NotFound,
+        "missing btime in /proc/stat",
+    ))
+}
+
+fn record_count_from_len(len: usize) -> io::Result<usize> {
+    if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
+        return Err(io::Error::other(format!(
+            "file size ({len}) is not a multiple of record size \
+             ({RECORD_SIZE})"
+        )));
+    }
+    Ok(len / RECORD_SIZE)
 }
 
 fn decode_record(data: &[u8]) -> io::Result<(String, String)> {
@@ -524,9 +579,10 @@ fn encode_record(key: &str, value: &str) -> Vec<u8> {
 // kernel domains. `hv_kvp_daemon` uses `fcntl`; cloud-init uses
 // `flock(LOCK_EX)`. Hold both to coordinate with either.
 //
-// Acquire `flock` first, release `fcntl` first. The `fcntl` OFD
-// variant (`F_OFD_SETLKW`) shares a domain with classic POSIX `fcntl`
-// byte-range locks but is per-fd and thread-safe.
+// Acquire `flock` first. Successful locks are released when the file
+// descriptor closes. The `fcntl` OFD variant (`F_OFD_SETLKW`) shares a
+// domain with classic POSIX `fcntl` byte-range locks but is per-fd and
+// thread-safe.
 //
 
 /// `flock(LOCK_EX)` then `fcntl(F_WRLCK)`. If `fcntl` fails, the
@@ -549,14 +605,6 @@ fn lock_for_reading(file: &File) -> io::Result<()> {
         return Err(e);
     }
     Ok(())
-}
-
-/// Release `fcntl` then `flock`. Both are attempted unconditionally;
-/// the first error is returned.
-fn unlock(file: &File) -> io::Result<()> {
-    let fcntl_result = fcntl_unlock(file);
-    let flock_result = flock_unlock(file);
-    fcntl_result.and(flock_result)
 }
 
 /// Acquire an exclusive (write) `fcntl` OFD lock on the entire file.
@@ -589,24 +637,6 @@ fn fcntl_lock_shared(file: &File) -> io::Result<()> {
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
         return Err(io::Error::other(format!(
             "failed to fcntl-lock KVP file: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    Ok(())
-}
-
-/// Release the `fcntl` OFD lock on the entire file.
-fn fcntl_unlock(file: &File) -> io::Result<()> {
-    let fl = libc::flock {
-        l_type: libc::F_UNLCK as libc::c_short,
-        l_whence: libc::SEEK_SET as libc::c_short,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == -1 {
-        return Err(io::Error::other(format!(
-            "failed to fcntl-unlock KVP file: {}",
             io::Error::last_os_error()
         )));
     }
@@ -661,6 +691,9 @@ fn validate_key(key: &str, max: usize) -> Result<(), KvpError> {
 }
 
 fn validate_value(value: &str, max: usize) -> Result<(), KvpError> {
+    if value.as_bytes().contains(&0) {
+        return Err(KvpError::ValueContainsNull);
+    }
     let actual = value.len();
     if actual > max {
         return Err(KvpError::ValueTooLarge { max, actual });
@@ -674,8 +707,9 @@ fn validate_value(value: &str, max: usize) -> Result<(), KvpError> {
 /// without loading all records into memory. Supports in-place value
 /// overwrites and record removal for the last-yielded record.
 ///
-/// The underlying file is locked in [`new`](Self::new) and released
-/// by [`unlock`](Self::unlock) (or by fd close when dropped).
+/// The underlying file is locked in [`new`](Self::new). Locks are held
+/// for the iterator's lifetime and released when the iterator's file
+/// descriptor is dropped.
 #[derive(Debug)]
 struct KvpPoolIter {
     file: File,
@@ -687,10 +721,12 @@ impl KvpPoolIter {
     /// Append a new record at the end of the file, zero-padded to the
     /// fixed-width wire format.
     fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
+        let resume_pos = self.file.stream_position()?;
         let pos = self.file.seek(io::SeekFrom::End(0))?;
         debug_assert!((pos as usize).is_multiple_of(RECORD_SIZE));
         self.file.write_all(&encode_record(key, value))?;
         self.record_count += 1;
+        self.file.seek(io::SeekFrom::Start(resume_pos))?;
         Ok(())
     }
 
@@ -706,16 +742,8 @@ impl KvpPoolIter {
             lock_for_writing(&file)?;
         }
 
-        let len = file.metadata()?.len() as usize;
-        if len > 0 && !len.is_multiple_of(RECORD_SIZE) {
-            return Err(io::Error::other(format!(
-                "file size ({len}) is not a multiple of record size \
-                 ({RECORD_SIZE})"
-            ))
-            .into());
-        }
-
-        let record_count = len / RECORD_SIZE;
+        let record_count =
+            record_count_from_len(file.metadata()?.len() as usize)?;
         file.seek(io::SeekFrom::Start(0))?;
 
         Ok(Self {
@@ -808,12 +836,6 @@ impl KvpPoolIter {
         self.file.set_len(last_index as u64 * RECORD_SIZE as u64)?;
         self.record_count -= 1;
         Ok(())
-    }
-
-    /// Release the locks taken by [`new`](Self::new) and consume the
-    /// iterator. Drop also releases via fd close, but errors are lost.
-    fn unlock(self) -> io::Result<()> {
-        unlock(&self.file)
     }
 }
 
@@ -981,6 +1003,21 @@ mod tests {
 
         let err = store.insert("bad\0key", "value").unwrap_err();
         assert!(matches!(err, KvpError::KeyContainsNull));
+    }
+
+    #[rstest]
+    #[case::insert(Op::Insert)]
+    #[case::append(Op::Append)]
+    fn test_write_rejects_null_in_value(#[case] op: Op) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let err = match op {
+            Op::Insert => store.insert("key", "bad\0value"),
+            Op::Append => store.append("key", "bad\0value"),
+        }
+        .unwrap_err();
+        assert!(matches!(err, KvpError::ValueContainsNull));
     }
 
     #[derive(Clone, Copy)]
@@ -1214,6 +1251,21 @@ mod tests {
     }
 
     #[test]
+    fn test_created_pool_file_mode_is_private() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.append("key", "value").unwrap();
+
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
     fn test_append_duplicate_key_semantics() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1312,6 +1364,7 @@ mod tests {
         let store = safe_store(dir.path());
 
         assert!(!store.delete("anything").unwrap());
+        assert!(!store.path().exists());
     }
 
     #[test]
@@ -1551,6 +1604,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_proc_stat_btime() {
+        let contents = "cpu  1 2 3 4\nbtime 1710000000\nintr 1\n";
+        assert_eq!(parse_proc_stat_btime(contents).unwrap(), 1710000000);
+    }
+
+    #[test]
+    fn test_parse_proc_stat_btime_errors_when_missing() {
+        let err = parse_proc_stat_btime("cpu  1 2 3 4\n").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn test_parse_proc_stat_btime_errors_when_invalid() {
+        let err = parse_proc_stat_btime("btime not-a-number\n").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn test_encode_decode_round_trip() {
         let record = encode_record("hello", "world");
         assert_eq!(record.len(), RECORD_SIZE);
@@ -1617,6 +1688,18 @@ mod tests {
         std::fs::write(store.path(), [0u8; RECORD_SIZE + 1]).unwrap();
 
         let err = store.iter().unwrap_err();
+        assert!(matches!(err, KvpError::Io(_)));
+    }
+
+    #[test]
+    fn test_len_malformed_file_error() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        std::fs::write(store.path(), [0u8; RECORD_SIZE + 1]).unwrap();
+
+        let err = store.len().unwrap_err();
+        assert!(matches!(err, KvpError::Io(_)));
+        let err = store.is_empty().unwrap_err();
         assert!(matches!(err, KvpError::Io(_)));
     }
 
@@ -1794,6 +1877,32 @@ mod tests {
     }
 
     #[test]
+    fn test_append_after_remove_with_swap_preserves_iteration_position() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store
+            .populate(pairs([("A", "1"), ("B", "2"), ("C", "3")]))
+            .unwrap();
+
+        let remaining = {
+            let mut iter = store.iter_mut().unwrap();
+            let (k, _) = iter.next().unwrap().unwrap();
+            assert_eq!(k, "A");
+            iter.remove_current().unwrap();
+            iter.append("D", "4").unwrap();
+
+            let mut records = Vec::new();
+            for record in iter.by_ref() {
+                records.push(record.unwrap());
+            }
+            iter.flush().unwrap();
+            records
+        };
+
+        assert_eq!(remaining, pairs([("C", "3"), ("B", "2"), ("D", "4")]));
+    }
+
+    #[test]
     fn test_file_integrity_after_mixed_ops() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1849,6 +1958,10 @@ mod tests {
                 },
                 "KVP value length (2000) exceeds maximum (1022)",
             ),
+            (
+                KvpError::ValueContainsNull,
+                "KVP value must not contain null bytes",
+            ),
         ];
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
@@ -1862,6 +1975,7 @@ mod tests {
 
         assert!(KvpError::EmptyKey.source().is_none());
         assert!(KvpError::KeyContainsNull.source().is_none());
+        assert!(KvpError::ValueContainsNull.source().is_none());
     }
 
     #[test]
