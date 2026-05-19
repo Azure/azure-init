@@ -263,10 +263,8 @@ pub(crate) mod tests {
 
         let requests = server.await.unwrap();
         assert!(requests >= 2);
-        match res {
-            Err(crate::error::Error::Timeout) => {}
-            _ => panic!("Response should have timed out"),
-        };
+        let err = res.expect_err("Response should have timed out");
+        assert!(matches!(err, crate::error::Error::Timeout));
     }
 
     // Assert requests that never get accepted retry
@@ -310,10 +308,8 @@ pub(crate) mod tests {
 
         let requests = server.await.unwrap();
         assert!(requests >= 2);
-        match res {
-            Err(crate::error::Error::Timeout) => {}
-            _ => panic!("Response should have timed out"),
-        };
+        let err = res.expect_err("Response should have timed out");
+        assert!(matches!(err, crate::error::Error::Timeout));
     }
 
     // Assert a response with 200 OK is returned.

@@ -327,7 +327,12 @@ pub(crate) fn update_sshd_config(
 // If the "/etc/ssh/sshd_config.d" directory exists, it returns the path for a drop-in configuration file.
 // Otherwise, it defaults to the main SSH configuration file at "/etc/ssh/sshd_config".
 pub(crate) fn get_sshd_config_path() -> &'static str {
-    if PathBuf::from("/etc/ssh/sshd_config.d").is_dir() {
+    resolve_sshd_config_path(Path::new("/etc/ssh/sshd_config.d"))
+}
+
+/// Testable inner function; accepts the config directory as a parameter to allow injecting paths in tests.
+fn resolve_sshd_config_path(config_dir: &Path) -> &'static str {
+    if config_dir.is_dir() {
         "/etc/ssh/sshd_config.d/50-azure-init.conf"
     } else {
         "/etc/ssh/sshd_config"
@@ -339,7 +344,8 @@ mod tests {
     use crate::imds::PublicKeys;
     use crate::provision::ssh::{
         extract_authorized_keys_file_path, get_authorized_keys_path_from_sshd,
-        provision_ssh, run_sshd_command, update_sshd_config,
+        get_sshd_config_path, provision_ssh, resolve_sshd_config_path,
+        run_sshd_command, update_sshd_config,
     };
     use std::{
         fs::{File, Permissions},
@@ -420,42 +426,49 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_authorized_keys_default_path() {
+        let result = extract_authorized_keys_file_path(
+            b"authorizedkeysfile .ssh/authorized_keys",
+        );
+        assert_eq!(result, Some(".ssh/authorized_keys".to_string()));
+    }
+
+    #[test]
+    fn test_extract_authorized_keys_other_path() {
+        let result = extract_authorized_keys_file_path(
+            b"authorizedkeysfile .ssh/other_authorized_keys",
+        );
+        assert_eq!(result, Some(".ssh/other_authorized_keys".to_string()));
+    }
+
+    #[test]
+    fn test_extract_authorized_keys_custom_absolute_path() {
+        let result = extract_authorized_keys_file_path(
+            b"authorizedkeysfile /custom/path/to/keys",
+        );
+        assert_eq!(result, Some("/custom/path/to/keys".to_string()));
+    }
+
+    #[test]
+    fn test_extract_authorized_keys_no_match() {
+        let result = extract_authorized_keys_file_path(
+            b"# No authorizedkeysfile line here",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
     fn test_get_authorized_keys_path_from_sshd_success() {
-        let test_cases = vec![
-            (
+        let mock_runner = || {
+            Ok(create_output(
+                0,
                 "authorizedkeysfile .ssh/authorized_keys",
-                Some(".ssh/authorized_keys"),
-            ),
-            (
-                "authorizedkeysfile .ssh/other_authorized_keys",
-                Some(".ssh/other_authorized_keys"),
-            ),
-            (
-                "authorizedkeysfile /custom/path/to/keys",
-                Some("/custom/path/to/keys"),
-            ),
-            ("# No authorizedkeysfile line here", None), // Case with no match
-        ];
+                "",
+            ))
+        };
 
-        for (stdout, expected_path) in test_cases {
-            let mock_runner = || Ok(create_output(0, stdout, "some stderr"));
-
-            let result: Option<Output> = run_sshd_command(mock_runner);
-            assert!(result.is_some(), "Expected a successful command output");
-
-            let output: Output = result.unwrap();
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            assert_eq!(stdout_str, stdout);
-
-            let extracted_path: Option<String> =
-                extract_authorized_keys_file_path(&output.stdout);
-            assert_eq!(
-                extracted_path,
-                expected_path.map(|s| s.to_string()),
-                "Expected path extraction to match for stdout: {}",
-                stdout
-            );
-        }
+        let result = get_authorized_keys_path_from_sshd(mock_runner);
+        assert_eq!(result, Some(".ssh/authorized_keys".to_string()));
     }
 
     #[test]
@@ -474,20 +487,6 @@ mod tests {
             || Err(io::Error::new(io::ErrorKind::Other, "command error"));
 
         let result = get_authorized_keys_path_from_sshd(mock_runner);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_authorized_keys_file_path_valid() {
-        let stdout = b"authorizedkeysfile .ssh/test_authorized_keys\n";
-        let result = extract_authorized_keys_file_path(stdout);
-        assert_eq!(result, Some(".ssh/test_authorized_keys".to_string()));
-    }
-
-    #[test]
-    fn test_extract_authorized_keys_file_path_invalid() {
-        let stdout = b"some irrelevant output\n";
-        let result = extract_authorized_keys_file_path(stdout);
         assert!(result.is_none());
     }
 
@@ -675,5 +674,57 @@ mod tests {
         assert!(!contents.contains("PasswordAuthentication yes"));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_ssh_user_from_users_user() {
+        use users::os::unix::UserExt;
+        let current_uid = users::get_current_uid();
+        let user = users::get_user_by_uid(current_uid)
+            .expect("Current user must exist");
+        let ssh_user = SshUser::from(&user);
+        assert_eq!(ssh_user.uid, user.uid());
+        assert_eq!(ssh_user.gid, user.primary_group_id());
+        assert_eq!(ssh_user.home_dir, user.home_dir().to_path_buf());
+    }
+
+    #[test]
+    fn test_provision_ssh_with_sshd_query() {
+        let (user, _temp_dir) = get_test_user_with_home_dir(false);
+        let keys = vec![PublicKeys {
+            key_data: "not-a-real-key query-test".to_string(),
+            path: "unused".to_string(),
+        }];
+        let authorized_keys_path = user.home_dir.join(".ssh/authorized_keys");
+
+        // Exercises the real Command::new("sshd").arg("-G").output() closure.
+        // sshd is likely unavailable in test, so the fallback path is used.
+        let result = provision_ssh(&user, &keys, &authorized_keys_path, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_sshd_config_path_dir_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = resolve_sshd_config_path(temp_dir.path());
+        assert_eq!(result, "/etc/ssh/sshd_config.d/50-azure-init.conf");
+    }
+
+    #[test]
+    fn test_resolve_sshd_config_path_dir_missing() {
+        let result = resolve_sshd_config_path(std::path::Path::new(
+            "/nonexistent/path/for/sshd/test",
+        ));
+        assert_eq!(result, "/etc/ssh/sshd_config");
+    }
+
+    #[test]
+    fn test_get_sshd_config_path() {
+        let path = get_sshd_config_path();
+        let valid_paths = [
+            "/etc/ssh/sshd_config.d/50-azure-init.conf",
+            "/etc/ssh/sshd_config",
+        ];
+        assert!(valid_paths.contains(&path));
     }
 }

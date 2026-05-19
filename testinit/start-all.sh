@@ -15,6 +15,9 @@ popd
 echo "Starting azureinit-provisioning-agent (connects to existing networks)..."
 BASE_IMAGE=$BASE_IMAGE docker compose up -d --build
 
+TIMEOUT=1200  # 20 minutes in seconds
+ELAPSED=0
+
 while true; do
   # Check journal logs for either a success or a failure to ensure the completion of the service
   if docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager | grep -q "Finished azure-init.service"; then
@@ -25,8 +28,13 @@ while true; do
     echo "azure-init.service has failed."
     break
   fi
-  echo "Waiting for azure-init.service to finish..."
+  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+    echo "ERROR: Timed out after 20 minutes waiting for azure-init.service to complete."
+    exit 1
+  fi
+  echo "Waiting for azure-init.service to finish... (${ELAPSED}s/${TIMEOUT}s)"
   sleep 10
+  ELAPSED=$((ELAPSED + 10))
 done
 
 echo "Testing-server is available at the Azure service endpoints:"
