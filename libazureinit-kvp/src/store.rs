@@ -1289,6 +1289,26 @@ mod tests {
     }
 
     #[test]
+    fn test_read_empty_key_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.insert("k1", "v1").unwrap();
+
+        assert_eq!(store.read("").unwrap(), None);
+        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
+    }
+
+    #[test]
+    fn test_read_key_with_null_byte_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.insert("k1", "v1").unwrap();
+
+        assert_eq!(store.read("bad\0key").unwrap(), None);
+        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
+    }
+
+    #[test]
     fn test_delete_removes_key() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1374,6 +1394,28 @@ mod tests {
         store.insert("k1", "v1").unwrap();
 
         assert!(!store.delete("missing").unwrap());
+        assert_eq!(store.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_delete_empty_key_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.insert("k1", "v1").unwrap();
+
+        assert!(!store.delete("").unwrap());
+        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
+        assert_eq!(store.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_delete_key_with_null_byte_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.insert("k1", "v1").unwrap();
+
+        assert!(!store.delete("bad\0key").unwrap());
+        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
         assert_eq!(store.len().unwrap(), 1);
     }
 
@@ -1601,6 +1643,15 @@ mod tests {
 
         store.clear_if_stale().unwrap();
         assert!(store.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_clear_if_stale_missing_file_is_ok() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.clear_if_stale().unwrap();
+        assert!(!store.path().exists());
     }
 
     #[test]
@@ -2286,6 +2337,7 @@ mod tests {
         Read,
         Delete,
         Clear,
+        ClearIfStale,
         Entries,
         Dump,
         Populate,
@@ -2300,6 +2352,7 @@ mod tests {
     #[case::read(StoreOp::Read)]
     #[case::delete(StoreOp::Delete)]
     #[case::clear(StoreOp::Clear)]
+    #[case::clear_if_stale(StoreOp::ClearIfStale)]
     #[case::entries(StoreOp::Entries)]
     #[case::dump(StoreOp::Dump)]
     #[case::populate(StoreOp::Populate)]
@@ -2316,6 +2369,7 @@ mod tests {
             StoreOp::Read => store.read("k").map(|_| ()),
             StoreOp::Delete => store.delete("k").map(|_| ()),
             StoreOp::Clear => store.clear(),
+            StoreOp::ClearIfStale => store.clear_if_stale(),
             StoreOp::Entries => store.entries().map(|_| ()),
             StoreOp::Dump => store.dump().map(|_| ()),
             StoreOp::Populate => store.populate(pairs([("a", "b")])),
@@ -2352,6 +2406,68 @@ mod tests {
         let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
         let err = fcntl_lock_shared(&file).unwrap_err();
         assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
+    }
+
+    /// Cleanup branch in `lock_for_writing`: when fcntl fails after
+    /// flock succeeded, the held flock must be released. Read-only fd
+    /// makes fcntl(F_WRLCK) fail with EBADF, then a non-blocking flock
+    /// from a separate fd verifies the lock was actually released.
+    #[test]
+    fn test_lock_for_writing_releases_flock_when_fcntl_fails() {
+        let tmp = NamedTempFile::new().unwrap();
+        let file = OpenOptions::new().read(true).open(tmp.path()).unwrap();
+        let err = lock_for_writing(&file).unwrap_err();
+        assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
+
+        let other = OpenOptions::new().read(true).open(tmp.path()).unwrap();
+        let rc = unsafe {
+            libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+        };
+        assert_eq!(rc, 0, "flock should have been released by cleanup");
+    }
+
+    /// Symmetric cleanup branch in `lock_for_reading`: write-only fd
+    /// makes fcntl(F_RDLCK) fail with EBADF.
+    #[test]
+    fn test_lock_for_reading_releases_flock_when_fcntl_fails() {
+        let tmp = NamedTempFile::new().unwrap();
+        let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
+        let err = lock_for_reading(&file).unwrap_err();
+        assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
+
+        let other = OpenOptions::new().read(true).open(tmp.path()).unwrap();
+        let rc = unsafe {
+            libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+        };
+        assert_eq!(rc, 0, "flock should have been released by cleanup");
+    }
+
+    /// Error branches in the three `flock(2)` wrappers. `flock` is
+    /// hard to fail since it works on any open fd, so we close an fd
+    /// and reconstitute a `File` wrapping it — subsequent `flock`
+    /// calls return EBADF. The `File` is `mem::forget`-ed to avoid
+    /// the drop trying to close an already-closed (possibly reused)
+    /// fd.
+    #[rstest]
+    #[case::lock_ex(
+        flock_lock_exclusive as fn(&File) -> io::Result<()>,
+        "failed to flock KVP file"
+    )]
+    #[case::lock_sh(flock_lock_shared, "failed to flock KVP file")]
+    #[case::unlock(flock_unlock, "failed to flock-unlock KVP file")]
+    fn test_flock_op_fails_on_closed_fd(
+        #[case] op: fn(&File) -> io::Result<()>,
+        #[case] expected_msg: &str,
+    ) {
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+        let tmp = NamedTempFile::new().unwrap();
+        let f = std::fs::File::open(tmp.path()).unwrap();
+        let raw_fd = f.into_raw_fd();
+        assert_eq!(unsafe { libc::close(raw_fd) }, 0);
+        let file = unsafe { File::from_raw_fd(raw_fd) };
+        let err = op(&file).unwrap_err();
+        assert!(err.to_string().contains(expected_msg), "got: {err}");
+        std::mem::forget(file);
     }
 
     /// FIFO at the pool path: `ftruncate` fails with EINVAL on
