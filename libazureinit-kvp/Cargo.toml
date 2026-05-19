@@ -1,0 +1,21 @@
+[package]
+name = "libazureinit-kvp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+repository = "https://github.com/Azure/azure-init/"
+homepage = "https://github.com/Azure/azure-init/"
+license = "MIT"
+description = "Hyper-V KVP (Key-Value Pair) storage library for azure-init."
+
+[dependencies]
+libc = "0.2"
+tracing = "0.1.40"
+
+[dev-dependencies]
+rstest = { version = "0.23", default-features = false }
+tempfile = "3"
+
+[lib]
+name = "libazureinit_kvp"
+path = "src/lib.rs"
