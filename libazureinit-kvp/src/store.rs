@@ -28,6 +28,7 @@ use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::KvpError;
 
@@ -124,6 +125,7 @@ pub struct KvpPoolStore {
     pool: KvpPool,
     path: PathBuf,
     mode: PoolMode,
+    ops: Arc<dyn SysOps>,
 }
 
 impl KvpPoolStore {
@@ -133,8 +135,8 @@ impl KvpPoolStore {
         validate_value(value, self.mode.max_value_size())?;
 
         {
-            let file = self.open_for_read_write_create()?;
-            let mut iter = KvpPoolIter::new(file, false)?;
+            let handle = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(handle, false)?;
             iter.append(key, value)?;
             iter.flush()?;
         }
@@ -144,14 +146,14 @@ impl KvpPoolStore {
     /// Remove all entries from the store.
     pub fn clear(&self) -> Result<(), KvpError> {
         {
-            let file = match self.open_for_read_write() {
+            let mut handle = match self.open_for_read_write() {
                 Ok(f) => f,
                 Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
                 Err(e) => return Err(e.into()),
             };
 
-            lock_for_writing(&file)?;
-            file.set_len(0)?;
+            lock_for_writing(&mut *handle)?;
+            handle.set_len(0)?;
         }
         Ok(())
     }
@@ -159,16 +161,16 @@ impl KvpPoolStore {
     /// Clear the pool file if it contains data from a previous boot.
     pub fn clear_if_stale(&self) -> Result<(), KvpError> {
         {
-            let file = match self.open_for_read_write() {
+            let mut handle = match self.open_for_read_write() {
                 Ok(f) => f,
                 Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(()),
                 Err(e) => return Err(e.into()),
             };
 
-            let boot_time = boot_time()?;
-            lock_for_writing(&file)?;
-            if file.metadata()?.mtime() <= boot_time {
-                file.set_len(0)?;
+            let boot_time = boot_time(&*self.ops)?;
+            lock_for_writing(&mut *handle)?;
+            if handle.metadata()?.mtime <= boot_time {
+                handle.set_len(0)?;
             }
         }
         Ok(())
@@ -256,8 +258,8 @@ impl KvpPoolStore {
         validate_value(value, self.mode.max_value_size())?;
 
         {
-            let file = self.open_for_read_write_create()?;
-            let mut iter = KvpPoolIter::new(file, false)?;
+            let handle = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(handle, false)?;
             let mut found = false;
             let mut unique_keys = HashSet::new();
 
@@ -299,12 +301,12 @@ impl KvpPoolStore {
 
     /// Whether the store's data is stale (e.g. predates current boot).
     pub fn is_stale(&self) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
+        let metadata = match self.ops.path_metadata(&self.path) {
             Ok(m) => m,
             Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         };
-        Ok(metadata.mtime() <= boot_time()?)
+        Ok(metadata.mtime <= boot_time(&*self.ops)?)
     }
 
     /// Variant of [`is_stale`](Self::is_stale) that takes an explicit
@@ -312,22 +314,22 @@ impl KvpPoolStore {
     /// reference point.
     #[cfg(test)]
     fn is_stale_at_boot(&self, boot_time: i64) -> Result<bool, KvpError> {
-        let metadata = match std::fs::metadata(&self.path) {
+        let metadata = match self.ops.path_metadata(&self.path) {
             Ok(m) => m,
             Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         };
-        Ok(metadata.mtime() <= boot_time)
+        Ok(metadata.mtime <= boot_time)
     }
 
     fn iter(&self) -> Result<KvpPoolIter, KvpError> {
-        let file = self.open_for_read()?;
-        KvpPoolIter::new(file, true)
+        let handle = self.open_for_read()?;
+        KvpPoolIter::new(handle, true)
     }
 
     fn iter_mut(&self) -> Result<KvpPoolIter, KvpError> {
-        let file = self.open_for_read_write()?;
-        KvpPoolIter::new(file, false)
+        let handle = self.open_for_read_write()?;
+        KvpPoolIter::new(handle, false)
     }
 
     /// Return the number of records in the store.
@@ -337,10 +339,8 @@ impl KvpPoolStore {
     /// may exceed the number of unique keys returned by
     /// [`entries`](Self::entries).
     pub fn len(&self) -> Result<usize, KvpError> {
-        match std::fs::metadata(&self.path) {
-            Ok(m) => {
-                record_count_from_len(m.len() as usize).map_err(Into::into)
-            }
+        match self.ops.path_metadata(&self.path) {
+            Ok(m) => record_count_from_len(m.len as usize).map_err(Into::into),
             Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(0),
             Err(e) => Err(e.into()),
         }
@@ -373,26 +373,35 @@ impl KvpPoolStore {
         dir: impl AsRef<Path>,
         mode: PoolMode,
     ) -> Result<Self, KvpError> {
+        Self::with_ops(pool, dir, mode, Arc::new(OsSysOps::default()))
+    }
+
+    /// Internal/test constructor accepting a custom [`SysOps`].
+    pub(crate) fn with_ops(
+        pool: KvpPool,
+        dir: impl AsRef<Path>,
+        mode: PoolMode,
+        ops: Arc<dyn SysOps>,
+    ) -> Result<Self, KvpError> {
         let path = dir.as_ref().join(pool.file_name());
-        Ok(Self { pool, path, mode })
+        Ok(Self {
+            pool,
+            path,
+            mode,
+            ops,
+        })
     }
 
-    fn open_for_read(&self) -> io::Result<File> {
-        OpenOptions::new().read(true).open(&self.path)
+    fn open_for_read(&self) -> io::Result<Box<dyn Handle>> {
+        self.ops.open_read(&self.path)
     }
 
-    fn open_for_read_write(&self) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).open(&self.path)
+    fn open_for_read_write(&self) -> io::Result<Box<dyn Handle>> {
+        self.ops.open_read_write(&self.path)
     }
 
-    fn open_for_read_write_create(&self) -> io::Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&self.path)
+    fn open_for_read_write_create(&self) -> io::Result<Box<dyn Handle>> {
+        self.ops.open_read_write_create(&self.path)
     }
 
     /// Return a reference to the pool file path.
@@ -443,9 +452,9 @@ impl KvpPoolStore {
         }
 
         {
-            let file = self.open_for_read_write_create()?;
-            let mut iter = KvpPoolIter::new(file, false)?;
-            iter.file.set_len(0)?;
+            let handle = self.open_for_read_write_create()?;
+            let mut iter = KvpPoolIter::new(handle, false)?;
+            iter.handle.set_len(0)?;
             iter.record_count = 0;
             for (k, v) in &records {
                 iter.append(k, v)?;
@@ -488,9 +497,8 @@ impl KvpPoolStore {
     }
 }
 
-fn boot_time() -> Result<i64, KvpError> {
-    parse_proc_stat_btime(&std::fs::read_to_string("/proc/stat")?)
-        .map_err(Into::into)
+fn boot_time(ops: &dyn SysOps) -> Result<i64, KvpError> {
+    ops.boot_time().map_err(Into::into)
 }
 
 fn parse_proc_stat_btime(contents: &str) -> io::Result<i64> {
@@ -572,10 +580,10 @@ fn encode_record(key: &str, value: &str) -> Vec<u8> {
 
 /// `flock(LOCK_EX)` then `fcntl(F_WRLCK)`. If `fcntl` fails, the
 /// `flock` is released before returning the error.
-fn lock_for_writing(file: &File) -> io::Result<()> {
-    flock_lock_exclusive(file)?;
-    if let Err(e) = fcntl_lock_exclusive(file) {
-        let _ = flock_unlock(file);
+fn lock_for_writing(handle: &mut dyn Handle) -> io::Result<()> {
+    handle.flock_exclusive()?;
+    if let Err(e) = handle.fcntl_exclusive() {
+        let _ = handle.flock_unlock();
         return Err(e);
     }
     Ok(())
@@ -583,19 +591,174 @@ fn lock_for_writing(file: &File) -> io::Result<()> {
 
 /// `flock(LOCK_SH)` then `fcntl(F_RDLCK)`. See [`lock_for_writing`]
 /// for the all-or-nothing semantics.
-fn lock_for_reading(file: &File) -> io::Result<()> {
-    flock_lock_shared(file)?;
-    if let Err(e) = fcntl_lock_shared(file) {
-        let _ = flock_unlock(file);
+fn lock_for_reading(handle: &mut dyn Handle) -> io::Result<()> {
+    handle.flock_shared()?;
+    if let Err(e) = handle.fcntl_shared() {
+        let _ = handle.flock_unlock();
         return Err(e);
     }
     Ok(())
 }
 
-/// Acquire an exclusive (write) `fcntl` OFD lock on the entire file.
-fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
+/// Lightweight stat info shared by [`SysOps::path_metadata`] and
+/// [`Handle::metadata`]. Only the fields the store actually consults.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StatInfo {
+    pub len: u64,
+    pub mtime: i64,
+}
+
+/// Abstraction over filesystem and boot-time syscalls so tests can
+/// substitute a fault-injecting backend (see `MockSysOps` in `tests`).
+pub(crate) trait SysOps: std::fmt::Debug + Send + Sync {
+    fn open_read(&self, path: &Path) -> io::Result<Box<dyn Handle>>;
+    fn open_read_write(&self, path: &Path) -> io::Result<Box<dyn Handle>>;
+    fn open_read_write_create(
+        &self,
+        path: &Path,
+    ) -> io::Result<Box<dyn Handle>>;
+    fn path_metadata(&self, path: &Path) -> io::Result<StatInfo>;
+    fn boot_time(&self) -> io::Result<i64>;
+}
+
+/// Abstraction over a file handle. Every operation that can fail at
+/// runtime is a trait method so tests can inject errors.
+pub(crate) trait Handle:
+    std::fmt::Debug + Read + Write + Seek + Send
+{
+    fn set_len(&mut self, len: u64) -> io::Result<()>;
+    fn metadata(&mut self) -> io::Result<StatInfo>;
+    fn flock_exclusive(&mut self) -> io::Result<()>;
+    fn flock_shared(&mut self) -> io::Result<()>;
+    fn flock_unlock(&mut self) -> io::Result<()>;
+    fn fcntl_exclusive(&mut self) -> io::Result<()>;
+    fn fcntl_shared(&mut self) -> io::Result<()>;
+}
+
+/// Production [`SysOps`]: real filesystem + libc syscalls.
+#[derive(Debug)]
+pub(crate) struct OsSysOps {
+    proc_stat_path: PathBuf,
+}
+
+impl Default for OsSysOps {
+    fn default() -> Self {
+        Self {
+            proc_stat_path: PathBuf::from("/proc/stat"),
+        }
+    }
+}
+
+impl SysOps for OsSysOps {
+    fn open_read(&self, path: &Path) -> io::Result<Box<dyn Handle>> {
+        let f = OpenOptions::new().read(true).open(path)?;
+        Ok(Box::new(OsHandle(f)))
+    }
+
+    fn open_read_write(&self, path: &Path) -> io::Result<Box<dyn Handle>> {
+        let f = OpenOptions::new().read(true).write(true).open(path)?;
+        Ok(Box::new(OsHandle(f)))
+    }
+
+    fn open_read_write_create(
+        &self,
+        path: &Path,
+    ) -> io::Result<Box<dyn Handle>> {
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)?;
+        Ok(Box::new(OsHandle(f)))
+    }
+
+    fn path_metadata(&self, path: &Path) -> io::Result<StatInfo> {
+        let m = std::fs::metadata(path)?;
+        Ok(StatInfo {
+            len: m.len(),
+            mtime: m.mtime(),
+        })
+    }
+
+    fn boot_time(&self) -> io::Result<i64> {
+        parse_proc_stat_btime(&std::fs::read_to_string(&self.proc_stat_path)?)
+    }
+}
+
+/// Production [`Handle`]: thin wrapper over [`File`].
+#[derive(Debug)]
+pub(crate) struct OsHandle(File);
+
+impl Read for OsHandle {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Write for OsHandle {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Seek for OsHandle {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+impl Handle for OsHandle {
+    fn set_len(&mut self, len: u64) -> io::Result<()> {
+        self.0.set_len(len)
+    }
+
+    fn metadata(&mut self) -> io::Result<StatInfo> {
+        let m = self.0.metadata()?;
+        Ok(StatInfo {
+            len: m.len(),
+            mtime: m.mtime(),
+        })
+    }
+
+    fn flock_exclusive(&mut self) -> io::Result<()> {
+        flock_op(&self.0, libc::LOCK_EX, "failed to flock KVP file")
+    }
+
+    fn flock_shared(&mut self) -> io::Result<()> {
+        flock_op(&self.0, libc::LOCK_SH, "failed to flock KVP file")
+    }
+
+    fn flock_unlock(&mut self) -> io::Result<()> {
+        flock_op(&self.0, libc::LOCK_UN, "failed to flock-unlock KVP file")
+    }
+
+    fn fcntl_exclusive(&mut self) -> io::Result<()> {
+        fcntl_lock(&self.0, libc::F_WRLCK)
+    }
+
+    fn fcntl_shared(&mut self) -> io::Result<()> {
+        fcntl_lock(&self.0, libc::F_RDLCK)
+    }
+}
+
+fn flock_op(file: &File, op: libc::c_int, msg: &str) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), op) } == -1 {
+        return Err(io::Error::other(format!(
+            "{msg}: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+fn fcntl_lock(file: &File, l_type: libc::c_int) -> io::Result<()> {
     let fl = libc::flock {
-        l_type: libc::F_WRLCK as libc::c_short,
+        l_type: l_type as libc::c_short,
         l_whence: libc::SEEK_SET as libc::c_short,
         l_start: 0,
         l_len: 0,
@@ -604,57 +767,6 @@ fn fcntl_lock_exclusive(file: &File) -> io::Result<()> {
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
         return Err(io::Error::other(format!(
             "failed to fcntl-lock KVP file: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    Ok(())
-}
-
-/// Acquire a shared (read) `fcntl` OFD lock on the entire file.
-fn fcntl_lock_shared(file: &File) -> io::Result<()> {
-    let fl = libc::flock {
-        l_type: libc::F_RDLCK as libc::c_short,
-        l_whence: libc::SEEK_SET as libc::c_short,
-        l_start: 0,
-        l_len: 0,
-        l_pid: 0,
-    };
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLKW, &fl) } == -1 {
-        return Err(io::Error::other(format!(
-            "failed to fcntl-lock KVP file: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    Ok(())
-}
-
-/// Acquire a `flock(LOCK_EX)` exclusive lock on the entire file.
-fn flock_lock_exclusive(file: &File) -> io::Result<()> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
-        return Err(io::Error::other(format!(
-            "failed to flock KVP file: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    Ok(())
-}
-
-/// Acquire a `flock(LOCK_SH)` shared lock on the entire file.
-fn flock_lock_shared(file: &File) -> io::Result<()> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
-        return Err(io::Error::other(format!(
-            "failed to flock KVP file: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    Ok(())
-}
-
-/// Release the `flock` lock on the entire file.
-fn flock_unlock(file: &File) -> io::Result<()> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == -1 {
-        return Err(io::Error::other(format!(
-            "failed to flock-unlock KVP file: {}",
             io::Error::last_os_error()
         )));
     }
@@ -697,7 +809,7 @@ fn validate_value(value: &str, max: usize) -> Result<(), KvpError> {
 /// descriptor is dropped.
 #[derive(Debug)]
 struct KvpPoolIter {
-    file: File,
+    handle: Box<dyn Handle>,
     record_count: usize,
     current_index: usize,
 }
@@ -706,33 +818,36 @@ impl KvpPoolIter {
     /// Append a new record at the end of the file, zero-padded to the
     /// fixed-width wire format.
     fn append(&mut self, key: &str, value: &str) -> io::Result<()> {
-        let resume_pos = self.file.stream_position()?;
-        let pos = self.file.seek(io::SeekFrom::End(0))?;
+        let resume_pos = self.handle.stream_position()?;
+        let pos = self.handle.seek(io::SeekFrom::End(0))?;
         debug_assert!((pos as usize).is_multiple_of(RECORD_SIZE));
-        self.file.write_all(&encode_record(key, value))?;
+        self.handle.write_all(&encode_record(key, value))?;
         self.record_count += 1;
-        self.file.seek(io::SeekFrom::Start(resume_pos))?;
+        self.handle.seek(io::SeekFrom::Start(resume_pos))?;
         Ok(())
     }
 
     /// Flush any buffered writes to the underlying file.
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.handle.flush()
     }
 
-    fn new(mut file: File, read_only: bool) -> Result<Self, KvpError> {
+    fn new(
+        mut handle: Box<dyn Handle>,
+        read_only: bool,
+    ) -> Result<Self, KvpError> {
         if read_only {
-            lock_for_reading(&file)?;
+            lock_for_reading(&mut *handle)?;
         } else {
-            lock_for_writing(&file)?;
+            lock_for_writing(&mut *handle)?;
         }
 
         let record_count =
-            record_count_from_len(file.metadata()?.len() as usize)?;
-        file.seek(io::SeekFrom::Start(0))?;
+            record_count_from_len(handle.metadata()?.len as usize)?;
+        handle.seek(io::SeekFrom::Start(0))?;
 
         Ok(Self {
-            file,
+            handle,
             record_count,
             current_index: 0,
         })
@@ -757,14 +872,14 @@ impl KvpPoolIter {
         let record_start = (self.current_index - 1) as u64 * RECORD_SIZE as u64;
         let value_offset = record_start + WIRE_MAX_KEY_BYTES as u64;
 
-        self.file.seek(io::SeekFrom::Start(value_offset))?;
+        self.handle.seek(io::SeekFrom::Start(value_offset))?;
 
         let mut buf = [0u8; WIRE_MAX_VALUE_BYTES];
         let bytes = value.as_bytes();
         let len = bytes.len().min(WIRE_MAX_VALUE_BYTES);
         buf[..len].copy_from_slice(&bytes[..len]);
 
-        self.file.write_all(&buf)?;
+        self.handle.write_all(&buf)?;
         Ok(())
     }
 
@@ -795,21 +910,21 @@ impl KvpPoolIter {
         let last_index = self.record_count - 1;
 
         if delete_index != last_index {
-            self.file.seek(io::SeekFrom::Start(
+            self.handle.seek(io::SeekFrom::Start(
                 last_index as u64 * RECORD_SIZE as u64,
             ))?;
             let mut buf = [0u8; RECORD_SIZE];
-            self.file.read_exact(&mut buf)?;
+            self.handle.read_exact(&mut buf)?;
 
-            self.file.seek(io::SeekFrom::Start(
+            self.handle.seek(io::SeekFrom::Start(
                 delete_index as u64 * RECORD_SIZE as u64,
             ))?;
-            self.file.write_all(&buf)?;
+            self.handle.write_all(&buf)?;
 
             // Rewind so the next `next()` re-reads `delete_index`,
             // which now holds the swapped-in record. `write_all`
             // advanced the cursor past it, hence this third seek.
-            self.file.seek(io::SeekFrom::Start(
+            self.handle.seek(io::SeekFrom::Start(
                 delete_index as u64 * RECORD_SIZE as u64,
             ))?;
             self.current_index = delete_index;
@@ -818,7 +933,8 @@ impl KvpPoolIter {
         // `record_count`, so after the truncate below the iterator
         // is naturally exhausted and the next `next()` returns None.
 
-        self.file.set_len(last_index as u64 * RECORD_SIZE as u64)?;
+        self.handle
+            .set_len(last_index as u64 * RECORD_SIZE as u64)?;
         self.record_count -= 1;
         Ok(())
     }
@@ -832,7 +948,7 @@ impl Iterator for KvpPoolIter {
             return None;
         }
         let mut buf = [0u8; RECORD_SIZE];
-        match self.file.read_exact(&mut buf) {
+        match self.handle.read_exact(&mut buf) {
             Ok(()) => {
                 self.current_index += 1;
                 Some(decode_record(&buf))
@@ -1222,7 +1338,7 @@ mod tests {
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
 
         let err = store.insert("overflow", "v").unwrap_err();
-        assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
+        assert!(is_max_keys(&err), "got {err:?}");
     }
 
     #[test]
@@ -1542,7 +1658,7 @@ mod tests {
                 ("c".to_string(), "3".to_string()),
             ])
             .unwrap_err();
-        assert!(matches!(err, KvpError::ValueTooLarge { .. }));
+        assert!(is_value_too_large(&err), "got {err:?}");
 
         assert_eq!(store.dump().unwrap(), pairs([("keep", "me")]));
     }
@@ -1556,7 +1672,7 @@ mod tests {
             .map(|i| (format!("k{i}"), "v".to_string()))
             .collect();
         let err = store.populate(too_many).unwrap_err();
-        assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
+        assert!(is_max_keys(&err), "got {err:?}");
 
         // Cap is checked pre-lock; the file is never opened.
         assert!(!store.path().exists());
@@ -1590,7 +1706,7 @@ mod tests {
         store.populate(records).unwrap();
 
         let err = store.insert("overflow", "v").unwrap_err();
-        assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
+        assert!(is_max_keys(&err), "got {err:?}");
 
         // Overwriting an existing key at the cap still works.
         store.insert("k0", "updated").unwrap();
@@ -1735,7 +1851,7 @@ mod tests {
         std::fs::write(store.path(), [0u8; RECORD_SIZE + 1]).unwrap();
 
         let err = store.iter().unwrap_err();
-        assert!(matches!(err, KvpError::Io(_)));
+        assert!(is_io(&err), "got {err:?}");
     }
 
     #[test]
@@ -1745,9 +1861,9 @@ mod tests {
         std::fs::write(store.path(), [0u8; RECORD_SIZE + 1]).unwrap();
 
         let err = store.len().unwrap_err();
-        assert!(matches!(err, KvpError::Io(_)));
+        assert!(is_io(&err), "got {err:?}");
         let err = store.is_empty().unwrap_err();
-        assert!(matches!(err, KvpError::Io(_)));
+        assert!(is_io(&err), "got {err:?}");
     }
 
     #[test]
@@ -2029,7 +2145,7 @@ mod tests {
     fn test_kvp_error_from_io() {
         let io_err = io::Error::new(ErrorKind::PermissionDenied, "denied");
         let kvp_err: KvpError = io_err.into();
-        assert!(matches!(kvp_err, KvpError::Io(_)));
+        assert!(is_io(&kvp_err), "got {kvp_err:?}");
         assert_eq!(kvp_err.to_string(), "denied");
     }
 
@@ -2166,9 +2282,7 @@ mod tests {
         let successes = results.iter().filter(|r| r.is_ok()).count();
         let cap_errors = results
             .iter()
-            .filter(|r| {
-                matches!(r, Err(KvpError::MaxUniqueKeysExceeded { .. }))
-            })
+            .filter(|r| r.as_ref().err().is_some_and(is_max_keys))
             .count();
 
         assert_eq!(successes, 4);
@@ -2176,7 +2290,7 @@ mod tests {
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
 
         let err = store.insert("one_too_many", "v").unwrap_err();
-        assert!(matches!(err, KvpError::MaxUniqueKeysExceeded { .. }));
+        assert!(is_max_keys(&err), "got {err:?}");
     }
 
     #[test]
@@ -2382,7 +2496,8 @@ mod tests {
             StoreOp::Append => store.append("k", "v"),
         };
         unlock_dir(dir.path());
-        assert!(matches!(result.unwrap_err(), KvpError::Io(_)));
+        let err = result.unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
     }
 
     /// F_WRLCK needs a writable fd; read-only fd returns EBADF.
@@ -2390,7 +2505,8 @@ mod tests {
     fn test_fcntl_lock_exclusive_fails_on_read_only_fd() {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().read(true).open(tmp.path()).unwrap();
-        let err = fcntl_lock_exclusive(&file).unwrap_err();
+        let mut handle = OsHandle(file);
+        let err = handle.fcntl_exclusive().unwrap_err();
         assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
     }
 
@@ -2399,7 +2515,8 @@ mod tests {
     fn test_fcntl_lock_shared_fails_on_write_only_fd() {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
-        let err = fcntl_lock_shared(&file).unwrap_err();
+        let mut handle = OsHandle(file);
+        let err = handle.fcntl_shared().unwrap_err();
         assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
     }
 
@@ -2411,7 +2528,8 @@ mod tests {
     fn test_lock_for_writing_releases_flock_when_fcntl_fails() {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().read(true).open(tmp.path()).unwrap();
-        let err = lock_for_writing(&file).unwrap_err();
+        let mut handle = OsHandle(file);
+        let err = lock_for_writing(&mut handle).unwrap_err();
         assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
 
         let other = OpenOptions::new().read(true).open(tmp.path()).unwrap();
@@ -2427,7 +2545,8 @@ mod tests {
     fn test_lock_for_reading_releases_flock_when_fcntl_fails() {
         let tmp = NamedTempFile::new().unwrap();
         let file = OpenOptions::new().write(true).open(tmp.path()).unwrap();
-        let err = lock_for_reading(&file).unwrap_err();
+        let mut handle = OsHandle(file);
+        let err = lock_for_reading(&mut handle).unwrap_err();
         assert!(err.to_string().contains("failed to fcntl-lock KVP file"));
 
         let other = OpenOptions::new().read(true).open(tmp.path()).unwrap();
@@ -2445,13 +2564,19 @@ mod tests {
     /// fd.
     #[rstest]
     #[case::lock_ex(
-        flock_lock_exclusive as fn(&File) -> io::Result<()>,
+        (|h: &mut OsHandle| h.flock_exclusive()) as fn(&mut OsHandle) -> io::Result<()>,
         "failed to flock KVP file"
     )]
-    #[case::lock_sh(flock_lock_shared, "failed to flock KVP file")]
-    #[case::unlock(flock_unlock, "failed to flock-unlock KVP file")]
+    #[case::lock_sh(
+        (|h: &mut OsHandle| h.flock_shared()) as fn(&mut OsHandle) -> io::Result<()>,
+        "failed to flock KVP file"
+    )]
+    #[case::unlock(
+        (|h: &mut OsHandle| h.flock_unlock()) as fn(&mut OsHandle) -> io::Result<()>,
+        "failed to flock-unlock KVP file"
+    )]
     fn test_flock_op_fails_on_closed_fd(
-        #[case] op: fn(&File) -> io::Result<()>,
+        #[case] op: fn(&mut OsHandle) -> io::Result<()>,
         #[case] expected_msg: &str,
     ) {
         use std::os::unix::io::{FromRawFd, IntoRawFd};
@@ -2460,9 +2585,10 @@ mod tests {
         let raw_fd = f.into_raw_fd();
         assert_eq!(unsafe { libc::close(raw_fd) }, 0);
         let file = unsafe { File::from_raw_fd(raw_fd) };
-        let err = op(&file).unwrap_err();
+        let mut handle = OsHandle(file);
+        let err = op(&mut handle).unwrap_err();
         assert!(err.to_string().contains(expected_msg), "got: {err}");
-        std::mem::forget(file);
+        std::mem::forget(handle);
     }
 
     /// A FIFO at the pool path forces specific I/O errors from each op:
@@ -2531,14 +2657,860 @@ mod tests {
         let (k, _) = iter.next().unwrap().unwrap();
         assert_eq!(k, "a");
 
-        // Truncate via the iterator's own file to remove the second record.
+        // Truncate via the iterator's own handle to remove the second record.
         // The iterator still thinks record_count == 2, so the next
         // read_exact will hit an unexpected EOF.
-        iter.file.set_len(0).unwrap();
+        iter.handle.set_len(0).unwrap();
 
         // The iterator's cached record_count (2) > current_index (1),
         // so it attempts read_exact, which fails.
         let err = iter.next().unwrap().unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
+    }
+
+    // ----------------------------------------------------------------
+    // Mock backend: drives every IO `?` Err residual that cannot be
+    // triggered against a real filesystem.
+    // ----------------------------------------------------------------
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Single-error slot per op. Tests queue `Some(err)` to fail the
+    /// next call; `None` lets it succeed but consumes a slot, letting
+    /// us target e.g. "fail the 2nd seek".
+    fn check(q: &mut VecDeque<Option<io::Error>>) -> io::Result<()> {
+        match q.pop_front() {
+            Some(Some(e)) => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockInner {
+        files: HashMap<PathBuf, Vec<u8>>,
+        mtimes: HashMap<PathBuf, i64>,
+        boot_time: i64,
+        boot_time_faults: VecDeque<Option<io::Error>>,
+        path_meta_faults: VecDeque<Option<io::Error>>,
+        open_read_faults: VecDeque<Option<io::Error>>,
+        open_rw_faults: VecDeque<Option<io::Error>>,
+        open_rwc_faults: VecDeque<Option<io::Error>>,
+        read_faults: VecDeque<Option<io::Error>>,
+        write_faults: VecDeque<Option<io::Error>>,
+        seek_faults: VecDeque<Option<io::Error>>,
+        stream_pos_faults: VecDeque<Option<io::Error>>,
+        set_len_faults: VecDeque<Option<io::Error>>,
+        metadata_faults: VecDeque<Option<io::Error>>,
+        flush_faults: VecDeque<Option<io::Error>>,
+        flock_ex_faults: VecDeque<Option<io::Error>>,
+        flock_sh_faults: VecDeque<Option<io::Error>>,
+        fcntl_ex_faults: VecDeque<Option<io::Error>>,
+        fcntl_sh_faults: VecDeque<Option<io::Error>>,
+    }
+
+    #[derive(Debug, Default, Clone)]
+    struct MockSysOps(Arc<Mutex<MockInner>>);
+
+    impl MockSysOps {
+        fn new() -> Self {
+            Self::default()
+        }
+        fn lock(&self) -> std::sync::MutexGuard<'_, MockInner> {
+            self.0.lock().unwrap()
+        }
+        fn put_file(&self, path: &Path, data: Vec<u8>, mtime: i64) {
+            let mut g = self.lock();
+            g.files.insert(path.to_path_buf(), data);
+            g.mtimes.insert(path.to_path_buf(), mtime);
+        }
+        fn set_boot_time(&self, t: i64) {
+            self.lock().boot_time = t;
+        }
+    }
+
+    impl SysOps for MockSysOps {
+        fn open_read(&self, path: &Path) -> io::Result<Box<dyn Handle>> {
+            let mut g = self.lock();
+            check(&mut g.open_read_faults)?;
+            if !g.files.contains_key(path) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            drop(g);
+            Ok(Box::new(MemHandle {
+                path: path.to_path_buf(),
+                pos: 0,
+                inner: Arc::clone(&self.0),
+            }))
+        }
+        fn open_read_write(&self, path: &Path) -> io::Result<Box<dyn Handle>> {
+            let mut g = self.lock();
+            check(&mut g.open_rw_faults)?;
+            if !g.files.contains_key(path) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            drop(g);
+            Ok(Box::new(MemHandle {
+                path: path.to_path_buf(),
+                pos: 0,
+                inner: Arc::clone(&self.0),
+            }))
+        }
+        fn open_read_write_create(
+            &self,
+            path: &Path,
+        ) -> io::Result<Box<dyn Handle>> {
+            let mut g = self.lock();
+            check(&mut g.open_rwc_faults)?;
+            g.files.entry(path.to_path_buf()).or_default();
+            g.mtimes.entry(path.to_path_buf()).or_insert(0);
+            drop(g);
+            Ok(Box::new(MemHandle {
+                path: path.to_path_buf(),
+                pos: 0,
+                inner: Arc::clone(&self.0),
+            }))
+        }
+        fn path_metadata(&self, path: &Path) -> io::Result<StatInfo> {
+            let mut g = self.lock();
+            check(&mut g.path_meta_faults)?;
+            match g.files.get(path) {
+                Some(b) => Ok(StatInfo {
+                    len: b.len() as u64,
+                    mtime: g.mtimes.get(path).copied().unwrap_or(0),
+                }),
+                None => Err(io::Error::from(io::ErrorKind::NotFound)),
+            }
+        }
+        fn boot_time(&self) -> io::Result<i64> {
+            let mut g = self.lock();
+            check(&mut g.boot_time_faults)?;
+            Ok(g.boot_time)
+        }
+    }
+
+    #[derive(Debug)]
+    struct MemHandle {
+        path: PathBuf,
+        pos: u64,
+        inner: Arc<Mutex<MockInner>>,
+    }
+
+    impl Read for MemHandle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let mut g = self.inner.lock().unwrap();
+            check(&mut g.read_faults)?;
+            let data = g.files.get(&self.path).cloned().unwrap_or_default();
+            let pos = self.pos as usize;
+            let avail = data.len().saturating_sub(pos);
+            let n = avail.min(buf.len());
+            buf[..n].copy_from_slice(&data[pos..pos + n]);
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl Write for MemHandle {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut g = self.inner.lock().unwrap();
+            check(&mut g.write_faults)?;
+            let path = self.path.clone();
+            let pos = self.pos as usize;
+            let data = g.files.entry(path).or_default();
+            if pos + buf.len() > data.len() {
+                data.resize(pos + buf.len(), 0);
+            }
+            data[pos..pos + buf.len()].copy_from_slice(buf);
+            self.pos += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            let mut g = self.inner.lock().unwrap();
+            check(&mut g.flush_faults)
+        }
+    }
+
+    impl Seek for MemHandle {
+        fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+            let mut g = self.inner.lock().unwrap();
+            // `Seek::stream_position` is the default impl
+            // `seek(Current(0))`. Differentiate to allow independent
+            // fault injection.
+            if matches!(pos, io::SeekFrom::Current(0)) {
+                check(&mut g.stream_pos_faults)?;
+            } else {
+                check(&mut g.seek_faults)?;
+            }
+            let len =
+                g.files.get(&self.path).map(|d| d.len() as u64).unwrap_or(0);
+            let new_pos: i64 = match pos {
+                io::SeekFrom::Start(n) => n as i64,
+                io::SeekFrom::End(n) => len as i64 + n,
+                io::SeekFrom::Current(n) => self.pos as i64 + n,
+            };
+            if new_pos < 0 {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            }
+            self.pos = new_pos as u64;
+            Ok(self.pos)
+        }
+    }
+
+    impl Handle for MemHandle {
+        fn set_len(&mut self, len: u64) -> io::Result<()> {
+            let mut g = self.inner.lock().unwrap();
+            check(&mut g.set_len_faults)?;
+            let path = self.path.clone();
+            let data = g.files.entry(path).or_default();
+            data.resize(len as usize, 0);
+            Ok(())
+        }
+        fn metadata(&mut self) -> io::Result<StatInfo> {
+            let mut g = self.inner.lock().unwrap();
+            check(&mut g.metadata_faults)?;
+            let len =
+                g.files.get(&self.path).map(|d| d.len() as u64).unwrap_or(0);
+            let mtime = g.mtimes.get(&self.path).copied().unwrap_or(0);
+            Ok(StatInfo { len, mtime })
+        }
+        fn flock_exclusive(&mut self) -> io::Result<()> {
+            check(&mut self.inner.lock().unwrap().flock_ex_faults)
+        }
+        fn flock_shared(&mut self) -> io::Result<()> {
+            check(&mut self.inner.lock().unwrap().flock_sh_faults)
+        }
+        fn flock_unlock(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn fcntl_exclusive(&mut self) -> io::Result<()> {
+            check(&mut self.inner.lock().unwrap().fcntl_ex_faults)
+        }
+        fn fcntl_shared(&mut self) -> io::Result<()> {
+            check(&mut self.inner.lock().unwrap().fcntl_sh_faults)
+        }
+    }
+
+    /// Build a store backed by `MockSysOps` at a fixed mock path.
+    fn mock_store(mode: PoolMode) -> (KvpPoolStore, MockSysOps, PathBuf) {
+        let ops = MockSysOps::new();
+        let dir = PathBuf::from("/mock");
+        let store = KvpPoolStore::with_ops(
+            KvpPool::Guest,
+            &dir,
+            mode,
+            Arc::new(ops.clone()),
+        )
+        .unwrap();
+        let path = store.path().to_path_buf();
+        (store, ops, path)
+    }
+
+    fn preload(ops: &MockSysOps, path: &Path, pairs: &[(&str, &str)]) {
+        let mut data = Vec::with_capacity(pairs.len() * RECORD_SIZE);
+        for (k, v) in pairs {
+            data.extend_from_slice(&encode_record(k, v));
+        }
+        ops.put_file(path, data, 0);
+    }
+
+    fn ioerr() -> io::Error {
+        io::Error::other("mock")
+    }
+    fn fail<T: Default>(slot: &mut VecDeque<Option<io::Error>>) -> T {
+        slot.push_back(Some(ioerr()));
+        T::default()
+    }
+    fn skip(slot: &mut VecDeque<Option<io::Error>>) {
+        slot.push_back(None);
+    }
+
+    // ---- Predicates: lift `matches!` calls into a single place so
+    // they are exercised with both matching and non-matching variants
+    // by `test_error_predicates` below.
+
+    fn is_io(e: &KvpError) -> bool {
+        matches!(e, KvpError::Io(_))
+    }
+    fn is_max_keys(e: &KvpError) -> bool {
+        matches!(e, KvpError::MaxUniqueKeysExceeded { .. })
+    }
+    fn is_value_too_large(e: &KvpError) -> bool {
+        matches!(e, KvpError::ValueTooLarge { .. })
+    }
+    fn is_key_too_large(e: &KvpError) -> bool {
+        matches!(e, KvpError::KeyTooLarge { .. })
+    }
+
+    #[test]
+    fn test_error_predicates() {
+        let io_err = KvpError::Io(io::Error::other("x"));
+        let max = KvpError::MaxUniqueKeysExceeded { max: 1 };
+        let vtl = KvpError::ValueTooLarge { max: 1, actual: 2 };
+        let ktl = KvpError::KeyTooLarge { max: 1, actual: 2 };
+        let other = KvpError::EmptyKey;
+        assert!(is_io(&io_err));
+        assert!(!is_io(&other));
+        assert!(is_max_keys(&max));
+        assert!(!is_max_keys(&other));
+        assert!(is_value_too_large(&vtl));
+        assert!(!is_value_too_large(&other));
+        assert!(is_key_too_large(&ktl));
+        assert!(!is_key_too_large(&other));
+        // Exercise the false arm of `KvpErrKind::matches`' inner
+        // `matches!`: pair an EmptyKey kind with an `Io` value.
+        assert!(!KvpErrKind::EmptyKey.matches(&io_err));
+    }
+
+    // ---- Per-region fault tests ------------------------------------
+
+    #[test]
+    fn test_append_fails_when_iter_append_write_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        {
+            let mut g = ops.lock();
+            skip(&mut g.write_faults); // skip first append's write-all in iter
+            fail::<()>(&mut g.write_faults);
+        }
+        // Need first KvpPoolIter::append write to fail.
+        let mut g = ops.lock();
+        g.write_faults.clear();
+        g.write_faults.push_back(Some(ioerr()));
+        drop(g);
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_append_fails_when_flush_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_fails_when_flock_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().flock_ex_faults.push_back(Some(ioerr()));
+        let err = store.clear().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_if_stale_fails_when_boot_time_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().boot_time_faults.push_back(Some(ioerr()));
+        let err = store.clear_if_stale().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_if_stale_fails_when_lock_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().flock_ex_faults.push_back(Some(ioerr()));
+        let err = store.clear_if_stale().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_if_stale_fails_when_metadata_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().metadata_faults.push_back(Some(ioerr()));
+        let err = store.clear_if_stale().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_if_stale_truncates_when_stale() {
+        // mtime (0) <= boot_time (10) → triggers set_len branch.
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.set_boot_time(10);
+        store.clear_if_stale().unwrap();
+        assert_eq!(ops.lock().files.get(&p).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_clear_if_stale_fails_when_set_len_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.set_boot_time(10);
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.clear_if_stale().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_clear_if_stale_skip_when_fresh() {
+        // mtime (10) > boot_time (5) → leaves file alone.
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        ops.put_file(&p, vec![0u8; RECORD_SIZE], 10);
+        ops.set_boot_time(5);
+        store.clear_if_stale().unwrap();
+        assert_eq!(ops.lock().files.get(&p).unwrap().len(), RECORD_SIZE);
+    }
+
+    #[test]
+    fn test_delete_fails_when_iter_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.delete("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_fails_when_remove_current_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("b", "2")]);
+        // delete_index(0) != last_index(1) → remove_current does
+        // seek/read/seek/write/seek/set_len. Fail the set_len.
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.delete("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_fails_when_flush_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.delete("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_dump_fails_when_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.dump().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_entries_fails_when_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.entries().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_iter_new_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().flock_ex_faults.push_back(Some(ioerr()));
+        let err = store.insert("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_iter_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.insert("a", "2").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_overwrite_fails() {
+        // Existing key, value differs → triggers overwrite_current_value.
+        // Fail the write inside it.
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        // First write is in overwrite_current_value (since key matches).
+        ops.lock().write_faults.push_back(Some(ioerr()));
+        let err = store.insert("a", "2").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_remove_current_fails() {
+        // Two records same key → first hit overwrites, second hit
+        // calls remove_current.
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2")]);
+        // Skip the overwrite write, then fail set_len in remove_current.
+        // remove_current with delete_index(1) == last_index(1) → only
+        // set_len is called.
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.insert("a", "3").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_append_fails() {
+        // New key → triggers append path.
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().write_faults.push_back(Some(ioerr()));
+        let err = store.insert("new", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_insert_fails_when_flush_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.insert("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_is_stale_fails_when_boot_time_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        ops.put_file(&p, vec![0u8; RECORD_SIZE], 0);
+        ops.lock().boot_time_faults.push_back(Some(ioerr()));
+        let err = store.is_stale().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_populate_fails_when_set_len_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_populate_fails_when_append_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().write_faults.push_back(Some(ioerr()));
+        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_populate_fails_when_flush_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_read_fails_when_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.read("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_lock_for_writing_propagates_flock_error() {
+        let ops = MockSysOps::new();
+        let mut h: Box<dyn Handle> = Box::new(MemHandle {
+            path: PathBuf::from("/mock/x"),
+            pos: 0,
+            inner: Arc::clone(&ops.0),
+        });
+        ops.lock().flock_ex_faults.push_back(Some(ioerr()));
+        let err = lock_for_writing(&mut *h).unwrap_err();
+        assert_eq!(err.to_string(), "mock");
+    }
+
+    #[test]
+    fn test_lock_for_reading_propagates_flock_error() {
+        let ops = MockSysOps::new();
+        let mut h: Box<dyn Handle> = Box::new(MemHandle {
+            path: PathBuf::from("/mock/x"),
+            pos: 0,
+            inner: Arc::clone(&ops.0),
+        });
+        ops.lock().flock_sh_faults.push_back(Some(ioerr()));
+        let err = lock_for_reading(&mut *h).unwrap_err();
+        assert_eq!(err.to_string(), "mock");
+    }
+
+    #[test]
+    fn test_iter_append_fails_at_stream_position() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().stream_pos_faults.push_back(Some(ioerr()));
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_iter_append_fails_at_seek_end() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().seek_faults.push_back(Some(ioerr()));
+        // KvpPoolIter::new's seek(Start(0)) is the first seek; need
+        // it to succeed. Reorder by skipping first.
+        let mut g = ops.lock();
+        g.seek_faults.clear();
+        skip(&mut g.seek_faults); // KvpPoolIter::new's seek(Start(0))
+        g.seek_faults.push_back(Some(ioerr())); // append's seek(End(0))
+        drop(g);
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_iter_append_fails_at_resume_seek() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        let mut g = ops.lock();
+        skip(&mut g.seek_faults); // new's seek(Start(0))
+        skip(&mut g.seek_faults); // append's seek(End(0))
+        g.seek_faults.push_back(Some(ioerr())); // append's seek(Start(resume))
+        drop(g);
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_iter_new_fails_at_metadata() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().metadata_faults.push_back(Some(ioerr()));
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_iter_new_fails_at_lock_for_reading() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().flock_sh_faults.push_back(Some(ioerr()));
+        let err = store.read("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_overwrite_fails_at_seek() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        let mut g = ops.lock();
+        skip(&mut g.seek_faults); // KvpPoolIter::new's seek(Start(0))
+        g.seek_faults.push_back(Some(ioerr())); // overwrite's seek(value_offset)
+        drop(g);
+        let err = store.insert("a", "2").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_first_seek() {
+        // Two records same key → second match triggers remove_current.
+        // delete_index(1) == last_index(1) → only set_len path; the
+        // "first seek" inside the swap branch needs delete_index !=
+        // last_index. Use ("a","1"),("b","2"),("a","3") → first match
+        // on index 0 overwrites; iteration continues, finds "a" at
+        // index 2 → remove_current with delete_index(2)==last_index(2)
+        // → set_len only. To hit the swap branch's first seek we
+        // need first match also be the LAST one. Use single
+        // duplicate at indices 0 and 2 with non-match between.
+        // Simpler: 3 records, first 2 are "a" so first overwrites at
+        // index 0, then iter advances; second "a" at index 1 →
+        // remove_current(delete_index=1, last_index=2) → swap path.
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        let mut g = ops.lock();
+        // Order of seeks while inserting "a"->"x":
+        //  1. iter::new seek(Start(0))
+        //  2. overwrite_current_value seek(value_offset) at index 0
+        //  3. iter reads next record at index 1 (no seek)
+        //  4. remove_current seek(last_index)  ← fail this
+        skip(&mut g.seek_faults);
+        skip(&mut g.seek_faults);
+        g.seek_faults.push_back(Some(ioerr()));
+        drop(g);
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_read_exact() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        let mut g = ops.lock();
+        g.read_faults.push_back(None); // record 0 read
+        g.read_faults.push_back(None); // record 1 read
+        g.read_faults.push_back(Some(ioerr())); // remove_current read_exact
+        drop(g);
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_second_seek() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        let mut g = ops.lock();
+        skip(&mut g.seek_faults); // new
+        skip(&mut g.seek_faults); // overwrite
+        skip(&mut g.seek_faults); // remove first seek
+        g.seek_faults.push_back(Some(ioerr())); // remove second seek
+        drop(g);
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_write_all() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        let mut g = ops.lock();
+        skip(&mut g.write_faults); // overwrite write_all
+        g.write_faults.push_back(Some(ioerr())); // remove write_all
+        drop(g);
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_third_seek() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        let mut g = ops.lock();
+        skip(&mut g.seek_faults); // new
+        skip(&mut g.seek_faults); // overwrite
+        skip(&mut g.seek_faults); // remove first
+        skip(&mut g.seek_faults); // remove second
+        g.seek_faults.push_back(Some(ioerr())); // remove rewind
+        drop(g);
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_remove_current_fails_at_set_len() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("a", "2"), ("b", "3")]);
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.insert("a", "x").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    // ---- Coverage for OsSysOps boot_time / OsHandle metadata ?
+    // residuals against the real syscalls --------------------------
+
+    #[test]
+    fn test_os_sys_ops_boot_time_propagates_read_error() {
+        let ops = OsSysOps {
+            proc_stat_path: PathBuf::from("/nonexistent/proc/stat"),
+        };
+        let err = ops.boot_time().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn test_os_handle_metadata_propagates_error() {
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+        let tmp = NamedTempFile::new().unwrap();
+        let f = std::fs::File::open(tmp.path()).unwrap();
+        let raw_fd = f.into_raw_fd();
+        assert_eq!(unsafe { libc::close(raw_fd) }, 0);
+        let file = unsafe { File::from_raw_fd(raw_fd) };
+        let mut handle = OsHandle(file);
+        let err = handle.metadata().unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+        std::mem::forget(handle);
+    }
+
+    // ---- Mock self-tests: exercise the fault and not-found arms of
+    // MockSysOps/MemHandle themselves so coverage doesn't dip just
+    // because production code happens to take a different path.
+
+    #[test]
+    fn test_mock_open_read_fault_propagates() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().open_read_faults.push_back(Some(ioerr()));
+        let err = store.read("a").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_mock_open_rw_fault_propagates() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().open_rw_faults.push_back(Some(ioerr()));
+        let err = store.clear().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_mock_open_rwc_fault_propagates() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().open_rwc_faults.push_back(Some(ioerr()));
+        let err = store.append("k", "v").unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_mock_path_metadata_fault_propagates() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        ops.put_file(&p, vec![0u8; RECORD_SIZE], 0);
+        ops.lock().path_meta_faults.push_back(Some(ioerr()));
+        let err = store.len().unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_mock_open_read_not_found() {
+        // No file preloaded; `read` swallows NotFound → Ok(None).
+        let (store, _ops, _p) = mock_store(PoolMode::Safe);
+        assert_eq!(store.read("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn test_mock_open_rw_not_found() {
+        // `clear` on absent file → Ok(()).
+        let (store, _ops, _p) = mock_store(PoolMode::Safe);
+        store.clear().unwrap();
+    }
+
+    #[test]
+    fn test_mock_seek_invalid_negative_position() {
+        let ops = MockSysOps::new();
+        let path = PathBuf::from("/mock/x");
+        ops.put_file(&path, vec![0u8; 4], 0);
+        let mut h: Box<dyn Handle> = ops.open_read_write_create(&path).unwrap();
+        let err = h.seek(io::SeekFrom::End(-100)).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_mock_path_metadata_not_found_returns_default_len() {
+        // No file → `len()` swallows NotFound to Ok(0); exercises the
+        // `None` arm of `MockSysOps::path_metadata`.
+        let (store, _ops, _p) = mock_store(PoolMode::Safe);
+        assert_eq!(store.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_mock_path_metadata_defaults_mtime_when_absent() {
+        // Insert file bytes without an mtimes entry → triggers the
+        // `unwrap_or(0)` default in `MockSysOps::path_metadata`.
+        let ops = MockSysOps::new();
+        let path = PathBuf::from("/mock/no_mtime");
+        ops.0
+            .lock()
+            .unwrap()
+            .files
+            .insert(path.clone(), vec![0u8; 4]);
+        let info = ops.path_metadata(&path).unwrap();
+        assert_eq!(info.len, 4);
+        assert_eq!(info.mtime, 0);
+    }
+
+    #[test]
+    fn test_mock_flock_unlock_called_via_lock_for_writing_cleanup() {
+        // Force fcntl_exclusive to fail after flock succeeds so
+        // `lock_for_writing` invokes `handle.flock_unlock()`.
+        let ops = MockSysOps::new();
+        let mut h: Box<dyn Handle> = Box::new(MemHandle {
+            path: PathBuf::from("/mock/x"),
+            pos: 0,
+            inner: Arc::clone(&ops.0),
+        });
+        ops.lock().fcntl_ex_faults.push_back(Some(ioerr()));
+        let err = lock_for_writing(&mut *h).unwrap_err();
+        assert_eq!(err.to_string(), "mock");
     }
 }
