@@ -176,17 +176,12 @@ impl KvpPoolStore {
 
     /// Remove all records matching the key. Returns `true` if at least
     /// one record was present.
+    ///
+    /// Rejects empty keys and keys containing null bytes; key size is
+    /// not capped, so a [`Safe`](PoolMode::Safe)-mode store can delete
+    /// keys written in [`Unsafe`](PoolMode::Unsafe) mode.
     pub fn delete(&self, key: &str) -> Result<bool, KvpError> {
-        if key.is_empty() {
-            tracing::warn!("Ignoring KVP delete with an empty key");
-            return Ok(false);
-        }
-        if key.as_bytes().contains(&0) {
-            tracing::warn!(
-                "Ignoring KVP delete with a key containing null bytes"
-            );
-            return Ok(false);
-        }
+        validate_key(key, usize::MAX)?;
 
         let found = {
             let mut iter = match self.iter_mut() {
@@ -465,21 +460,11 @@ impl KvpPoolStore {
     /// If multiple records share the same key (e.g. via
     /// [`append`](Self::append)), the last (most recent) match wins.
     ///
-    /// Unlike write operations, `read` does **not** enforce
-    /// [`PoolMode`] key-size limits, so a [`Safe`](PoolMode::Safe)-mode
-    /// store can read keys that were written in
-    /// [`Unsafe`](PoolMode::Unsafe) mode.
+    /// Rejects empty keys and keys containing null bytes; key size is
+    /// not capped, so a [`Safe`](PoolMode::Safe)-mode store can read
+    /// keys written in [`Unsafe`](PoolMode::Unsafe) mode.
     pub fn read(&self, key: &str) -> Result<Option<String>, KvpError> {
-        if key.is_empty() {
-            tracing::warn!("Ignoring KVP read with an empty key");
-            return Ok(None);
-        }
-        if key.as_bytes().contains(&0) {
-            tracing::warn!(
-                "Ignoring KVP read with a key containing null bytes"
-            );
-            return Ok(None);
-        }
+        validate_key(key, usize::MAX)?;
 
         let result = {
             let mut iter = match self.iter() {
@@ -1001,16 +986,28 @@ mod tests {
     #[rstest]
     #[case::insert_empty_key(WriteOp::Insert, "", "v", KvpErrKind::EmptyKey)]
     #[case::insert_null_key(
-        WriteOp::Insert, "bad\0key", "v", KvpErrKind::KeyContainsNull
+        WriteOp::Insert,
+        "bad\0key",
+        "v",
+        KvpErrKind::KeyContainsNull
     )]
     #[case::insert_null_value(
-        WriteOp::Insert, "k", "bad\0value", KvpErrKind::ValueContainsNull
+        WriteOp::Insert,
+        "k",
+        "bad\0value",
+        KvpErrKind::ValueContainsNull
     )]
     #[case::append_null_value(
-        WriteOp::Append, "k", "bad\0value", KvpErrKind::ValueContainsNull
+        WriteOp::Append,
+        "k",
+        "bad\0value",
+        KvpErrKind::ValueContainsNull
     )]
     #[case::populate_empty_key(
-        WriteOp::Populate, "", "v", KvpErrKind::EmptyKey
+        WriteOp::Populate,
+        "",
+        "v",
+        KvpErrKind::EmptyKey
     )]
     fn test_write_rejects_invalid_input(
         #[case] op: WriteOp,
@@ -1137,6 +1134,7 @@ mod tests {
 
         assert_eq!(store.read(&long_key).unwrap(), Some("val".to_string()));
 
+        // Read is not size-capped: an oversized key simply misses.
         let too_long = "k".repeat(513);
         assert_eq!(store.read(&too_long).unwrap(), None);
     }
@@ -1353,22 +1351,31 @@ mod tests {
         assert!(!store.path().exists());
     }
 
-    /// Bad keys (empty, contains null) are silently no-ops on read/delete:
-    /// they return the absent sentinel and leave existing data untouched.
+    /// Empty or null-containing keys are rejected by both read and
+    /// delete, leaving existing data untouched.
     #[rstest]
-    #[case::read_empty(ReadOp::Read, "")]
-    #[case::read_null(ReadOp::Read, "bad\0key")]
-    #[case::delete_empty(ReadOp::Delete, "")]
-    #[case::delete_null(ReadOp::Delete, "bad\0key")]
-    fn test_bad_key_is_silent_noop(#[case] op: ReadOp, #[case] bad_key: &str) {
+    #[case::read_empty(ReadOp::Read, "", KvpErrKind::EmptyKey)]
+    #[case::read_null(ReadOp::Read, "bad\0key", KvpErrKind::KeyContainsNull)]
+    #[case::delete_empty(ReadOp::Delete, "", KvpErrKind::EmptyKey)]
+    #[case::delete_null(
+        ReadOp::Delete,
+        "bad\0key",
+        KvpErrKind::KeyContainsNull
+    )]
+    fn test_bad_key_is_rejected(
+        #[case] op: ReadOp,
+        #[case] bad_key: &str,
+        #[case] expected: KvpErrKind,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store.insert("k1", "v1").unwrap();
 
-        match op {
-            ReadOp::Read => assert_eq!(store.read(bad_key).unwrap(), None),
-            ReadOp::Delete => assert!(!store.delete(bad_key).unwrap()),
-        }
+        let err = match op {
+            ReadOp::Read => store.read(bad_key).unwrap_err(),
+            ReadOp::Delete => store.delete(bad_key).unwrap_err(),
+        };
+        assert!(expected.matches(&err), "got {err:?}");
         assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
         assert_eq!(store.len().unwrap(), 1);
     }
@@ -1635,10 +1642,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case::ok(
-        "cpu  1 2 3 4\nbtime 1710000000\nintr 1\n",
-        Ok(1710000000)
-    )]
+    #[case::ok("cpu  1 2 3 4\nbtime 1710000000\nintr 1\n", Ok(1710000000))]
     #[case::missing("cpu  1 2 3 4\n", Err(ErrorKind::NotFound))]
     #[case::invalid("btime not-a-number\n", Err(ErrorKind::InvalidData))]
     fn test_parse_proc_stat_btime_cases(
@@ -1656,10 +1660,7 @@ mod tests {
     #[rstest]
     #[case::short("hello", "world")]
     #[case::empty_value("key", "")]
-    fn test_encode_decode_round_trip(
-        #[case] key: &str,
-        #[case] value: &str,
-    ) {
+    fn test_encode_decode_round_trip(#[case] key: &str, #[case] value: &str) {
         let record = encode_record(key, value);
         assert_eq!(record.len(), RECORD_SIZE);
         let (k, v) = decode_record(&record).unwrap();
@@ -2481,7 +2482,9 @@ mod tests {
         let err = match op {
             FifoOp::Clear => store.clear().unwrap_err(),
             FifoOp::Append => store.append("k", "v").unwrap_err(),
-            FifoOp::Populate => store.populate(pairs([("k", "v")])).unwrap_err(),
+            FifoOp::Populate => {
+                store.populate(pairs([("k", "v")])).unwrap_err()
+            }
         };
         assert!(
             matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(expected_errno)),
