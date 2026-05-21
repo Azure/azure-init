@@ -918,6 +918,13 @@ mod tests {
         assert_eq!(unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) }, 0);
     }
 
+    fn make_fifo_at(path: &Path) {
+        let c_path =
+            std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+                .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+    }
+
     #[test]
     fn test_kvp_pool_file_names() {
         assert_eq!(KvpPool::External.file_name(), ".kvp_pool_0");
@@ -969,55 +976,57 @@ mod tests {
         assert_eq!(store_unsafe.mode(), PoolMode::Unsafe);
     }
 
-    #[test]
-    fn test_max_key_size() {
-        let dir = TempDir::new().unwrap();
-        assert_eq!(safe_store(dir.path()).max_key_size(), 254);
-
-        let dir2 = TempDir::new().unwrap();
-        assert_eq!(unsafe_store(dir2.path()).max_key_size(), 512);
-    }
-
-    #[test]
-    fn test_max_value_size() {
-        let dir = TempDir::new().unwrap();
-        assert_eq!(safe_store(dir.path()).max_value_size(), 1022);
-
-        let dir2 = TempDir::new().unwrap();
-        assert_eq!(unsafe_store(dir2.path()).max_value_size(), 2048);
-    }
-
-    #[test]
-    fn test_insert_rejects_empty_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.insert("", "value").unwrap_err();
-        assert!(matches!(err, KvpError::EmptyKey));
-    }
-
-    #[test]
-    fn test_insert_rejects_null_in_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.insert("bad\0key", "value").unwrap_err();
-        assert!(matches!(err, KvpError::KeyContainsNull));
-    }
-
     #[rstest]
-    #[case::insert(Op::Insert)]
-    #[case::append(Op::Append)]
-    fn test_write_rejects_null_in_value(#[case] op: Op) {
+    #[case::safe_key(PoolMode::Safe, Field::Key, 254)]
+    #[case::safe_value(PoolMode::Safe, Field::Value, 1022)]
+    #[case::unsafe_key(PoolMode::Unsafe, Field::Key, 512)]
+    #[case::unsafe_value(PoolMode::Unsafe, Field::Value, 2048)]
+    fn test_max_size_getters(
+        #[case] mode: PoolMode,
+        #[case] field: Field,
+        #[case] expected: usize,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, dir.path(), mode).unwrap();
+        let actual = match field {
+            Field::Key => store.max_key_size(),
+            Field::Value => store.max_value_size(),
+        };
+        assert_eq!(actual, expected);
+    }
+
+    /// Every write op rejects empty keys, null bytes in keys, and null
+    /// bytes in values with the matching variant of [`KvpError`].
+    #[rstest]
+    #[case::insert_empty_key(WriteOp::Insert, "", "v", KvpErrKind::EmptyKey)]
+    #[case::insert_null_key(
+        WriteOp::Insert, "bad\0key", "v", KvpErrKind::KeyContainsNull
+    )]
+    #[case::insert_null_value(
+        WriteOp::Insert, "k", "bad\0value", KvpErrKind::ValueContainsNull
+    )]
+    #[case::append_null_value(
+        WriteOp::Append, "k", "bad\0value", KvpErrKind::ValueContainsNull
+    )]
+    #[case::populate_empty_key(
+        WriteOp::Populate, "", "v", KvpErrKind::EmptyKey
+    )]
+    fn test_write_rejects_invalid_input(
+        #[case] op: WriteOp,
+        #[case] key: &str,
+        #[case] value: &str,
+        #[case] expected: KvpErrKind,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-
         let err = match op {
-            Op::Insert => store.insert("key", "bad\0value"),
-            Op::Append => store.append("key", "bad\0value"),
+            WriteOp::Insert => store.insert(key, value),
+            WriteOp::Append => store.append(key, value),
+            WriteOp::Populate => store.populate(pairs([(key, value)])),
         }
         .unwrap_err();
-        assert!(matches!(err, KvpError::ValueContainsNull));
+        assert!(expected.matches(&err), "got: {err:?}");
     }
 
     #[derive(Clone, Copy)]
@@ -1030,6 +1039,41 @@ mod tests {
     enum Op {
         Insert,
         Append,
+    }
+
+    #[derive(Clone, Copy)]
+    enum WriteOp {
+        Insert,
+        Append,
+        Populate,
+    }
+
+    #[derive(Clone, Copy)]
+    enum FifoOp {
+        Clear,
+        Append,
+        Populate,
+    }
+
+    /// Discriminant tag for the [`KvpError`] variants asserted by
+    /// parametrized tests. Cases use one tag per variant so the test
+    /// only needs to compare discriminants, not pattern-match.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum KvpErrKind {
+        EmptyKey,
+        KeyContainsNull,
+        ValueContainsNull,
+    }
+
+    impl KvpErrKind {
+        fn matches(self, err: &KvpError) -> bool {
+            matches!(
+                (self, err),
+                (Self::EmptyKey, KvpError::EmptyKey)
+                    | (Self::KeyContainsNull, KvpError::KeyContainsNull)
+                    | (Self::ValueContainsNull, KvpError::ValueContainsNull)
+            )
+        }
     }
 
     /// For each `(PoolMode, Op, Field)`, accept `max` and reject `max + 1`.
@@ -1113,33 +1157,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_insert_file_size_unchanged_on_overwrite() {
+    #[rstest]
+    #[case::overwrite_same_size("key", "original", "key", "updated", 0)]
+    #[case::new_key_grows_one_record("k1", "v1", "k2", "v2", RECORD_SIZE as i64)]
+    fn test_insert_file_size_delta(
+        #[case] k1: &str,
+        #[case] v1: &str,
+        #[case] k2: &str,
+        #[case] v2: &str,
+        #[case] expected_delta: i64,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store.insert("key", "original").unwrap();
-        let size_before = std::fs::metadata(store.path()).unwrap().len();
+        store.insert(k1, v1).unwrap();
+        let before = std::fs::metadata(store.path()).unwrap().len() as i64;
+        store.insert(k2, v2).unwrap();
+        let after = std::fs::metadata(store.path()).unwrap().len() as i64;
 
-        store.insert("key", "updated").unwrap();
-        let size_after = std::fs::metadata(store.path()).unwrap().len();
-
-        assert_eq!(size_before, size_after);
-        assert_eq!(store.read("key").unwrap(), Some("updated".to_string()));
-    }
-
-    #[test]
-    fn test_insert_file_size_grows_on_new_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        store.insert("k1", "v1").unwrap();
-        let size_before = std::fs::metadata(store.path()).unwrap().len();
-
-        store.insert("k2", "v2").unwrap();
-        let size_after = std::fs::metadata(store.path()).unwrap().len();
-
-        assert_eq!(size_after - size_before, RECORD_SIZE as u64);
+        assert_eq!(after - before, expected_delta);
     }
 
     #[test]
@@ -1280,32 +1316,67 @@ mod tests {
         assert_eq!(store.read("X").unwrap(), Some("second".to_string()));
     }
 
-    #[test]
-    fn test_read_missing_file_returns_none() {
+    /// Every store op tolerates a missing pool file by returning a
+    /// well-defined sentinel result instead of erroring.
+    #[rstest]
+    #[case::read(StoreOp::Read)]
+    #[case::delete(StoreOp::Delete)]
+    #[case::clear(StoreOp::Clear)]
+    #[case::clear_if_stale(StoreOp::ClearIfStale)]
+    #[case::entries(StoreOp::Entries)]
+    #[case::dump(StoreOp::Dump)]
+    #[case::len(StoreOp::Len)]
+    #[case::is_stale(StoreOp::IsStale)]
+    #[case::is_stale_at_boot(StoreOp::IsStaleAtBoot)]
+    fn test_missing_file_is_ok(#[case] op: StoreOp) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        assert_eq!(store.read("anything").unwrap(), None);
+        match op {
+            StoreOp::Read => assert_eq!(store.read("k").unwrap(), None),
+            StoreOp::Delete => assert!(!store.delete("k").unwrap()),
+            StoreOp::Clear => store.clear().unwrap(),
+            StoreOp::ClearIfStale => store.clear_if_stale().unwrap(),
+            StoreOp::Entries => {
+                assert!(store.entries().unwrap().is_empty());
+            }
+            StoreOp::Dump => assert!(store.dump().unwrap().is_empty()),
+            StoreOp::Len => assert_eq!(store.len().unwrap(), 0),
+            StoreOp::IsStale => assert!(!store.is_stale().unwrap()),
+            StoreOp::IsStaleAtBoot => {
+                assert!(!store.is_stale_at_boot(i64::MAX).unwrap());
+            }
+            StoreOp::Populate | StoreOp::Insert | StoreOp::Append => {
+                unreachable!("write ops not in this test's case list")
+            }
+        }
+        assert!(!store.path().exists());
     }
 
-    #[test]
-    fn test_read_empty_key_returns_none() {
+    /// Bad keys (empty, contains null) are silently no-ops on read/delete:
+    /// they return the absent sentinel and leave existing data untouched.
+    #[rstest]
+    #[case::read_empty(ReadOp::Read, "")]
+    #[case::read_null(ReadOp::Read, "bad\0key")]
+    #[case::delete_empty(ReadOp::Delete, "")]
+    #[case::delete_null(ReadOp::Delete, "bad\0key")]
+    fn test_bad_key_is_silent_noop(#[case] op: ReadOp, #[case] bad_key: &str) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store.insert("k1", "v1").unwrap();
 
-        assert_eq!(store.read("").unwrap(), None);
+        match op {
+            ReadOp::Read => assert_eq!(store.read(bad_key).unwrap(), None),
+            ReadOp::Delete => assert!(!store.delete(bad_key).unwrap()),
+        }
         assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
+        assert_eq!(store.len().unwrap(), 1);
     }
 
-    #[test]
-    fn test_read_key_with_null_byte_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        store.insert("k1", "v1").unwrap();
-
-        assert_eq!(store.read("bad\0key").unwrap(), None);
-        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
+    #[derive(Clone, Copy)]
+    enum ReadOp {
+        Read,
+        Delete,
     }
 
     #[test]
@@ -1379,43 +1450,12 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_missing_file_returns_false() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        assert!(!store.delete("anything").unwrap());
-        assert!(!store.path().exists());
-    }
-
-    #[test]
     fn test_delete_nonexistent_key_returns_false() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store.insert("k1", "v1").unwrap();
 
         assert!(!store.delete("missing").unwrap());
-        assert_eq!(store.len().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_delete_empty_key_is_noop() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        store.insert("k1", "v1").unwrap();
-
-        assert!(!store.delete("").unwrap());
-        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
-        assert_eq!(store.len().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_delete_key_with_null_byte_is_noop() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        store.insert("k1", "v1").unwrap();
-
-        assert!(!store.delete("bad\0key").unwrap());
-        assert_eq!(store.read("k1").unwrap(), Some("v1".to_string()));
         assert_eq!(store.len().unwrap(), 1);
     }
 
@@ -1427,22 +1467,6 @@ mod tests {
         store.insert("key", "value").unwrap();
         store.clear().unwrap();
         assert_eq!(store.read("key").unwrap(), None);
-    }
-
-    #[test]
-    fn test_clear_missing_file_is_ok() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        store.clear().unwrap();
-    }
-
-    #[test]
-    fn test_entries_missing_file_returns_empty() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        assert!(store.entries().unwrap().is_empty());
     }
 
     #[test]
@@ -1459,14 +1483,6 @@ mod tests {
             store.entries().unwrap().get("key"),
             Some(&"val3".to_string())
         );
-    }
-
-    #[test]
-    fn test_dump_missing_file_returns_empty() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        assert!(store.dump().unwrap().is_empty());
     }
 
     #[test]
@@ -1522,15 +1538,6 @@ mod tests {
         assert!(matches!(err, KvpError::ValueTooLarge { .. }));
 
         assert_eq!(store.dump().unwrap(), pairs([("keep", "me")]));
-    }
-
-    #[test]
-    fn test_populate_rejects_empty_key() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        let err = store.populate(pairs([("", "v")])).unwrap_err();
-        assert!(matches!(err, KvpError::EmptyKey));
     }
 
     #[test]
@@ -1614,24 +1621,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_stale_missing_file_returns_false() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        assert!(!store.is_stale().unwrap());
-    }
-
-    #[test]
-    fn test_clear_if_stale_noop_when_fresh() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        store.insert("key", "value").unwrap();
-
-        store.clear_if_stale().unwrap();
-        assert_eq!(store.read("key").unwrap(), Some("value".to_string()));
-    }
-
-    #[test]
     fn test_clear_if_stale_clears_stale_data() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -1645,41 +1634,37 @@ mod tests {
         assert!(store.is_empty().unwrap());
     }
 
-    #[test]
-    fn test_clear_if_stale_missing_file_is_ok() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-
-        store.clear_if_stale().unwrap();
-        assert!(!store.path().exists());
+    #[rstest]
+    #[case::ok(
+        "cpu  1 2 3 4\nbtime 1710000000\nintr 1\n",
+        Ok(1710000000)
+    )]
+    #[case::missing("cpu  1 2 3 4\n", Err(ErrorKind::NotFound))]
+    #[case::invalid("btime not-a-number\n", Err(ErrorKind::InvalidData))]
+    fn test_parse_proc_stat_btime_cases(
+        #[case] contents: &str,
+        #[case] expected: Result<i64, ErrorKind>,
+    ) {
+        match (parse_proc_stat_btime(contents), expected) {
+            (Ok(v), Ok(e)) => assert_eq!(v, e),
+            (Err(err), Err(kind)) => assert_eq!(err.kind(), kind),
+            (got, want) => panic!("mismatch got={got:?} want={want:?}"),
+        }
     }
 
-    #[test]
-    fn test_parse_proc_stat_btime() {
-        let contents = "cpu  1 2 3 4\nbtime 1710000000\nintr 1\n";
-        assert_eq!(parse_proc_stat_btime(contents).unwrap(), 1710000000);
-    }
-
-    #[test]
-    fn test_parse_proc_stat_btime_errors_when_missing() {
-        let err = parse_proc_stat_btime("cpu  1 2 3 4\n").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn test_parse_proc_stat_btime_errors_when_invalid() {
-        let err = parse_proc_stat_btime("btime not-a-number\n").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-    }
-
-    #[test]
-    fn test_encode_decode_round_trip() {
-        let record = encode_record("hello", "world");
+    /// Round-trip cases for `encode_record`/`decode_record`.
+    #[rstest]
+    #[case::short("hello", "world")]
+    #[case::empty_value("key", "")]
+    fn test_encode_decode_round_trip(
+        #[case] key: &str,
+        #[case] value: &str,
+    ) {
+        let record = encode_record(key, value);
         assert_eq!(record.len(), RECORD_SIZE);
-
         let (k, v) = decode_record(&record).unwrap();
-        assert_eq!(k, "hello");
-        assert_eq!(v, "world");
+        assert_eq!(k, key);
+        assert_eq!(v, value);
     }
 
     #[test]
@@ -1691,18 +1676,28 @@ mod tests {
         assert_eq!(v, "val");
     }
 
-    #[test]
-    fn test_encode_decode_empty_value() {
-        let record = encode_record("key", "");
-        let (k, v) = decode_record(&record).unwrap();
-        assert_eq!(k, "key");
-        assert_eq!(v, "");
-    }
-
-    #[test]
-    fn test_decode_wrong_size_errors() {
-        let err = decode_record(&[0u8; RECORD_SIZE + 1]).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::Other);
+    /// Malformed buffers fed to `decode_record` produce the expected
+    /// I/O error kind.
+    #[rstest]
+    #[case::wrong_size(vec![0u8; RECORD_SIZE + 1], ErrorKind::Other)]
+    #[case::invalid_utf8_key({
+        let mut b = vec![0u8; RECORD_SIZE];
+        b[0] = 0xFF;
+        b[1] = 0xFE;
+        b
+    }, ErrorKind::InvalidData)]
+    #[case::invalid_utf8_value({
+        let mut b = vec![0u8; RECORD_SIZE];
+        b[WIRE_MAX_KEY_BYTES] = 0xFF;
+        b[WIRE_MAX_KEY_BYTES + 1] = 0xFE;
+        b
+    }, ErrorKind::InvalidData)]
+    fn test_decode_record_errors(
+        #[case] buf: Vec<u8>,
+        #[case] kind: ErrorKind,
+    ) {
+        let err = decode_record(&buf).unwrap_err();
+        assert_eq!(err.kind(), kind);
     }
 
     #[test]
@@ -2344,6 +2339,8 @@ mod tests {
         Len,
         IsStale,
         IsStaleAtBoot,
+        Insert,
+        Append,
     }
 
     /// Every fallible read/write op surfaces an unreachable directory
@@ -2359,6 +2356,8 @@ mod tests {
     #[case::len(StoreOp::Len)]
     #[case::is_stale(StoreOp::IsStale)]
     #[case::is_stale_at_boot(StoreOp::IsStaleAtBoot)]
+    #[case::insert(StoreOp::Insert)]
+    #[case::append(StoreOp::Append)]
     fn test_permission_denied(#[case] op: StoreOp) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -2378,16 +2377,11 @@ mod tests {
             StoreOp::IsStaleAtBoot => {
                 store.is_stale_at_boot(i64::MAX).map(|_| ())
             }
+            StoreOp::Insert => store.insert("k2", "v2"),
+            StoreOp::Append => store.append("k", "v"),
         };
         unlock_dir(dir.path());
         assert!(matches!(result.unwrap_err(), KvpError::Io(_)));
-    }
-
-    #[test]
-    fn test_is_stale_at_boot_missing_file() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        assert!(!store.is_stale_at_boot(i64::MAX).unwrap());
     }
 
     /// F_WRLCK needs a writable fd; read-only fd returns EBADF.
@@ -2470,72 +2464,29 @@ mod tests {
         std::mem::forget(file);
     }
 
-    /// FIFO at the pool path: `ftruncate` fails with EINVAL on
-    /// a FIFO, verifying that `clear()` propagates the I/O error.
-    #[test]
-    fn test_clear_truncate_error_on_fifo() {
+    /// A FIFO at the pool path forces specific I/O errors from each op:
+    /// `ftruncate` returns EINVAL, `lseek` returns ESPIPE.
+    #[rstest]
+    #[case::clear(FifoOp::Clear, libc::EINVAL)]
+    #[case::append(FifoOp::Append, libc::ESPIPE)]
+    #[case::populate(FifoOp::Populate, libc::ESPIPE)]
+    fn test_fifo_propagates_io_error(
+        #[case] op: FifoOp,
+        #[case] expected_errno: i32,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        let c_path =
-            std::ffi::CString::new(store.path().as_os_str().as_encoded_bytes())
-                .unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
-        let err = store.clear().unwrap_err();
+        make_fifo_at(store.path());
+
+        let err = match op {
+            FifoOp::Clear => store.clear().unwrap_err(),
+            FifoOp::Append => store.append("k", "v").unwrap_err(),
+            FifoOp::Populate => store.populate(pairs([("k", "v")])).unwrap_err(),
+        };
         assert!(
-            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(libc::EINVAL))
+            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(expected_errno)),
+            "got: {err:?}"
         );
-    }
-
-    /// FIFO at the pool path: `lseek` fails with ESPIPE inside
-    /// `KvpPoolIter::new`, verifying that `append()` propagates it.
-    #[test]
-    fn test_append_seek_error_on_fifo() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        let c_path =
-            std::ffi::CString::new(store.path().as_os_str().as_encoded_bytes())
-                .unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
-        let err = store.append("k", "v").unwrap_err();
-        assert!(
-            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(libc::ESPIPE))
-        );
-    }
-
-    /// FIFO at the pool path: ESPIPE surfaces from `KvpPoolIter::new`
-    /// before the truncate/rewrite phase.
-    #[test]
-    fn test_populate_seek_error_on_fifo() {
-        let dir = TempDir::new().unwrap();
-        let store = safe_store(dir.path());
-        let c_path =
-            std::ffi::CString::new(store.path().as_os_str().as_encoded_bytes())
-                .unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
-        let err = store.populate(pairs([("k", "v")])).unwrap_err();
-        assert!(
-            matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(libc::ESPIPE))
-        );
-    }
-
-    #[test]
-    fn test_decode_record_invalid_utf8_key() {
-        let mut buf = vec![0u8; RECORD_SIZE];
-        buf[0] = 0xFF;
-        buf[1] = 0xFE;
-        let err = decode_record(&buf).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-    }
-
-    #[test]
-    fn test_decode_record_invalid_utf8_value() {
-        let mut buf = vec![0u8; RECORD_SIZE];
-        // Key region is valid (all zeros = empty after trim).
-        // Put invalid UTF-8 in the value region.
-        buf[WIRE_MAX_KEY_BYTES] = 0xFF;
-        buf[WIRE_MAX_KEY_BYTES + 1] = 0xFE;
-        let err = decode_record(&buf).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
     }
 
     #[test]
