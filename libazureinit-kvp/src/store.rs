@@ -143,6 +143,38 @@ impl KvpPoolStore {
         Ok(())
     }
 
+    /// Append records under one exclusive lock, preserving order and
+    /// preventing cooperating writers from interleaving with the batch.
+    ///
+    /// Like [`append`](Self::append), this does not enforce
+    /// [`MAX_UNIQUE_KEYS`]. Validation happens before the file is
+    /// opened; empty input is a no-op. If an I/O error occurs after
+    /// writing starts, the file may contain a partial batch.
+    pub fn append_multiple<I, K, V>(&self, records: I) -> Result<(), KvpError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let records: Vec<(String, String)> = records
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let max_key = self.mode.max_key_size();
+        let max_value = self.mode.max_value_size();
+        for (k, v) in &records {
+            validate_key(k, max_key)?;
+            validate_value(v, max_value)?;
+        }
+
+        self.write_records_locked(&records, false)
+    }
+
     /// Remove all entries from the store.
     pub fn clear(&self) -> Result<(), KvpError> {
         {
@@ -208,6 +240,57 @@ impl KvpPoolStore {
             found
         };
         Ok(found)
+    }
+
+    /// Delete all records whose key appears in `keys`, under one
+    /// exclusive lock.
+    ///
+    /// Returns the number of records removed, counting duplicate
+    /// on-disk keys separately. Like [`delete`](Self::delete), key
+    /// size is not capped. Empty input is a no-op; a missing file
+    /// returns `Ok(0)`.
+    ///
+    /// Removal swaps deleted records with the tail, so remaining
+    /// record order is not preserved.
+    pub fn delete_multiple<I, K>(&self, keys: I) -> Result<usize, KvpError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<String>,
+    {
+        let mut keys_to_delete = HashSet::new();
+        for key in keys {
+            let key = key.into();
+            validate_key(&key, usize::MAX)?;
+            keys_to_delete.insert(key);
+        }
+
+        if keys_to_delete.is_empty() {
+            return Ok(0);
+        }
+
+        let removed = {
+            let mut iter = match self.iter_mut() {
+                Ok(it) => it,
+                Err(KvpError::Io(e)) if e.kind() == ErrorKind::NotFound => {
+                    return Ok(0);
+                }
+                Err(e) => return Err(e),
+            };
+
+            let mut removed = 0usize;
+            while let Some(record) = iter.next() {
+                let (k, _) = record?;
+                if keys_to_delete.contains(&k) {
+                    iter.remove_current()?;
+                    removed += 1;
+                }
+            }
+            if removed > 0 {
+                iter.flush()?;
+            }
+            removed
+        };
+        Ok(removed)
     }
 
     /// Return all key-value records in on-disk order, including
@@ -404,6 +487,32 @@ impl KvpPoolStore {
         self.ops.open_read_write_create(&self.path)
     }
 
+    /// Shared write primitive for [`populate`](Self::populate) and
+    /// [`append_multiple`](Self::append_multiple).
+    ///
+    /// Holds one exclusive lock across the entire batch. If
+    /// `truncate` is `true`, the file is cleared first (replace
+    /// semantics); otherwise records are appended to the tail.
+    /// Callers are responsible for per-record validation and any
+    /// `MAX_UNIQUE_KEYS` enforcement appropriate to their contract.
+    fn write_records_locked(
+        &self,
+        records: &[(String, String)],
+        truncate: bool,
+    ) -> Result<(), KvpError> {
+        let handle = self.open_for_read_write_create()?;
+        let mut iter = KvpPoolIter::new(handle, false)?;
+        if truncate {
+            iter.handle.set_len(0)?;
+            iter.record_count = 0;
+        }
+        for (k, v) in records {
+            iter.append(k, v)?;
+        }
+        iter.flush()?;
+        Ok(())
+    }
+
     /// Return a reference to the pool file path.
     pub fn path(&self) -> &Path {
         &self.path
@@ -451,17 +560,7 @@ impl KvpPoolStore {
             });
         }
 
-        {
-            let handle = self.open_for_read_write_create()?;
-            let mut iter = KvpPoolIter::new(handle, false)?;
-            iter.handle.set_len(0)?;
-            iter.record_count = 0;
-            for (k, v) in &records {
-                iter.append(k, v)?;
-            }
-            iter.flush()?;
-        }
-        Ok(())
+        self.write_records_locked(&records, true)
     }
 
     /// Read the value for a key. Returns `Ok(None)` when absent.
@@ -1714,6 +1813,268 @@ mod tests {
     }
 
     #[test]
+    fn test_append_multiple_round_trips_with_dump() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let records = pairs([("a", "1"), ("b", "2"), ("a", "3"), ("c", "4")]);
+        store.append_multiple(records.clone()).unwrap();
+        assert_eq!(store.dump().unwrap(), records);
+    }
+
+    #[test]
+    fn test_append_multiple_extends_existing_contents() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.populate(pairs([("seed", "0")])).unwrap();
+        store
+            .append_multiple(pairs([("a", "1"), ("b", "2")]))
+            .unwrap();
+
+        assert_eq!(
+            store.dump().unwrap(),
+            pairs([("seed", "0"), ("a", "1"), ("b", "2")])
+        );
+    }
+
+    #[test]
+    fn test_append_multiple_preserves_duplicates_within_batch() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        // Mirrors the chunked-event use case: many records sharing a
+        // single key, written atomically.
+        let records =
+            pairs([("chunk", "part1"), ("chunk", "part2"), ("chunk", "part3")]);
+        store.append_multiple(records.clone()).unwrap();
+
+        assert_eq!(store.dump().unwrap(), records);
+        // `read` returns last-write-wins; entries() collapses to 1.
+        assert_eq!(store.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_append_multiple_empty_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store
+            .append_multiple(Vec::<(String, String)>::new())
+            .unwrap();
+
+        // No file created when the input is empty.
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn test_append_multiple_validates_before_writing() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.append_multiple(pairs([("keep", "me")])).unwrap();
+
+        let bad_value = "v".repeat(1023);
+        let err = store
+            .append_multiple(vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), bad_value),
+                ("c".to_string(), "3".to_string()),
+            ])
+            .unwrap_err();
+        assert!(is_value_too_large(&err), "got {err:?}");
+
+        // Rejection is all-or-nothing: previously-written records
+        // are untouched, none of the new batch lands.
+        assert_eq!(store.dump().unwrap(), pairs([("keep", "me")]));
+    }
+
+    #[test]
+    fn test_append_multiple_rejects_empty_key() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let err = store
+            .append_multiple(pairs([("ok", "v"), ("", "bad")]))
+            .unwrap_err();
+        assert!(matches!(err, KvpError::EmptyKey), "got {err:?}");
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn test_append_multiple_rejects_null_in_key() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let err = store
+            .append_multiple(pairs([("ok\0bad", "v")]))
+            .unwrap_err();
+        assert!(matches!(err, KvpError::KeyContainsNull), "got {err:?}");
+    }
+
+    #[test]
+    fn test_append_multiple_does_not_enforce_unique_key_cap() {
+        // Matches `append`'s contract: the bulk variant deliberately
+        // skips the unique-key cap so chunked writes (many records
+        // sharing one key) cannot accidentally trip it.
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        prepopulate(&store, MAX_UNIQUE_KEYS);
+
+        // Adding a new unique key via append_multiple is allowed even
+        // when the pool is already at the cap.
+        store.append_multiple(pairs([("extra", "v")])).unwrap();
+        assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS + 1);
+    }
+
+    #[test]
+    fn test_delete_multiple_removes_listed_keys() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store
+            .populate(pairs([("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")]))
+            .unwrap();
+
+        let removed = store.delete_multiple(vec!["a", "c"]).unwrap();
+        assert_eq!(removed, 2);
+
+        let remaining: HashSet<String> =
+            store.entries().unwrap().into_keys().collect();
+        assert_eq!(
+            remaining,
+            ["b", "d"].into_iter().map(String::from).collect()
+        );
+    }
+
+    #[test]
+    fn test_delete_multiple_counts_each_matching_record() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        // Two unique keys, three matching records.
+        store
+            .populate(pairs([
+                ("k", "v1"),
+                ("other", "x"),
+                ("k", "v2"),
+                ("k", "v3"),
+            ]))
+            .unwrap();
+
+        let removed = store.delete_multiple(vec!["k"]).unwrap();
+        assert_eq!(removed, 3);
+        assert_eq!(store.dump().unwrap(), pairs([("other", "x")]));
+    }
+
+    #[test]
+    fn test_delete_multiple_skips_missing_keys() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.populate(pairs([("present", "1")])).unwrap();
+
+        let removed = store
+            .delete_multiple(vec!["absent1", "present", "absent2"])
+            .unwrap();
+        assert_eq!(removed, 1);
+        assert!(store.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_delete_multiple_all_missing_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.populate(pairs([("a", "1"), ("b", "2")])).unwrap();
+
+        let removed = store.delete_multiple(vec!["x", "y", "z"]).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(store.len().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_delete_multiple_empty_input_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let removed = store.delete_multiple(Vec::<String>::new()).unwrap();
+        assert_eq!(removed, 0);
+
+        // Empty input never opens or creates the file.
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn test_delete_multiple_returns_zero_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        let removed = store.delete_multiple(vec!["whatever"]).unwrap();
+        assert_eq!(removed, 0);
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn test_delete_multiple_deduplicates_input_keys() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+
+        store.populate(pairs([("a", "1"), ("b", "2")])).unwrap();
+
+        // Listing the same key twice still removes the (one) record
+        // exactly once.
+        let removed = store.delete_multiple(vec!["a", "a", "a"]).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(store.dump().unwrap(), pairs([("b", "2")]));
+    }
+
+    #[test]
+    fn test_delete_multiple_rejects_empty_key() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.populate(pairs([("a", "1")])).unwrap();
+
+        let err = store
+            .delete_multiple(vec!["a".to_string(), "".to_string()])
+            .unwrap_err();
+        assert!(matches!(err, KvpError::EmptyKey), "got {err:?}");
+
+        // Validation runs before any record is removed.
+        assert_eq!(store.dump().unwrap(), pairs([("a", "1")]));
+    }
+
+    #[test]
+    fn test_delete_multiple_rejects_null_in_key() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(dir.path());
+        store.populate(pairs([("a", "1")])).unwrap();
+
+        let err = store.delete_multiple(vec!["bad\0key"]).unwrap_err();
+        assert!(matches!(err, KvpError::KeyContainsNull), "got {err:?}");
+        assert_eq!(store.dump().unwrap(), pairs([("a", "1")]));
+    }
+
+    #[test]
+    fn test_delete_multiple_size_independent_of_mode() {
+        // Mirrors `delete`'s contract: keys longer than the safe-mode
+        // cap can be removed from a safe-mode store.
+        let dir = TempDir::new().unwrap();
+        let store_unsafe = unsafe_store(dir.path());
+        let long_key = "k".repeat(SAFE_MAX_KEY_BYTES + 1);
+        store_unsafe
+            .append_multiple(pairs([(long_key.as_str(), "v"), ("short", "v")]))
+            .unwrap();
+        drop(store_unsafe);
+
+        let store_safe = safe_store(dir.path());
+        let removed =
+            store_safe.delete_multiple(vec![long_key.clone()]).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(store_safe.dump().unwrap(), pairs([("short", "v")]));
+    }
+
+    #[test]
     fn test_len_and_is_empty() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
@@ -2253,6 +2614,57 @@ mod tests {
                 let key = format!("t{t}_d{i}");
                 assert!(entries.contains_key(&key), "missing key {key}");
             }
+        }
+    }
+
+    #[test]
+    fn test_append_multiple_atomic_across_threads() {
+        const ITERS: usize = 50;
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        let threads: Vec<_> = ["A", "B"]
+            .into_iter()
+            .map(|color| {
+                let d = dir_path.clone();
+                std::thread::spawn(move || {
+                    let store =
+                        KvpPoolStore::new_in(KvpPool::Guest, d, PoolMode::Safe)
+                            .unwrap();
+                    for _ in 0..ITERS {
+                        store
+                            .append_multiple(pairs([
+                                (color, "v0"),
+                                (color, "v1"),
+                                (color, "v2"),
+                            ]))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let store = safe_store(dir.path());
+        let records = store.dump().unwrap();
+        assert_eq!(records.len(), 2 * ITERS * 3);
+
+        for triple in records.chunks(3) {
+            let color = &triple[0].0;
+            assert!(color == "A" || color == "B", "unexpected key {color}");
+            assert_eq!(
+                triple.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+                vec![color.as_str(); 3],
+                "batch was interleaved: {triple:?}",
+            );
+            assert_eq!(
+                triple.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(),
+                vec!["v0", "v1", "v2"],
+                "batch records out of order: {triple:?}",
+            );
         }
     }
 
@@ -3191,6 +3603,68 @@ mod tests {
         let (store, ops, _p) = mock_store(PoolMode::Safe);
         ops.lock().flush_faults.push_back(Some(ioerr()));
         let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_append_multiple_fails_when_open_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().open_rwc_faults.push_back(Some(ioerr()));
+        let err = store.append_multiple(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_append_multiple_fails_when_write_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().write_faults.push_back(Some(ioerr()));
+        let err = store.append_multiple(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_append_multiple_fails_when_flush_fails() {
+        let (store, ops, _p) = mock_store(PoolMode::Safe);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.append_multiple(pairs([("a", "1")])).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_multiple_fails_when_open_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().open_rw_faults.push_back(Some(ioerr()));
+        let err = store.delete_multiple(vec!["a"]).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_multiple_fails_when_iter_read_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().read_faults.push_back(Some(ioerr()));
+        let err = store.delete_multiple(vec!["a"]).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_multiple_fails_when_remove_current_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1"), ("b", "2")]);
+        // delete_index(0) != last_index(1) → remove_current performs
+        // seek/read/seek/write/seek/set_len. Fail the set_len.
+        ops.lock().set_len_faults.push_back(Some(ioerr()));
+        let err = store.delete_multiple(vec!["a"]).unwrap_err();
+        assert!(is_io(&err), "got {err:?}");
+    }
+
+    #[test]
+    fn test_delete_multiple_fails_when_flush_fails() {
+        let (store, ops, p) = mock_store(PoolMode::Safe);
+        preload(&ops, &p, &[("a", "1")]);
+        ops.lock().flush_faults.push_back(Some(ioerr()));
+        let err = store.delete_multiple(vec!["a"]).unwrap_err();
         assert!(is_io(&err), "got {err:?}");
     }
 
