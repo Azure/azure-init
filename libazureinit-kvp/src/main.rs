@@ -2,5 +2,5 @@
 // Licensed under the MIT License.
 
 fn main() -> std::process::ExitCode {
-    libazureinit_kvp::cli::run()
+    libazureinit_kvp::run()
 }

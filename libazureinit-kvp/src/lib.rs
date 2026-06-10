@@ -7,9 +7,10 @@
 //! - [`KvpPoolStore`]: KVP pool file store with
 //!   [`PoolMode`]-based policy.
 
-pub mod cli;
+mod cli;
 mod error;
 mod store;
 
+pub use cli::run;
 pub use error::KvpError;
 pub use store::{KvpPool, KvpPoolStore, PoolMode};

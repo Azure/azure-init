@@ -8,14 +8,14 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn kvp(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_azure-init-kvp"))
+    Command::new(env!("CARGO_BIN_EXE_libazureinit-kvp"))
         .args(args)
         .output()
         .unwrap()
 }
 
 fn kvp_with_stdin(args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_azure-init-kvp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_libazureinit-kvp"))
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -51,9 +51,17 @@ fn assert_success(output: Output) -> String {
 #[test]
 fn help_lists_commands() {
     let stdout = assert_success(kvp(&["--help"]));
-    assert!(stdout.contains("usage: azure-init-kvp"));
-    assert!(stdout.contains("write [--append] <KEY> <VALUE>"));
+    assert!(stdout.contains("Usage: libazureinit-kvp"));
+    assert!(stdout.contains("write"));
     assert!(stdout.contains("is-stale"));
+}
+
+#[test]
+fn write_help_documents_append_flag() {
+    let stdout = assert_success(kvp(&["write", "--help"]));
+    assert!(stdout.contains("--append"));
+    assert!(stdout.contains("<KEY>"));
+    assert!(stdout.contains("<VALUE>"));
 }
 
 #[test]

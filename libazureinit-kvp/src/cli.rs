@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{KvpError, KvpPool, KvpPoolStore, PoolMode};
 
@@ -15,58 +15,132 @@ const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE_OR_VALIDATION: u8 = 2;
 const EXIT_IO: u8 = 3;
 
-/// Run the azure-init-kvp command-line interface.
+/// Entry point for the `libazureinit-kvp` binary.
 pub fn run() -> ExitCode {
+    let cli = Cli::parse();
     let stdout = io::stdout();
     let stderr = io::stderr();
     let mut stdout = stdout.lock();
     let mut stderr = stderr.lock();
-    ExitCode::from(run_with_args(
-        env::args_os().skip(1),
-        &mut stdout,
-        &mut stderr,
-    ))
-}
 
-fn run_with_args<I, W, E>(args: I, stdout: &mut W, stderr: &mut E) -> u8
-where
-    I: IntoIterator<Item = OsString>,
-    W: Write,
-    E: Write,
-{
-    match try_run(args, stdout) {
+    let code = match dispatch(cli, &mut stdout) {
         Ok(code) => code,
         Err(err) => {
             let _ = writeln!(stderr, "{err}");
             err.exit_code()
         }
+    };
+    ExitCode::from(code)
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "libazureinit-kvp",
+    about = "Inspect and manipulate Hyper-V KVP pool files."
+)]
+struct Cli {
+    /// KVP pool to operate on.
+    #[arg(long, value_enum, default_value_t = PoolArg::Guest, global = true)]
+    pool: PoolArg,
+
+    /// KVP pool directory (defaults to /var/lib/hyperv).
+    #[arg(long, global = true)]
+    dir: Option<PathBuf>,
+
+    /// Use full wire-format key/value limits instead of the safe profile.
+    #[arg(long = "unsafe", global = true)]
+    unsafe_mode: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Print store metadata.
+    Info,
+    /// Print every record in insertion order as KEY=VALUE lines.
+    Dump,
+    /// Print key=last_value entries sorted by key.
+    Entries,
+    /// Print the last value for KEY (exit 1 if missing).
+    Read { key: String },
+    /// Write a record. Use --append to keep prior values for KEY.
+    Write {
+        /// Append a new value instead of replacing prior records for KEY.
+        #[arg(long)]
+        append: bool,
+        key: String,
+        value: String,
+    },
+    /// Replace the pool from KEY=VALUE lines read from --file or stdin.
+    Load {
+        /// Read records from PATH instead of stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Delete every record with KEY (prints `true` if any were removed).
+    Delete { key: String },
+    /// Clear the pool. Requires --yes unless --if-stale is set.
+    Clear {
+        /// Only clear if the store is currently stale.
+        #[arg(long = "if-stale")]
+        if_stale: bool,
+        /// Confirm unconditional clear.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Print whether the pool is stale (exit 0 if stale, 1 otherwise).
+    IsStale,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")]
+enum PoolArg {
+    #[value(alias = "0")]
+    External,
+    #[value(alias = "1")]
+    Guest,
+    #[value(alias = "2")]
+    Auto,
+    #[value(alias = "3")]
+    AutoExternal,
+    #[value(alias = "4")]
+    AutoInternal,
+}
+
+impl From<PoolArg> for KvpPool {
+    fn from(value: PoolArg) -> Self {
+        match value {
+            PoolArg::External => KvpPool::External,
+            PoolArg::Guest => KvpPool::Guest,
+            PoolArg::Auto => KvpPool::Auto,
+            PoolArg::AutoExternal => KvpPool::AutoExternal,
+            PoolArg::AutoInternal => KvpPool::AutoInternal,
+        }
     }
 }
 
-fn try_run<I, W>(args: I, stdout: &mut W) -> Result<u8, CliError>
-where
-    I: IntoIterator<Item = OsString>,
-    W: Write,
-{
-    let invocation = Invocation::parse(args)?;
-    if invocation.command == Command::Help {
-        print_help(stdout)?;
-        return Ok(EXIT_OK);
+fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
+    let pool: KvpPool = cli.pool.into();
+    let mode = if cli.unsafe_mode {
+        PoolMode::Unsafe
+    } else {
+        PoolMode::Safe
+    };
+
+    let store = match cli.dir {
+        Some(dir) => KvpPoolStore::new_in(pool, dir, mode),
+        None => KvpPoolStore::new(pool, mode),
     }
+    .expect("KvpPoolStore construction is currently infallible");
 
-    let store = match invocation.dir {
-        Some(dir) => {
-            KvpPoolStore::new_in(invocation.pool, dir, invocation.mode)
-        }
-        None => KvpPoolStore::new(invocation.pool, invocation.mode),
-    }?;
-
-    match invocation.command {
+    match cli.command {
         Command::Info => info(&store, stdout),
         Command::Dump => dump(&store, stdout),
         Command::Entries => entries(&store, stdout),
         Command::Read { key } => read(&store, stdout, &key),
-        Command::Write { key, value, append } => {
+        Command::Write { append, key, value } => {
             if append {
                 store.append(&key, &value)?;
             } else {
@@ -79,11 +153,15 @@ where
             writeln!(stdout, "{}", store.delete(&key)?)?;
             Ok(EXIT_OK)
         }
-        Command::Clear { if_stale } => {
+        Command::Clear { if_stale, yes } => {
             if if_stale {
                 store.clear_if_stale()?;
-            } else {
+            } else if yes {
                 store.clear()?;
+            } else {
+                return Err(CliError::Usage(
+                    "clear requires --yes unless --if-stale is set".to_string(),
+                ));
             }
             Ok(EXIT_OK)
         }
@@ -91,131 +169,6 @@ where
             let stale = store.is_stale()?;
             writeln!(stdout, "{stale}")?;
             Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
-        }
-        Command::Help => unreachable!(),
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Invocation {
-    pool: KvpPool,
-    dir: Option<PathBuf>,
-    mode: PoolMode,
-    command: Command,
-}
-
-impl Invocation {
-    fn parse<I, S>(args: I) -> Result<Self, CliError>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        let args: Vec<String> = args
-            .into_iter()
-            .map(|arg| {
-                arg.into().into_string().map_err(|_| {
-                    CliError::Usage("arguments must be valid UTF-8".to_string())
-                })
-            })
-            .collect::<Result<_, _>>()?;
-
-        let mut pool = KvpPool::Guest;
-        let mut dir = None;
-        let mut mode = PoolMode::Safe;
-        let mut index = 0;
-
-        while let Some(arg) = args.get(index) {
-            match arg.as_str() {
-                "-h" | "--help" => {
-                    return Ok(Self {
-                        pool,
-                        dir,
-                        mode,
-                        command: Command::Help,
-                    });
-                }
-                "--pool" => {
-                    index += 1;
-                    let value = args.get(index).ok_or_else(|| {
-                        CliError::Usage("--pool requires a value".to_string())
-                    })?;
-                    pool = parse_pool(value)?;
-                }
-                "--dir" => {
-                    index += 1;
-                    let value = args.get(index).ok_or_else(|| {
-                        CliError::Usage("--dir requires a value".to_string())
-                    })?;
-                    dir = Some(PathBuf::from(value));
-                }
-                "--unsafe" => mode = PoolMode::Unsafe,
-                _ if arg.starts_with("--pool=") => {
-                    pool = parse_pool(&arg[7..])?;
-                }
-                _ if arg.starts_with("--dir=") => {
-                    dir = Some(PathBuf::from(&arg[6..]));
-                }
-                _ => break,
-            }
-            index += 1;
-        }
-
-        let command = Command::parse(&args[index..])?;
-        Ok(Self {
-            pool,
-            dir,
-            mode,
-            command,
-        })
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Command {
-    Info,
-    Dump,
-    Entries,
-    Read {
-        key: String,
-    },
-    Write {
-        key: String,
-        value: String,
-        append: bool,
-    },
-    Load {
-        file: Option<PathBuf>,
-    },
-    Delete {
-        key: String,
-    },
-    Clear {
-        if_stale: bool,
-    },
-    IsStale,
-    Help,
-}
-
-impl Command {
-    fn parse(args: &[String]) -> Result<Self, CliError> {
-        let Some((command, rest)) = args.split_first() else {
-            return Err(CliError::Usage("missing command".to_string()));
-        };
-
-        match command.as_str() {
-            "info" => require_no_args(command, rest).map(|()| Self::Info),
-            "dump" => require_no_args(command, rest).map(|()| Self::Dump),
-            "entries" => require_no_args(command, rest).map(|()| Self::Entries),
-            "read" => one_arg(command, rest).map(|key| Self::Read { key }),
-            "write" => parse_write(rest),
-            "load" => parse_load(rest),
-            "delete" => one_arg(command, rest).map(|key| Self::Delete { key }),
-            "clear" => parse_clear(rest),
-            "is-stale" => {
-                require_no_args(command, rest).map(|()| Self::IsStale)
-            }
-            "help" => require_no_args(command, rest).map(|()| Self::Help),
-            _ => Err(CliError::Usage(format!("unknown command: {command}"))),
         }
     }
 }
@@ -272,15 +225,19 @@ fn read<W: Write>(
 }
 
 fn load(store: &KvpPoolStore, file: Option<PathBuf>) -> Result<u8, CliError> {
-    let input = match file {
-        Some(path) => fs::read_to_string(path)?,
-        None => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input)?;
-            input
-        }
-    };
-    store.populate(parse_key_value_lines(&input)?)?;
+    match file {
+        Some(path) => load_from_reader(store, fs::File::open(path)?),
+        None => load_from_reader(store, io::stdin().lock()),
+    }
+}
+
+fn load_from_reader<R: Read>(
+    store: &KvpPoolStore,
+    mut reader: R,
+) -> Result<u8, CliError> {
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    store.populate(parse_key_value_lines(&buf)?)?;
     Ok(EXIT_OK)
 }
 
@@ -303,114 +260,6 @@ fn parse_key_value_lines(
     Ok(records)
 }
 
-fn parse_write(args: &[String]) -> Result<Command, CliError> {
-    let mut append = false;
-    let mut values = Vec::new();
-
-    for arg in args {
-        if arg == "--append" {
-            append = true;
-        } else {
-            values.push(arg.clone());
-        }
-    }
-
-    match values.as_slice() {
-        [key, value] => Ok(Command::Write {
-            key: key.clone(),
-            value: value.clone(),
-            append,
-        }),
-        _ => Err(CliError::Usage(
-            "usage: azure-init-kvp write [--append] <KEY> <VALUE>".to_string(),
-        )),
-    }
-}
-
-fn parse_load(args: &[String]) -> Result<Command, CliError> {
-    let mut file = None;
-    let mut index = 0;
-
-    while let Some(arg) = args.get(index) {
-        match arg.as_str() {
-            "--file" => {
-                index += 1;
-                let value = args.get(index).ok_or_else(|| {
-                    CliError::Usage("--file requires a value".to_string())
-                })?;
-                file = Some(PathBuf::from(value));
-            }
-            _ if arg.starts_with("--file=") => {
-                file = Some(PathBuf::from(&arg[7..]));
-            }
-            _ => {
-                return Err(CliError::Usage(
-                    "usage: azure-init-kvp load [--file PATH]".to_string(),
-                ));
-            }
-        }
-        index += 1;
-    }
-
-    Ok(Command::Load { file })
-}
-
-fn parse_clear(args: &[String]) -> Result<Command, CliError> {
-    let mut if_stale = false;
-    let mut yes = false;
-
-    for arg in args {
-        match arg.as_str() {
-            "--if-stale" => if_stale = true,
-            "--yes" => yes = true,
-            _ => {
-                return Err(CliError::Usage(
-                    "usage: azure-init-kvp clear [--if-stale] [--yes]"
-                        .to_string(),
-                ));
-            }
-        }
-    }
-
-    if !if_stale && !yes {
-        return Err(CliError::Usage(
-            "clear requires --yes unless --if-stale is set".to_string(),
-        ));
-    }
-
-    Ok(Command::Clear { if_stale })
-}
-
-fn one_arg(command: &str, args: &[String]) -> Result<String, CliError> {
-    match args {
-        [value] => Ok(value.clone()),
-        _ => Err(CliError::Usage(format!(
-            "usage: azure-init-kvp {command} <KEY>"
-        ))),
-    }
-}
-
-fn require_no_args(command: &str, args: &[String]) -> Result<(), CliError> {
-    if args.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(format!("usage: azure-init-kvp {command}")))
-    }
-}
-
-fn parse_pool(value: &str) -> Result<KvpPool, CliError> {
-    match value {
-        "external" | "0" => Ok(KvpPool::External),
-        "guest" | "1" => Ok(KvpPool::Guest),
-        "auto" | "2" => Ok(KvpPool::Auto),
-        "auto-external" | "3" => Ok(KvpPool::AutoExternal),
-        "auto-internal" | "4" => Ok(KvpPool::AutoInternal),
-        _ => Err(CliError::Usage(format!(
-            "unknown pool {value}; expected external, guest, auto, auto-external, or auto-internal"
-        ))),
-    }
-}
-
 fn pool_name(pool: KvpPool) -> &'static str {
     match pool {
         KvpPool::External => "external",
@@ -426,34 +275,6 @@ fn mode_name(mode: PoolMode) -> &'static str {
         PoolMode::Safe => "safe",
         PoolMode::Unsafe => "unsafe",
     }
-}
-
-fn print_help<W: Write>(stdout: &mut W) -> Result<(), CliError> {
-    writeln!(stdout, "usage: azure-init-kvp [OPTIONS] <COMMAND>")?;
-    writeln!(stdout)?;
-    writeln!(stdout, "options:")?;
-    writeln!(
-        stdout,
-        "  --pool <POOL>       external|guest|auto|auto-external|auto-internal"
-    )?;
-    writeln!(stdout, "  --dir <PATH>        KVP pool directory")?;
-    writeln!(
-        stdout,
-        "  --unsafe           use full wire-format key/value limits"
-    )?;
-    writeln!(stdout, "  -h, --help          print help")?;
-    writeln!(stdout)?;
-    writeln!(stdout, "commands:")?;
-    writeln!(stdout, "  info")?;
-    writeln!(stdout, "  dump")?;
-    writeln!(stdout, "  entries")?;
-    writeln!(stdout, "  read <KEY>")?;
-    writeln!(stdout, "  write [--append] <KEY> <VALUE>")?;
-    writeln!(stdout, "  load [--file PATH]")?;
-    writeln!(stdout, "  delete <KEY>")?;
-    writeln!(stdout, "  clear [--if-stale] [--yes]")?;
-    writeln!(stdout, "  is-stale")?;
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -498,43 +319,408 @@ impl From<io::Error> for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::io::Cursor;
+    use std::path::Path;
 
-    #[test]
-    fn parse_defaults_to_guest_safe() {
-        let invocation = Invocation::parse(["info"]).unwrap();
-        assert_eq!(invocation.pool, KvpPool::Guest);
-        assert_eq!(invocation.dir, None);
-        assert_eq!(invocation.mode, PoolMode::Safe);
-        assert_eq!(invocation.command, Command::Info);
+    use clap::CommandFactory;
+    use tempfile::TempDir;
+
+    fn cli(dir: &TempDir, command: Command) -> Cli {
+        Cli {
+            pool: PoolArg::Guest,
+            dir: Some(dir.path().to_path_buf()),
+            unsafe_mode: false,
+            command,
+        }
+    }
+
+    fn store_at(dir: &TempDir) -> KvpPoolStore {
+        KvpPoolStore::new_in(
+            KvpPool::Guest,
+            dir.path().to_path_buf(),
+            PoolMode::Safe,
+        )
+        .unwrap()
+    }
+
+    fn run_dispatch(cli: Cli) -> (u8, String) {
+        let mut out = Vec::new();
+        let code = dispatch(cli, &mut out).unwrap();
+        (code, String::from_utf8(out).unwrap())
+    }
+
+    fn set_mtime_to_epoch(path: &Path) {
+        let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let times = [libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        }; 2];
+        assert_eq!(unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) }, 0);
     }
 
     #[test]
-    fn parse_globals() {
-        let invocation = Invocation::parse([
+    fn clap_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parse_defaults_to_guest_safe() {
+        let cli = Cli::parse_from(["libazureinit-kvp", "info"]);
+        assert!(matches!(cli.pool, PoolArg::Guest));
+        assert_eq!(cli.dir, None);
+        assert!(!cli.unsafe_mode);
+        assert!(matches!(cli.command, Command::Info));
+    }
+
+    #[test]
+    fn parse_globals_and_subcommand() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
             "--pool=auto-external",
             "--dir",
             "/tmp/kvp",
             "--unsafe",
             "dump",
-        ])
-        .unwrap();
-        assert_eq!(invocation.pool, KvpPool::AutoExternal);
-        assert_eq!(invocation.dir, Some(PathBuf::from("/tmp/kvp")));
-        assert_eq!(invocation.mode, PoolMode::Unsafe);
-        assert_eq!(invocation.command, Command::Dump);
+        ]);
+        assert!(matches!(cli.pool, PoolArg::AutoExternal));
+        assert_eq!(cli.dir, Some(PathBuf::from("/tmp/kvp")));
+        assert!(cli.unsafe_mode);
+        assert!(matches!(cli.command, Command::Dump));
+    }
+
+    #[test]
+    fn parse_pool_numeric_aliases() {
+        let cases = [
+            ("0", PoolArg::External),
+            ("1", PoolArg::Guest),
+            ("2", PoolArg::Auto),
+            ("3", PoolArg::AutoExternal),
+            ("4", PoolArg::AutoInternal),
+        ];
+
+        for (alias, expected) in cases {
+            let cli =
+                Cli::parse_from(["libazureinit-kvp", "--pool", alias, "info"]);
+            assert_eq!(cli.pool, expected);
+        }
     }
 
     #[test]
     fn parse_write_append() {
-        let invocation =
-            Invocation::parse(["write", "--append", "k", "v"]).unwrap();
-        assert_eq!(
-            invocation.command,
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "write",
+            "--append",
+            "k",
+            "v",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Write { append: true, ref key, ref value }
+                if key == "k" && value == "v"
+        ));
+    }
+
+    #[test]
+    fn pool_arg_into_kvp_pool_covers_every_variant() {
+        assert_eq!(KvpPool::from(PoolArg::External), KvpPool::External);
+        assert_eq!(KvpPool::from(PoolArg::Guest), KvpPool::Guest);
+        assert_eq!(KvpPool::from(PoolArg::Auto), KvpPool::Auto);
+        assert_eq!(KvpPool::from(PoolArg::AutoExternal), KvpPool::AutoExternal);
+        assert_eq!(KvpPool::from(PoolArg::AutoInternal), KvpPool::AutoInternal);
+    }
+
+    #[test]
+    fn pool_name_covers_every_variant() {
+        assert_eq!(pool_name(KvpPool::External), "external");
+        assert_eq!(pool_name(KvpPool::Guest), "guest");
+        assert_eq!(pool_name(KvpPool::Auto), "auto");
+        assert_eq!(pool_name(KvpPool::AutoExternal), "auto-external");
+        assert_eq!(pool_name(KvpPool::AutoInternal), "auto-internal");
+    }
+
+    #[test]
+    fn mode_name_covers_both_variants() {
+        assert_eq!(mode_name(PoolMode::Safe), "safe");
+        assert_eq!(mode_name(PoolMode::Unsafe), "unsafe");
+    }
+
+    #[test]
+    fn dispatch_info_reports_metadata() {
+        let dir = TempDir::new().unwrap();
+        let (code, out) = run_dispatch(cli(&dir, Command::Info));
+        assert_eq!(code, EXIT_OK);
+        assert!(out.contains("pool=guest"));
+        assert!(out.contains("mode=safe"));
+        assert!(out.contains("records=0"));
+        assert!(out.contains("empty=true"));
+        assert!(out.contains("stale=false"));
+        assert!(out.contains("max_key_size="));
+        assert!(out.contains("max_value_size="));
+    }
+
+    #[test]
+    fn dispatch_info_with_unsafe_mode_picks_unsafe_profile() {
+        let dir = TempDir::new().unwrap();
+        let invocation = Cli {
+            pool: PoolArg::External,
+            dir: Some(dir.path().to_path_buf()),
+            unsafe_mode: true,
+            command: Command::Info,
+        };
+        let (code, out) = run_dispatch(invocation);
+        assert_eq!(code, EXIT_OK);
+        assert!(out.contains("pool=external"));
+        assert!(out.contains("mode=unsafe"));
+    }
+
+    #[test]
+    fn dispatch_write_then_read() {
+        let dir = TempDir::new().unwrap();
+        let (code, _) = run_dispatch(cli(
+            &dir,
             Command::Write {
-                key: "k".to_string(),
-                value: "v".to_string(),
+                append: false,
+                key: "k".into(),
+                value: "v".into(),
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+
+        let (code, out) =
+            run_dispatch(cli(&dir, Command::Read { key: "k".into() }));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, "v\n");
+    }
+
+    #[test]
+    fn dispatch_write_append_keeps_prior_values() {
+        let dir = TempDir::new().unwrap();
+        run_dispatch(cli(
+            &dir,
+            Command::Write {
+                append: false,
+                key: "k".into(),
+                value: "1".into(),
+            },
+        ));
+        run_dispatch(cli(
+            &dir,
+            Command::Write {
                 append: true,
-            }
+                key: "k".into(),
+                value: "2".into(),
+            },
+        ));
+
+        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        assert_eq!(dumped, "k=1\nk=2\n");
+    }
+
+    #[test]
+    fn dispatch_read_missing_returns_not_found() {
+        let dir = TempDir::new().unwrap();
+        let (code, out) = run_dispatch(cli(
+            &dir,
+            Command::Read {
+                key: "missing".into(),
+            },
+        ));
+        assert_eq!(code, EXIT_NOT_FOUND);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn dispatch_dump_and_entries_emit_records() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("b", "two").unwrap();
+        store.insert("a", "one").unwrap();
+
+        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        assert!(dumped.contains("a=one"));
+        assert!(dumped.contains("b=two"));
+
+        let (_, entries) = run_dispatch(cli(&dir, Command::Entries));
+        // entries are sorted by key
+        assert_eq!(entries, "a=one\nb=two\n");
+    }
+
+    #[test]
+    fn dispatch_delete_prints_removed_flag() {
+        let dir = TempDir::new().unwrap();
+        store_at(&dir).insert("k", "v").unwrap();
+
+        let (code, out) =
+            run_dispatch(cli(&dir, Command::Delete { key: "k".into() }));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, "true\n");
+
+        let (code, out) = run_dispatch(cli(
+            &dir,
+            Command::Delete {
+                key: "missing".into(),
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn dispatch_clear_yes_branch_empties_store() {
+        let dir = TempDir::new().unwrap();
+        store_at(&dir).insert("k", "v").unwrap();
+
+        let (code, _) = run_dispatch(cli(
+            &dir,
+            Command::Clear {
+                if_stale: false,
+                yes: true,
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+        assert!(store_at(&dir).is_empty().unwrap());
+    }
+
+    #[test]
+    fn dispatch_clear_if_stale_branch_succeeds_on_fresh_store() {
+        let dir = TempDir::new().unwrap();
+        let (code, _) = run_dispatch(cli(
+            &dir,
+            Command::Clear {
+                if_stale: true,
+                yes: false,
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+    }
+
+    #[test]
+    fn dispatch_clear_without_flags_returns_usage_error() {
+        let dir = TempDir::new().unwrap();
+        let invocation = cli(
+            &dir,
+            Command::Clear {
+                if_stale: false,
+                yes: false,
+            },
+        );
+        let mut out = Vec::new();
+        let err = dispatch(invocation, &mut out).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE_OR_VALIDATION);
+        assert!(err.to_string().contains("clear requires --yes"));
+    }
+
+    #[test]
+    fn dispatch_is_stale_returns_not_found_when_fresh() {
+        let dir = TempDir::new().unwrap();
+        let (code, out) = run_dispatch(cli(&dir, Command::IsStale));
+        assert_eq!(code, EXIT_NOT_FOUND);
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn dispatch_is_stale_returns_ok_when_pool_predates_boot() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("k", "v").unwrap();
+        set_mtime_to_epoch(store.path());
+
+        let (code, out) = run_dispatch(cli(&dir, Command::IsStale));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, "true\n");
+    }
+
+    #[test]
+    fn dispatch_load_from_file_replaces_pool() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path().join("records.txt");
+        std::fs::write(&input, "a=1\nb=2\n").unwrap();
+
+        let (code, _) =
+            run_dispatch(cli(&dir, Command::Load { file: Some(input) }));
+        assert_eq!(code, EXIT_OK);
+        let (_, entries) = run_dispatch(cli(&dir, Command::Entries));
+        assert_eq!(entries, "a=1\nb=2\n");
+    }
+
+    #[test]
+    fn dispatch_propagates_validation_error_from_write() {
+        let dir = TempDir::new().unwrap();
+        let invocation = cli(
+            &dir,
+            Command::Write {
+                append: false,
+                key: String::new(),
+                value: "v".into(),
+            },
+        );
+        let mut out = Vec::new();
+        let err = dispatch(invocation, &mut out).unwrap_err();
+        assert!(matches!(err, CliError::Kvp(KvpError::EmptyKey)));
+        assert_eq!(err.exit_code(), EXIT_USAGE_OR_VALIDATION);
+    }
+
+    #[test]
+    fn dispatch_store_io_error_propagates() {
+        // Putting a regular file where the store expects a directory
+        // makes the kernel return ENOTDIR for any path beneath it,
+        // which propagates as KvpError::Io.
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not-a-directory").unwrap();
+
+        let invocation = Cli {
+            pool: PoolArg::Guest,
+            dir: Some(blocker),
+            unsafe_mode: false,
+            command: Command::Info,
+        };
+        let mut out = Vec::new();
+        let err = dispatch(invocation, &mut out).unwrap_err();
+        assert!(matches!(err, CliError::Kvp(KvpError::Io(_))));
+        assert_eq!(err.exit_code(), EXIT_IO);
+    }
+
+    #[test]
+    fn load_from_reader_parses_key_value_records() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let code = load_from_reader(&store, Cursor::new("x=1\ny=2\n")).unwrap();
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(store.read("x").unwrap().as_deref(), Some("1"));
+        assert_eq!(store.read("y").unwrap().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn load_from_reader_surfaces_parse_errors() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let err =
+            load_from_reader(&store, Cursor::new("bad-line\n")).unwrap_err();
+        assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn load_from_path_surfaces_io_errors() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let err =
+            load(&store, Some(dir.path().join("does-not-exist"))).unwrap_err();
+        assert!(matches!(err, CliError::Io(_)));
+        assert_eq!(err.exit_code(), EXIT_IO);
+    }
+
+    #[test]
+    fn parse_key_value_lines_accepts_empty_lines_and_pairs() {
+        let parsed = parse_key_value_lines("a=1\n\nb=2\n").unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "2".to_string()),
+            ]
         );
     }
 
@@ -543,5 +729,38 @@ mod tests {
         let err = parse_key_value_lines("a=1\ninvalid\n").unwrap_err();
         assert_eq!(err.exit_code(), EXIT_USAGE_OR_VALIDATION);
         assert_eq!(err.to_string(), "line 2 must be in key=value format");
+    }
+
+    #[test]
+    fn cli_error_display_covers_every_variant() {
+        let usage = CliError::Usage("u".to_string());
+        assert_eq!(usage.to_string(), "u");
+        assert_eq!(usage.exit_code(), EXIT_USAGE_OR_VALIDATION);
+
+        let kvp_validation = CliError::Kvp(KvpError::EmptyKey);
+        assert_eq!(kvp_validation.to_string(), "KVP key must not be empty");
+        assert_eq!(kvp_validation.exit_code(), EXIT_USAGE_OR_VALIDATION);
+
+        let kvp_io = CliError::Kvp(KvpError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "kvp-io",
+        )));
+        assert!(kvp_io.to_string().contains("kvp-io"));
+        assert_eq!(kvp_io.exit_code(), EXIT_IO);
+
+        let io_err =
+            CliError::Io(io::Error::new(io::ErrorKind::Other, "raw-io"));
+        assert_eq!(io_err.to_string(), "raw-io");
+        assert_eq!(io_err.exit_code(), EXIT_IO);
+    }
+
+    #[test]
+    fn cli_error_from_conversions() {
+        let from_kvp: CliError = KvpError::EmptyKey.into();
+        assert!(matches!(from_kvp, CliError::Kvp(_)));
+
+        let from_io: CliError =
+            io::Error::new(io::ErrorKind::Other, "boom").into();
+        assert!(matches!(from_io, CliError::Io(_)));
     }
 }
