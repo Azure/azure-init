@@ -129,7 +129,12 @@ pub struct KvpPoolStore {
 }
 
 impl KvpPoolStore {
-    /// Append a key-value pair without checking for an existing key.
+    /// Append one key-value pair to the tail of the pool without
+    /// checking for an existing key.
+    ///
+    /// This preserves any existing records, including duplicate keys,
+    /// and does not enforce [`MAX_UNIQUE_KEYS`]. Use
+    /// [`insert`](Self::insert) when callers need upsert semantics.
     pub fn append(&self, key: &str, value: &str) -> Result<(), KvpError> {
         validate_key(key, self.mode.max_key_size())?;
         validate_value(value, self.mode.max_value_size())?;
@@ -143,13 +148,18 @@ impl KvpPoolStore {
         Ok(())
     }
 
-    /// Append records under one exclusive lock, preserving order and
-    /// preventing cooperating writers from interleaving with the batch.
+    /// Append records to the tail of the pool under one exclusive
+    /// lock, preserving order and preventing cooperating writers from
+    /// interleaving with the batch.
     ///
+    /// Existing records are kept and duplicate keys are preserved.
     /// Like [`append`](Self::append), this does not enforce
-    /// [`MAX_UNIQUE_KEYS`]. Validation happens before the file is
-    /// opened; empty input is a no-op. If an I/O error occurs after
-    /// writing starts, the file may contain a partial batch.
+    /// [`MAX_UNIQUE_KEYS`]; use [`populate`](Self::populate) when the
+    /// caller is replacing the entire pool and wants the unique-key cap
+    /// enforced. Validation happens before the file is opened; empty
+    /// input is a no-op and does not create the pool file. If an I/O
+    /// error occurs after writing starts, the file may contain a
+    /// partial batch.
     pub fn append_multiple<I, K, V>(&self, records: I) -> Result<(), KvpError>
     where
         I: IntoIterator<Item = (K, V)>,
@@ -523,10 +533,15 @@ impl KvpPoolStore {
         self.pool
     }
 
-    /// Atomically replace all records with the given pairs, in
-    /// iteration order. Inverse of [`dump`](Self::dump): duplicates
-    /// are preserved, but unique-key count is capped at
-    /// [`MAX_UNIQUE_KEYS`].
+    /// Replace the entire pool with the given pairs, in iteration
+    /// order, under one exclusive lock.
+    ///
+    /// This is the inverse of [`dump`](Self::dump): duplicate keys are
+    /// preserved exactly as provided, but the number of unique keys is
+    /// capped at [`MAX_UNIQUE_KEYS`]. Existing records are discarded;
+    /// empty input clears the pool. Use
+    /// [`append_multiple`](Self::append_multiple) when callers need to
+    /// extend the pool instead.
     ///
     /// Validation happens before locking, so a rejected batch never
     /// blocks other writers. The file is truncated and rewritten
