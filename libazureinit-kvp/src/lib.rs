@@ -7,6 +7,7 @@
 //! - [`KvpPoolStore`]: KVP pool file store with
 //!   [`PoolMode`]-based policy.
 
+pub mod cli;
 mod error;
 mod store;
 
