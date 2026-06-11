@@ -14,7 +14,7 @@ libc = "0.2"
 tracing = "0.1.40"
 
 [dev-dependencies]
-rstest = { version = "0.23", default-features = false }
+rstest = { version = "0.26", default-features = false }
 tempfile = "3"
 
 [lib]
