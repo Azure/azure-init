@@ -53,6 +53,8 @@ fn help_lists_commands() {
     let stdout = assert_success(kvp(&["--help"]));
     assert!(stdout.contains("Usage: libazureinit-kvp"));
     assert!(stdout.contains("write"));
+    assert!(stdout.contains("append-multiple"));
+    assert!(stdout.contains("delete-multiple"));
     assert!(stdout.contains("is-stale"));
 }
 
@@ -123,7 +125,7 @@ fn write_append_read_dump_entries_delete_and_clear() {
     assert_eq!(assert_success(kvp(&with_dir(&dir, &["dump"]))), "");
 
     assert_success(kvp(&with_dir(&dir, &["write", "b", "3"])));
-    assert_success(kvp(&with_dir(&dir, &["clear", "--yes"])));
+    assert_success(kvp(&with_dir(&dir, &["clear"])));
     assert_eq!(assert_success(kvp(&with_dir(&dir, &["dump"]))), "");
 }
 
@@ -155,6 +157,52 @@ fn load_can_read_from_stdin() {
 }
 
 #[test]
+fn append_multiple_can_read_from_stdin() {
+    let dir = TempDir::new().unwrap();
+    assert_success(kvp(&with_dir(&dir, &["write", "x", "1"])));
+    assert_success(kvp_with_stdin(
+        &with_dir(&dir, &["append-multiple"]),
+        "x=2\ny=3\n",
+    ));
+
+    assert_eq!(
+        assert_success(kvp(&with_dir(&dir, &["dump"]))),
+        "x=1\nx=2\ny=3\n"
+    );
+}
+
+#[test]
+fn append_multiple_can_read_from_file() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("records.txt");
+    fs::write(&input, "a=1\nb=2\n").unwrap();
+
+    assert_success(kvp(&with_dir(
+        &dir,
+        &["append-multiple", "--file", input.to_str().unwrap()],
+    )));
+    assert_eq!(
+        assert_success(kvp(&with_dir(&dir, &["dump"]))),
+        "a=1\nb=2\n"
+    );
+}
+
+#[test]
+fn delete_multiple_prints_removed_record_count() {
+    let dir = TempDir::new().unwrap();
+    assert_success(kvp_with_stdin(
+        &with_dir(&dir, &["append-multiple"]),
+        "a=1\nb=2\na=3\n",
+    ));
+
+    assert_eq!(
+        assert_success(kvp(&with_dir(&dir, &["delete-multiple", "a", "z"]))),
+        "2\n"
+    );
+    assert_eq!(assert_success(kvp(&with_dir(&dir, &["entries"]))), "b=2\n");
+}
+
+#[test]
 fn clear_if_stale_and_is_stale_use_status_apis() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(&dir, &["clear", "--if-stale"])));
@@ -176,17 +224,6 @@ fn read_missing_exits_one_without_output() {
 }
 
 #[test]
-fn clear_requires_confirmation() {
-    let dir = TempDir::new().unwrap();
-    let output = kvp(&with_dir(&dir, &["clear"]));
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8(output.stderr)
-        .unwrap()
-        .contains("clear requires --yes"));
-}
-
-#[test]
 fn validation_errors_exit_two() {
     let dir = TempDir::new().unwrap();
     let output = kvp(&with_dir(&dir, &["write", "", "value"]));
@@ -194,4 +231,26 @@ fn validation_errors_exit_two() {
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("KVP key must not be empty"));
+}
+
+#[test]
+fn json_read_round_trips_value_with_equals_and_newline() {
+    let dir = TempDir::new().unwrap();
+    // A value containing both '=' and an embedded newline would be
+    // ambiguous in the default key=value text output but must survive
+    // round-tripping through JSON unchanged.
+    let raw_value = "https://example.test/q=1\nline2";
+    let status =
+        std::process::Command::new(env!("CARGO_BIN_EXE_libazureinit-kvp"))
+            .args(with_dir(&dir, &["write", "url", raw_value]))
+            .status()
+            .unwrap();
+    assert!(status.success());
+
+    let stdout =
+        assert_success(kvp(&with_dir(&dir, &["--json", "read", "url"])));
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("read --json parses");
+    assert_eq!(value["key"], "url");
+    assert_eq!(value["value"], raw_value);
 }

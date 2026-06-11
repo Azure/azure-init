@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::json;
 
 use crate::{KvpError, KvpPool, KvpPoolStore, PoolMode};
 
@@ -51,8 +52,29 @@ struct Cli {
     #[arg(long = "unsafe", global = true)]
     unsafe_mode: bool,
 
+    /// Emit machine-readable JSON for commands that produce output.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// Output format for commands that print data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Text,
+    Json,
+}
+
+impl OutputMode {
+    fn from_flag(json: bool) -> Self {
+        if json {
+            Self::Json
+        } else {
+            Self::Text
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -79,16 +101,24 @@ enum Command {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Append KEY=VALUE lines read from --file or stdin.
+    AppendMultiple {
+        /// Read records from PATH instead of stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Delete every record with KEY (prints `true` if any were removed).
     Delete { key: String },
-    /// Clear the pool. Requires --yes unless --if-stale is set.
+    /// Delete every record matching any KEY (prints removed record count).
+    DeleteMultiple {
+        #[arg(required = true)]
+        keys: Vec<String>,
+    },
+    /// Clear the pool. Pass --if-stale to clear only when stale.
     Clear {
         /// Only clear if the store is currently stale.
         #[arg(long = "if-stale")]
         if_stale: bool,
-        /// Confirm unconditional clear.
-        #[arg(long)]
-        yes: bool,
     },
     /// Print whether the pool is stale (exit 0 if stale, 1 otherwise).
     IsStale,
@@ -128,6 +158,7 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
     } else {
         PoolMode::Safe
     };
+    let output = OutputMode::from_flag(cli.json);
 
     let store = match cli.dir {
         Some(dir) => KvpPoolStore::new_in(pool, dir, mode),
@@ -136,10 +167,10 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
     .expect("KvpPoolStore construction is currently infallible");
 
     match cli.command {
-        Command::Info => info(&store, stdout),
-        Command::Dump => dump(&store, stdout),
-        Command::Entries => entries(&store, stdout),
-        Command::Read { key } => read(&store, stdout, &key),
+        Command::Info => info(&store, stdout, output),
+        Command::Dump => dump(&store, stdout, output),
+        Command::Entries => entries(&store, stdout, output),
+        Command::Read { key } => read(&store, stdout, &key, output),
         Command::Write { append, key, value } => {
             if append {
                 store.append(&key, &value)?;
@@ -149,51 +180,84 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
             Ok(EXIT_OK)
         }
         Command::Load { file } => load(&store, file),
-        Command::Delete { key } => {
-            writeln!(stdout, "{}", store.delete(&key)?)?;
-            Ok(EXIT_OK)
+        Command::AppendMultiple { file } => append_multiple(&store, file),
+        Command::Delete { key } => delete(&store, stdout, &key, output),
+        Command::DeleteMultiple { keys } => {
+            delete_multiple(&store, stdout, keys, output)
         }
-        Command::Clear { if_stale, yes } => {
+        Command::Clear { if_stale } => {
             if if_stale {
                 store.clear_if_stale()?;
-            } else if yes {
-                store.clear()?;
             } else {
-                return Err(CliError::Usage(
-                    "clear requires --yes unless --if-stale is set".to_string(),
-                ));
+                store.clear()?;
             }
             Ok(EXIT_OK)
         }
-        Command::IsStale => {
-            let stale = store.is_stale()?;
-            writeln!(stdout, "{stale}")?;
-            Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
-        }
+        Command::IsStale => is_stale(&store, stdout, output),
     }
 }
 
 fn info<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
+    output: OutputMode,
 ) -> Result<u8, CliError> {
-    writeln!(stdout, "pool={}", pool_name(store.pool()))?;
-    writeln!(stdout, "path={}", store.path().display())?;
-    writeln!(stdout, "mode={}", mode_name(store.mode()))?;
-    writeln!(stdout, "records={}", store.len()?)?;
-    writeln!(stdout, "empty={}", store.is_empty()?)?;
-    writeln!(stdout, "stale={}", store.is_stale()?)?;
-    writeln!(stdout, "max_key_size={}", store.max_key_size())?;
-    writeln!(stdout, "max_value_size={}", store.max_value_size())?;
+    let pool = pool_name(store.pool());
+    let path = store.path().display().to_string();
+    let mode = mode_name(store.mode());
+    let records = store.len()?;
+    let empty = store.is_empty()?;
+    let stale = store.is_stale()?;
+    let max_key_size = store.max_key_size();
+    let max_value_size = store.max_value_size();
+
+    match output {
+        OutputMode::Text => {
+            writeln!(stdout, "pool={pool}")?;
+            writeln!(stdout, "path={path}")?;
+            writeln!(stdout, "mode={mode}")?;
+            writeln!(stdout, "records={records}")?;
+            writeln!(stdout, "empty={empty}")?;
+            writeln!(stdout, "stale={stale}")?;
+            writeln!(stdout, "max_key_size={max_key_size}")?;
+            writeln!(stdout, "max_value_size={max_value_size}")?;
+        }
+        OutputMode::Json => {
+            let value = json!({
+                "pool": pool,
+                "path": path,
+                "mode": mode,
+                "records": records,
+                "empty": empty,
+                "stale": stale,
+                "max_key_size": max_key_size,
+                "max_value_size": max_value_size,
+            });
+            writeln_json(stdout, &value)?;
+        }
+    }
     Ok(EXIT_OK)
 }
 
 fn dump<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
+    output: OutputMode,
 ) -> Result<u8, CliError> {
-    for (key, value) in store.dump()? {
-        writeln!(stdout, "{key}={value}")?;
+    let records = store.dump()?;
+    match output {
+        OutputMode::Text => {
+            for (key, value) in records {
+                writeln!(stdout, "{key}={value}")?;
+            }
+        }
+        OutputMode::Json => {
+            let array: Vec<_> = records
+                .into_iter()
+                .map(|(key, value)| json!({ "key": key, "value": value }))
+                .collect();
+            writeln_json(stdout, &serde_json::Value::Array(array))?;
+        }
     }
     Ok(EXIT_OK)
 }
@@ -201,11 +265,23 @@ fn dump<W: Write>(
 fn entries<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
+    output: OutputMode,
 ) -> Result<u8, CliError> {
     let mut entries: Vec<_> = store.entries()?.into_iter().collect();
     entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-    for (key, value) in entries {
-        writeln!(stdout, "{key}={value}")?;
+    match output {
+        OutputMode::Text => {
+            for (key, value) in entries {
+                writeln!(stdout, "{key}={value}")?;
+            }
+        }
+        OutputMode::Json => {
+            let mut object = serde_json::Map::new();
+            for (key, value) in entries {
+                object.insert(key, serde_json::Value::String(value));
+            }
+            writeln_json(stdout, &serde_json::Value::Object(object))?;
+        }
     }
     Ok(EXIT_OK)
 }
@@ -214,14 +290,80 @@ fn read<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
     key: &str,
+    output: OutputMode,
 ) -> Result<u8, CliError> {
     match store.read(key)? {
         Some(value) => {
-            writeln!(stdout, "{value}")?;
+            match output {
+                OutputMode::Text => writeln!(stdout, "{value}")?,
+                OutputMode::Json => {
+                    let payload = json!({ "key": key, "value": value });
+                    writeln_json(stdout, &payload)?
+                }
+            }
             Ok(EXIT_OK)
         }
         None => Ok(EXIT_NOT_FOUND),
     }
+}
+
+fn delete<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    key: &str,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let removed = store.delete(key)?;
+    match output {
+        OutputMode::Text => writeln!(stdout, "{removed}")?,
+        OutputMode::Json => {
+            writeln_json(stdout, &json!({ "removed": removed }))?
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn delete_multiple<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    keys: Vec<String>,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let removed = store.delete_multiple(keys)?;
+    match output {
+        OutputMode::Text => writeln!(stdout, "{removed}")?,
+        OutputMode::Json => {
+            writeln_json(stdout, &json!({ "removed": removed }))?
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn is_stale<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let stale = store.is_stale()?;
+    match output {
+        OutputMode::Text => writeln!(stdout, "{stale}")?,
+        OutputMode::Json => writeln_json(stdout, &json!({ "stale": stale }))?,
+    }
+    Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
+}
+
+fn writeln_json<W: Write>(
+    stdout: &mut W,
+    value: &serde_json::Value,
+) -> Result<(), CliError> {
+    // Serializing `serde_json::Value` to a String only fails on writer
+    // I/O errors, which `to_string` cannot produce, so this is safe to
+    // unwrap.
+    let rendered = serde_json::to_string(value)
+        .expect("serde_json::Value always serializes to a String");
+    stdout.write_all(rendered.as_bytes())?;
+    stdout.write_all(b"\n")?;
+    Ok(())
 }
 
 fn load(store: &KvpPoolStore, file: Option<PathBuf>) -> Result<u8, CliError> {
@@ -237,7 +379,27 @@ fn load_from_reader<R: Read>(
 ) -> Result<u8, CliError> {
     let mut buf = String::new();
     reader.read_to_string(&mut buf)?;
-    store.populate(parse_key_value_lines(&buf)?)?;
+    store.load(parse_key_value_lines(&buf)?)?;
+    Ok(EXIT_OK)
+}
+
+fn append_multiple(
+    store: &KvpPoolStore,
+    file: Option<PathBuf>,
+) -> Result<u8, CliError> {
+    match file {
+        Some(path) => append_multiple_from_reader(store, fs::File::open(path)?),
+        None => append_multiple_from_reader(store, io::stdin().lock()),
+    }
+}
+
+fn append_multiple_from_reader<R: Read>(
+    store: &KvpPoolStore,
+    mut reader: R,
+) -> Result<u8, CliError> {
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    store.append_multiple(parse_key_value_lines(&buf)?)?;
     Ok(EXIT_OK)
 }
 
@@ -324,6 +486,7 @@ mod tests {
     use std::path::Path;
 
     use clap::CommandFactory;
+    use rstest::rstest;
     use tempfile::TempDir;
 
     fn cli(dir: &TempDir, command: Command) -> Cli {
@@ -331,6 +494,17 @@ mod tests {
             pool: PoolArg::Guest,
             dir: Some(dir.path().to_path_buf()),
             unsafe_mode: false,
+            json: false,
+            command,
+        }
+    }
+
+    fn cli_json(dir: &TempDir, command: Command) -> Cli {
+        Cli {
+            pool: PoolArg::Guest,
+            dir: Some(dir.path().to_path_buf()),
+            unsafe_mode: false,
+            json: true,
             command,
         }
     }
@@ -370,6 +544,7 @@ mod tests {
         assert!(matches!(cli.pool, PoolArg::Guest));
         assert_eq!(cli.dir, None);
         assert!(!cli.unsafe_mode);
+        assert!(!cli.json);
         assert!(matches!(cli.command, Command::Info));
     }
 
@@ -381,11 +556,13 @@ mod tests {
             "--dir",
             "/tmp/kvp",
             "--unsafe",
+            "--json",
             "dump",
         ]);
         assert!(matches!(cli.pool, PoolArg::AutoExternal));
         assert_eq!(cli.dir, Some(PathBuf::from("/tmp/kvp")));
         assert!(cli.unsafe_mode);
+        assert!(cli.json);
         assert!(matches!(cli.command, Command::Dump));
     }
 
@@ -419,6 +596,32 @@ mod tests {
             cli.command,
             Command::Write { append: true, ref key, ref value }
                 if key == "k" && value == "v"
+        ));
+    }
+
+    #[test]
+    fn parse_append_multiple_file() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "append-multiple",
+            "--file",
+            "/tmp/records",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::AppendMultiple { ref file }
+                if file.as_deref() == Some(Path::new("/tmp/records"))
+        ));
+    }
+
+    #[test]
+    fn parse_delete_multiple_keys() {
+        let cli =
+            Cli::parse_from(["libazureinit-kvp", "delete-multiple", "a", "b"]);
+        assert!(matches!(
+            cli.command,
+            Command::DeleteMultiple { ref keys }
+                if keys == &vec!["a".to_string(), "b".to_string()]
         ));
     }
 
@@ -467,6 +670,7 @@ mod tests {
             pool: PoolArg::External,
             dir: Some(dir.path().to_path_buf()),
             unsafe_mode: true,
+            json: false,
             command: Command::Info,
         };
         let (code, out) = run_dispatch(invocation);
@@ -568,48 +772,58 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_clear_yes_branch_empties_store() {
+    fn dispatch_append_multiple_preserves_existing_records() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("a", "1").unwrap();
+
+        let code =
+            append_multiple_from_reader(&store, Cursor::new("a=2\nb=3\n"))
+                .unwrap();
+        assert_eq!(code, EXIT_OK);
+
+        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        assert_eq!(dumped, "a=1\na=2\nb=3\n");
+    }
+
+    #[test]
+    fn dispatch_delete_multiple_prints_removed_record_count() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store
+            .append_multiple(vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "2".to_string()),
+                ("a".to_string(), "3".to_string()),
+            ])
+            .unwrap();
+
+        let (code, out) = run_dispatch(cli(
+            &dir,
+            Command::DeleteMultiple {
+                keys: vec!["a".into(), "missing".into()],
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, "2\n");
+
+        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        assert_eq!(dumped, "b=2\n");
+    }
+
+    #[rstest]
+    #[case::unconditional(false, true)]
+    #[case::if_stale_no_op_on_fresh_store(true, false)]
+    fn dispatch_clear_executes_both_branches(
+        #[case] if_stale: bool,
+        #[case] expect_empty_after: bool,
+    ) {
         let dir = TempDir::new().unwrap();
         store_at(&dir).insert("k", "v").unwrap();
 
-        let (code, _) = run_dispatch(cli(
-            &dir,
-            Command::Clear {
-                if_stale: false,
-                yes: true,
-            },
-        ));
+        let (code, _) = run_dispatch(cli(&dir, Command::Clear { if_stale }));
         assert_eq!(code, EXIT_OK);
-        assert!(store_at(&dir).is_empty().unwrap());
-    }
-
-    #[test]
-    fn dispatch_clear_if_stale_branch_succeeds_on_fresh_store() {
-        let dir = TempDir::new().unwrap();
-        let (code, _) = run_dispatch(cli(
-            &dir,
-            Command::Clear {
-                if_stale: true,
-                yes: false,
-            },
-        ));
-        assert_eq!(code, EXIT_OK);
-    }
-
-    #[test]
-    fn dispatch_clear_without_flags_returns_usage_error() {
-        let dir = TempDir::new().unwrap();
-        let invocation = cli(
-            &dir,
-            Command::Clear {
-                if_stale: false,
-                yes: false,
-            },
-        );
-        let mut out = Vec::new();
-        let err = dispatch(invocation, &mut out).unwrap_err();
-        assert_eq!(err.exit_code(), EXIT_USAGE_OR_VALIDATION);
-        assert!(err.to_string().contains("clear requires --yes"));
+        assert_eq!(store_at(&dir).is_empty().unwrap(), expect_empty_after);
     }
 
     #[test]
@@ -675,6 +889,7 @@ mod tests {
             pool: PoolArg::Guest,
             dir: Some(blocker),
             unsafe_mode: false,
+            json: false,
             command: Command::Info,
         };
         let mut out = Vec::new();
@@ -691,6 +906,16 @@ mod tests {
         assert_eq!(code, EXIT_OK);
         assert_eq!(store.read("x").unwrap().as_deref(), Some("1"));
         assert_eq!(store.read("y").unwrap().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn append_multiple_from_reader_surfaces_parse_errors() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let err =
+            append_multiple_from_reader(&store, Cursor::new("bad-line\n"))
+                .unwrap_err();
+        assert!(matches!(err, CliError::Usage(_)));
     }
 
     #[test]
@@ -762,5 +987,109 @@ mod tests {
         let from_io: CliError =
             io::Error::new(io::ErrorKind::Other, "boom").into();
         assert!(matches!(from_io, CliError::Io(_)));
+    }
+
+    fn parse_json(out: &str) -> serde_json::Value {
+        serde_json::from_str(out.trim_end_matches('\n'))
+            .expect("CLI JSON output must parse")
+    }
+
+    #[test]
+    fn dispatch_info_json_emits_object_with_all_fields() {
+        let dir = TempDir::new().unwrap();
+        let (code, out) = run_dispatch(cli_json(&dir, Command::Info));
+        assert_eq!(code, EXIT_OK);
+
+        let json = parse_json(&out);
+        assert_eq!(json["pool"], "guest");
+        assert_eq!(json["mode"], "safe");
+        assert_eq!(json["records"], 0);
+        assert_eq!(json["empty"], true);
+        assert_eq!(json["stale"], false);
+        assert!(json["max_key_size"].is_number());
+        assert!(json["max_value_size"].is_number());
+        assert!(json["path"].is_string());
+    }
+
+    #[test]
+    fn dispatch_dump_json_preserves_duplicates_and_order() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("b", "two").unwrap();
+        store.append("b", "two-prime").unwrap();
+        store.insert("a", "one").unwrap();
+
+        let (_, out) = run_dispatch(cli_json(&dir, Command::Dump));
+        let json = parse_json(&out);
+        let array = json.as_array().expect("dump --json returns array");
+        assert_eq!(array.len(), 3);
+        assert_eq!(array[0]["key"], "b");
+        assert_eq!(array[0]["value"], "two");
+        assert_eq!(array[1]["key"], "b");
+        assert_eq!(array[1]["value"], "two-prime");
+        assert_eq!(array[2]["key"], "a");
+        assert_eq!(array[2]["value"], "one");
+    }
+
+    #[test]
+    fn dispatch_entries_json_emits_sorted_object() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("b", "two").unwrap();
+        store.insert("a", "one").unwrap();
+
+        let (_, out) = run_dispatch(cli_json(&dir, Command::Entries));
+        let json = parse_json(&out);
+        assert_eq!(json["a"], "one");
+        assert_eq!(json["b"], "two");
+    }
+
+    #[test]
+    fn dispatch_read_json_emits_object_when_present() {
+        let dir = TempDir::new().unwrap();
+        store_at(&dir).insert("k", "v").unwrap();
+
+        let (code, out) =
+            run_dispatch(cli_json(&dir, Command::Read { key: "k".into() }));
+        assert_eq!(code, EXIT_OK);
+        let json = parse_json(&out);
+        assert_eq!(json["key"], "k");
+        assert_eq!(json["value"], "v");
+    }
+
+    #[test]
+    fn dispatch_delete_json_reports_removed_flag() {
+        let dir = TempDir::new().unwrap();
+        store_at(&dir).insert("k", "v").unwrap();
+
+        let (code, out) =
+            run_dispatch(cli_json(&dir, Command::Delete { key: "k".into() }));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(parse_json(&out)["removed"], true);
+    }
+
+    #[test]
+    fn dispatch_delete_multiple_json_reports_count() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.insert("a", "1").unwrap();
+        store.insert("b", "2").unwrap();
+
+        let (code, out) = run_dispatch(cli_json(
+            &dir,
+            Command::DeleteMultiple {
+                keys: vec!["a".into(), "missing".into()],
+            },
+        ));
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(parse_json(&out)["removed"], 1);
+    }
+
+    #[test]
+    fn dispatch_is_stale_json_emits_object() {
+        let dir = TempDir::new().unwrap();
+        let (code, out) = run_dispatch(cli_json(&dir, Command::IsStale));
+        assert_eq!(code, EXIT_NOT_FOUND);
+        assert_eq!(parse_json(&out)["stale"], false);
     }
 }
