@@ -154,7 +154,7 @@ impl KvpPoolStore {
     ///
     /// Existing records are kept and duplicate keys are preserved.
     /// Like [`append`](Self::append), this does not enforce
-    /// [`MAX_UNIQUE_KEYS`]; use [`populate`](Self::populate) when the
+    /// [`MAX_UNIQUE_KEYS`]; use [`load`](Self::load) when the
     /// caller is replacing the entire pool and wants the unique-key cap
     /// enforced. Validation happens before the file is opened; empty
     /// input is a no-op and does not create the pool file. If an I/O
@@ -497,7 +497,7 @@ impl KvpPoolStore {
         self.ops.open_read_write_create(&self.path)
     }
 
-    /// Shared write primitive for [`populate`](Self::populate) and
+    /// Shared write primitive for [`load`](Self::load) and
     /// [`append_multiple`](Self::append_multiple).
     ///
     /// Holds one exclusive lock across the entire batch. If
@@ -550,7 +550,7 @@ impl KvpPoolStore {
     /// mtime (relevant to [`is_stale`](Self::is_stale)). Rejects
     /// malformed pool files (size not a multiple of the record
     /// size); call [`clear`](Self::clear) first to recover.
-    pub fn populate<I, K, V>(&self, records: I) -> Result<(), KvpError>
+    pub fn load<I, K, V>(&self, records: I) -> Result<(), KvpError>
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -1093,7 +1093,7 @@ mod tests {
         KvpPoolStore::new_in(KvpPool::Guest, dir, PoolMode::Unsafe).unwrap()
     }
 
-    /// `&str` literals → `Vec<(String, String)>` for `dump`/`populate`.
+    /// `&str` literals → `Vec<(String, String)>` for `dump`/`load`.
     fn pairs<const N: usize>(
         items: [(&str, &str); N],
     ) -> Vec<(String, String)> {
@@ -1105,11 +1105,11 @@ mod tests {
 
     /// Bulk-load `count` records (`k0..k{count-1}` → `"v"`) for tests
     /// that need to set up at or near [`MAX_UNIQUE_KEYS`].
-    fn prepopulate(store: &KvpPoolStore, count: usize) {
+    fn seed_unique_keys(store: &KvpPoolStore, count: usize) {
         let records: Vec<(String, String)> = (0..count)
             .map(|i| (format!("k{i}"), "v".to_string()))
             .collect();
-        store.populate(records).unwrap();
+        store.load(records).unwrap();
     }
 
     fn lock_dir(dir: &Path) {
@@ -1233,12 +1233,7 @@ mod tests {
         "bad\0value",
         KvpErrKind::ValueContainsNull
     )]
-    #[case::populate_empty_key(
-        WriteOp::Populate,
-        "",
-        "v",
-        KvpErrKind::EmptyKey
-    )]
+    #[case::load_empty_key(WriteOp::Load, "", "v", KvpErrKind::EmptyKey)]
     fn test_write_rejects_invalid_input(
         #[case] op: WriteOp,
         #[case] key: &str,
@@ -1250,7 +1245,7 @@ mod tests {
         let err = match op {
             WriteOp::Insert => store.insert(key, value),
             WriteOp::Append => store.append(key, value),
-            WriteOp::Populate => store.populate(pairs([(key, value)])),
+            WriteOp::Load => store.load(pairs([(key, value)])),
         }
         .unwrap_err();
         assert!(expected.matches(&err), "got: {err:?}");
@@ -1272,14 +1267,14 @@ mod tests {
     enum WriteOp {
         Insert,
         Append,
-        Populate,
+        Load,
     }
 
     #[derive(Clone, Copy)]
     enum FifoOp {
         Clear,
         Append,
-        Populate,
+        Load,
     }
 
     /// Discriminant tag for the [`KvpError`] variants asserted by
@@ -1374,9 +1369,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store
-            .populate(pairs([("key", "v1"), ("other", "v3")]))
-            .unwrap();
+        store.load(pairs([("key", "v1"), ("other", "v3")])).unwrap();
         store.insert("key", "v2").unwrap();
 
         assert_eq!(
@@ -1436,7 +1429,7 @@ mod tests {
         let store = safe_store(dir.path());
 
         store
-            .populate(pairs([("k", "v1"), ("k", "v2"), ("k", "v3")]))
+            .load(pairs([("k", "v1"), ("k", "v2"), ("k", "v3")]))
             .unwrap();
 
         store.insert("k", "updated").unwrap();
@@ -1448,7 +1441,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS);
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
 
         let err = store.insert("overflow", "v").unwrap_err();
@@ -1460,7 +1453,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS);
 
         store.insert("k0", "updated").unwrap();
         assert_eq!(store.read("k0").unwrap(), Some("updated".to_string()));
@@ -1471,7 +1464,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS - 1);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS - 1);
 
         store.append("k0", "dup").unwrap();
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS);
@@ -1485,7 +1478,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS);
 
         assert!(store.delete("k0").unwrap());
         store.insert("new-key", "v").unwrap();
@@ -1496,7 +1489,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS);
 
         store.append("extra", "val").unwrap();
         assert_eq!(store.len().unwrap(), MAX_UNIQUE_KEYS + 1);
@@ -1574,7 +1567,7 @@ mod tests {
             StoreOp::IsStaleAtBoot => {
                 assert!(!store.is_stale_at_boot(i64::MAX).unwrap());
             }
-            StoreOp::Populate | StoreOp::Insert | StoreOp::Append => {
+            StoreOp::Load | StoreOp::Insert | StoreOp::Append => {
                 unreachable!("write ops not in this test's case list")
             }
         }
@@ -1621,9 +1614,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store
-            .populate(pairs([("key", "v1"), ("other", "v2")]))
-            .unwrap();
+        store.load(pairs([("key", "v1"), ("other", "v2")])).unwrap();
 
         assert!(store.delete("key").unwrap());
         assert_eq!(store.dump().unwrap(), pairs([("other", "v2")]));
@@ -1635,7 +1626,7 @@ mod tests {
         let store = safe_store(dir.path());
 
         store
-            .populate(pairs([
+            .load(pairs([
                 ("k", "v1"),
                 ("other", "x"),
                 ("k", "v2"),
@@ -1653,7 +1644,7 @@ mod tests {
         let store = safe_store(dir.path());
 
         store
-            .populate(pairs([
+            .load(pairs([
                 ("k0", "v"),
                 ("k1", "v"),
                 ("k2", "v"),
@@ -1713,7 +1704,7 @@ mod tests {
 
         let records =
             pairs([("key", "val1"), ("key", "val2"), ("key", "val3")]);
-        store.populate(records.clone()).unwrap();
+        store.load(records.clone()).unwrap();
 
         assert_eq!(store.dump().unwrap(), records);
         assert_eq!(
@@ -1723,18 +1714,18 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_round_trips_with_dump() {
+    fn test_load_round_trips_with_dump() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
         let records =
             pairs([("a", "1"), ("b", "2"), ("a", "3"), ("c", "4"), ("b", "5")]);
-        store.populate(records.clone()).unwrap();
+        store.load(records.clone()).unwrap();
         assert_eq!(store.dump().unwrap(), records);
     }
 
     #[test]
-    fn test_populate_truncates_prior_contents() {
+    fn test_load_truncates_prior_contents() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
@@ -1743,30 +1734,30 @@ mod tests {
         store.append("old3", "v").unwrap();
         assert_eq!(store.len().unwrap(), 3);
 
-        store.populate(pairs([("new", "only")])).unwrap();
+        store.load(pairs([("new", "only")])).unwrap();
         assert_eq!(store.dump().unwrap(), pairs([("new", "only")]));
     }
 
     #[test]
-    fn test_populate_empty_clears_store() {
+    fn test_load_empty_clears_store() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
         store.append("k", "v").unwrap();
-        store.populate(Vec::<(String, String)>::new()).unwrap();
+        store.load(Vec::<(String, String)>::new()).unwrap();
         assert!(store.is_empty().unwrap());
     }
 
     #[test]
-    fn test_populate_validates_before_writing() {
+    fn test_load_validates_before_writing() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        store.populate(pairs([("keep", "me")])).unwrap();
+        store.load(pairs([("keep", "me")])).unwrap();
 
         // Bad record mid-batch: file must be untouched on rejection.
         let bad_value = "v".repeat(1023);
         let err = store
-            .populate(vec![
+            .load(vec![
                 ("a".to_string(), "1".to_string()),
                 ("b".to_string(), bad_value),
                 ("c".to_string(), "3".to_string()),
@@ -1778,14 +1769,14 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_enforces_unique_key_cap() {
+    fn test_load_enforces_unique_key_cap() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
         let too_many: Vec<(String, String)> = (0..MAX_UNIQUE_KEYS + 1)
             .map(|i| (format!("k{i}"), "v".to_string()))
             .collect();
-        let err = store.populate(too_many).unwrap_err();
+        let err = store.load(too_many).unwrap_err();
         assert!(is_max_keys(&err), "got {err:?}");
 
         // Cap is checked pre-lock; the file is never opened.
@@ -1793,7 +1784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_cap_counts_unique_keys_not_records() {
+    fn test_load_cap_counts_unique_keys_not_records() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
@@ -1805,19 +1796,19 @@ mod tests {
             (0..MAX_UNIQUE_KEYS).map(|i| (format!("k{i}"), "b".to_string())),
         );
 
-        store.populate(records).unwrap();
+        store.load(records).unwrap();
         assert_eq!(store.len().unwrap(), 2 * MAX_UNIQUE_KEYS);
     }
 
     #[test]
-    fn test_populate_then_insert_respects_cap() {
+    fn test_load_then_insert_respects_cap() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
         let records: Vec<(String, String)> = (0..MAX_UNIQUE_KEYS)
             .map(|i| (format!("k{i}"), "v".to_string()))
             .collect();
-        store.populate(records).unwrap();
+        store.load(records).unwrap();
 
         let err = store.insert("overflow", "v").unwrap_err();
         assert!(is_max_keys(&err), "got {err:?}");
@@ -1842,7 +1833,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store.populate(pairs([("seed", "0")])).unwrap();
+        store.load(pairs([("seed", "0")])).unwrap();
         store
             .append_multiple(pairs([("a", "1"), ("b", "2")]))
             .unwrap();
@@ -1934,7 +1925,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        prepopulate(&store, MAX_UNIQUE_KEYS);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS);
 
         // Adding a new unique key via append_multiple is allowed even
         // when the pool is already at the cap.
@@ -1948,7 +1939,7 @@ mod tests {
         let store = safe_store(dir.path());
 
         store
-            .populate(pairs([("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")]))
+            .load(pairs([("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")]))
             .unwrap();
 
         let removed = store.delete_multiple(vec!["a", "c"]).unwrap();
@@ -1969,7 +1960,7 @@ mod tests {
 
         // Two unique keys, three matching records.
         store
-            .populate(pairs([
+            .load(pairs([
                 ("k", "v1"),
                 ("other", "x"),
                 ("k", "v2"),
@@ -1987,7 +1978,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store.populate(pairs([("present", "1")])).unwrap();
+        store.load(pairs([("present", "1")])).unwrap();
 
         let removed = store
             .delete_multiple(vec!["absent1", "present", "absent2"])
@@ -2001,7 +1992,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store.populate(pairs([("a", "1"), ("b", "2")])).unwrap();
+        store.load(pairs([("a", "1"), ("b", "2")])).unwrap();
 
         let removed = store.delete_multiple(vec!["x", "y", "z"]).unwrap();
         assert_eq!(removed, 0);
@@ -2035,7 +2026,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
 
-        store.populate(pairs([("a", "1"), ("b", "2")])).unwrap();
+        store.load(pairs([("a", "1"), ("b", "2")])).unwrap();
 
         // Listing the same key twice still removes the (one) record
         // exactly once.
@@ -2048,7 +2039,7 @@ mod tests {
     fn test_delete_multiple_rejects_empty_key() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        store.populate(pairs([("a", "1")])).unwrap();
+        store.load(pairs([("a", "1")])).unwrap();
 
         let err = store
             .delete_multiple(vec!["a".to_string(), "".to_string()])
@@ -2063,7 +2054,7 @@ mod tests {
     fn test_delete_multiple_rejects_null_in_key() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        store.populate(pairs([("a", "1")])).unwrap();
+        store.load(pairs([("a", "1")])).unwrap();
 
         let err = store.delete_multiple(vec!["bad\0key"]).unwrap_err();
         assert!(matches!(err, KvpError::KeyContainsNull), "got {err:?}");
@@ -2200,7 +2191,7 @@ mod tests {
 
         let expected =
             pairs([("a", "1"), ("b", "2"), ("c", "3"), ("d", "4"), ("e", "5")]);
-        store.populate(expected.clone()).unwrap();
+        store.load(expected.clone()).unwrap();
 
         let iter = store.iter().unwrap();
         assert_eq!(iter.record_count(), 5);
@@ -2246,7 +2237,7 @@ mod tests {
     fn test_iter_drop_mid_iteration_releases_lock() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        store.populate(pairs([("k1", "v1"), ("k2", "v2")])).unwrap();
+        store.load(pairs([("k1", "v1"), ("k2", "v2")])).unwrap();
 
         {
             let mut iter = store.iter().unwrap();
@@ -2262,7 +2253,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([
+            .load(pairs([
                 ("first", "val_first"),
                 ("middle", "val_middle"),
                 ("last", "val_last"),
@@ -2301,7 +2292,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([("a", "old_a"), ("b", "old_b"), ("c", "old_c")]))
+            .load(pairs([("a", "old_a"), ("b", "old_b"), ("c", "old_c")]))
             .unwrap();
 
         {
@@ -2350,7 +2341,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([("A", "1"), ("B", "2"), ("C", "3"), ("D", "4")]))
+            .load(pairs([("A", "1"), ("B", "2"), ("C", "3"), ("D", "4")]))
             .unwrap();
 
         let mut collected = Vec::new();
@@ -2381,7 +2372,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([("a", "1"), ("b", "2"), ("c", "3")]))
+            .load(pairs([("a", "1"), ("b", "2"), ("c", "3")]))
             .unwrap();
 
         {
@@ -2420,7 +2411,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([("A", "1"), ("B", "2"), ("C", "3")]))
+            .load(pairs([("A", "1"), ("B", "2"), ("C", "3")]))
             .unwrap();
 
         let remaining = {
@@ -2673,12 +2664,10 @@ mod tests {
             assert_eq!(
                 triple.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
                 vec![color.as_str(); 3],
-                "batch was interleaved: {triple:?}",
             );
             assert_eq!(
                 triple.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(),
                 vec!["v0", "v1", "v2"],
-                "batch records out of order: {triple:?}",
             );
         }
     }
@@ -2689,7 +2678,7 @@ mod tests {
         let dir_path = dir.path().to_path_buf();
 
         let store = safe_store(dir.path());
-        prepopulate(&store, MAX_UNIQUE_KEYS - 4);
+        seed_unique_keys(&store, MAX_UNIQUE_KEYS - 4);
 
         let threads: Vec<_> = (0..4)
             .map(|t| {
@@ -2877,7 +2866,7 @@ mod tests {
         ClearIfStale,
         Entries,
         Dump,
-        Populate,
+        Load,
         Len,
         IsStale,
         IsStaleAtBoot,
@@ -2894,7 +2883,7 @@ mod tests {
     #[case::clear_if_stale(StoreOp::ClearIfStale)]
     #[case::entries(StoreOp::Entries)]
     #[case::dump(StoreOp::Dump)]
-    #[case::populate(StoreOp::Populate)]
+    #[case::load(StoreOp::Load)]
     #[case::len(StoreOp::Len)]
     #[case::is_stale(StoreOp::IsStale)]
     #[case::is_stale_at_boot(StoreOp::IsStaleAtBoot)]
@@ -2913,7 +2902,7 @@ mod tests {
             StoreOp::ClearIfStale => store.clear_if_stale(),
             StoreOp::Entries => store.entries().map(|_| ()),
             StoreOp::Dump => store.dump().map(|_| ()),
-            StoreOp::Populate => store.populate(pairs([("a", "b")])),
+            StoreOp::Load => store.load(pairs([("a", "b")])),
             StoreOp::Len => store.len().map(|_| ()),
             StoreOp::IsStale => store.is_stale().map(|_| ()),
             StoreOp::IsStaleAtBoot => {
@@ -3023,7 +3012,7 @@ mod tests {
     #[rstest]
     #[case::clear(FifoOp::Clear, libc::EINVAL)]
     #[case::append(FifoOp::Append, libc::ESPIPE)]
-    #[case::populate(FifoOp::Populate, libc::ESPIPE)]
+    #[case::load(FifoOp::Load, libc::ESPIPE)]
     fn test_fifo_propagates_io_error(
         #[case] op: FifoOp,
         #[case] expected_errno: i32,
@@ -3035,9 +3024,7 @@ mod tests {
         let err = match op {
             FifoOp::Clear => store.clear().unwrap_err(),
             FifoOp::Append => store.append("k", "v").unwrap_err(),
-            FifoOp::Populate => {
-                store.populate(pairs([("k", "v")])).unwrap_err()
-            }
+            FifoOp::Load => store.load(pairs([("k", "v")])).unwrap_err(),
         };
         assert!(
             matches!(err, KvpError::Io(ref e) if e.raw_os_error() == Some(expected_errno)),
@@ -3050,7 +3037,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
         store
-            .populate(pairs([("a", "1"), ("b", "2"), ("c", "3")]))
+            .load(pairs([("a", "1"), ("b", "2"), ("c", "3")]))
             .unwrap();
 
         let mut iter = store.iter().unwrap();
@@ -3074,7 +3061,7 @@ mod tests {
     fn test_iter_read_error_on_truncated_file() {
         let dir = TempDir::new().unwrap();
         let store = safe_store(dir.path());
-        store.populate(pairs([("a", "1"), ("b", "2")])).unwrap();
+        store.load(pairs([("a", "1"), ("b", "2")])).unwrap();
 
         // Open a mutable iterator (exclusive lock) so we can manipulate the file.
         let mut iter = store.iter_mut().unwrap();
@@ -3598,26 +3585,26 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_fails_when_set_len_fails() {
+    fn test_load_fails_when_set_len_fails() {
         let (store, ops, _p) = mock_store(PoolMode::Safe);
         ops.lock().set_len_faults.push_back(Some(ioerr()));
-        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        let err = store.load(pairs([("a", "1")])).unwrap_err();
         assert!(is_io(&err), "got {err:?}");
     }
 
     #[test]
-    fn test_populate_fails_when_append_fails() {
+    fn test_load_fails_when_append_fails() {
         let (store, ops, _p) = mock_store(PoolMode::Safe);
         ops.lock().write_faults.push_back(Some(ioerr()));
-        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        let err = store.load(pairs([("a", "1")])).unwrap_err();
         assert!(is_io(&err), "got {err:?}");
     }
 
     #[test]
-    fn test_populate_fails_when_flush_fails() {
+    fn test_load_fails_when_flush_fails() {
         let (store, ops, _p) = mock_store(PoolMode::Safe);
         ops.lock().flush_faults.push_back(Some(ioerr()));
-        let err = store.populate(pairs([("a", "1")])).unwrap_err();
+        let err = store.load(pairs([("a", "1")])).unwrap_err();
         assert!(is_io(&err), "got {err:?}");
     }
 
