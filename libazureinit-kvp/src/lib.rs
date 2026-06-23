@@ -7,7 +7,7 @@
 //! - [`KvpPoolStore`]: KVP pool file store with
 //!   [`PoolMode`]-based policy.
 //! - [`ProvisioningReport`]: structured provisioning health report that
-//!   converts into KVP entries via [`ToKvp`] and is persisted with
+//!   is persisted as the single `PROVISIONING_REPORT` record with
 //!   [`write_report`].
 
 mod cli;
@@ -17,5 +17,7 @@ mod store;
 
 pub use cli::run;
 pub use error::KvpError;
-pub use report::{write_report, ProvisioningReport, ToKvp};
+pub use report::{
+    write_report, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
+};
 pub use store::{KvpPool, KvpPoolStore, PoolMode};
