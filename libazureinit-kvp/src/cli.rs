@@ -9,7 +9,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
-use crate::{KvpError, KvpPool, KvpPoolStore, PoolMode};
+use crate::{
+    write_report, KvpError, KvpPool, KvpPoolStore, PoolMode,
+    ProvisioningReport, ReportPpsType,
+};
 
 const EXIT_OK: u8 = 0;
 const EXIT_NOT_FOUND: u8 = 1;
@@ -122,6 +125,35 @@ enum Command {
     },
     /// Print whether the pool is stale (exit 0 if stale, 1 otherwise).
     IsStale,
+    /// Write a success provisioning health report, overriding any existing
+    /// `PROVISIONING_REPORT` record.
+    ReportSuccess {
+        /// Virtual machine identifier.
+        #[arg(long)]
+        vm_id: String,
+        /// Reporting agent identifier (e.g. Azure-Init/1.2.3).
+        #[arg(long)]
+        agent: String,
+        /// Optional human-readable message attached as an extra field.
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Write a failure provisioning health report, overriding any existing
+    /// `PROVISIONING_REPORT` record.
+    ReportFailure {
+        /// Virtual machine identifier.
+        #[arg(long)]
+        vm_id: String,
+        /// Reporting agent identifier (e.g. Azure-Init/1.2.3).
+        #[arg(long)]
+        agent: String,
+        /// Failure reason.
+        #[arg(long)]
+        reason: String,
+        /// Optional documentation URL describing the failure.
+        #[arg(long)]
+        documentation_url: Option<String>,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +226,17 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
             Ok(EXIT_OK)
         }
         Command::IsStale => is_stale(&store, stdout, output),
+        Command::ReportSuccess {
+            vm_id,
+            agent,
+            message,
+        } => report_success(&store, vm_id, agent, message),
+        Command::ReportFailure {
+            vm_id,
+            agent,
+            reason,
+            documentation_url,
+        } => report_failure(&store, vm_id, agent, reason, documentation_url),
     }
 }
 
@@ -350,6 +393,37 @@ fn is_stale<W: Write>(
         OutputMode::Json => writeln_json(stdout, &json!({ "stale": stale }))?,
     }
     Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
+}
+
+fn report_success(
+    store: &KvpPoolStore,
+    vm_id: String,
+    agent: String,
+    message: Option<String>,
+) -> Result<u8, CliError> {
+    let mut report =
+        ProvisioningReport::success(agent, vm_id, ReportPpsType::None);
+    if let Some(message) = message {
+        report = report.with_extra("message", message);
+    }
+    write_report(store, &report)?;
+    Ok(EXIT_OK)
+}
+
+fn report_failure(
+    store: &KvpPoolStore,
+    vm_id: String,
+    agent: String,
+    reason: String,
+    documentation_url: Option<String>,
+) -> Result<u8, CliError> {
+    let mut report =
+        ProvisioningReport::failure(agent, vm_id, reason, ReportPpsType::None);
+    if let Some(url) = documentation_url {
+        report = report.with_documentation_url(url);
+    }
+    write_report(store, &report)?;
+    Ok(EXIT_OK)
 }
 
 fn writeln_json<W: Write>(
@@ -510,12 +584,8 @@ mod tests {
     }
 
     fn store_at(dir: &TempDir) -> KvpPoolStore {
-        KvpPoolStore::new_in(
-            KvpPool::Guest,
-            dir.path().to_path_buf(),
-            PoolMode::Safe,
-        )
-        .unwrap()
+        KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)
+            .unwrap()
     }
 
     fn run_dispatch(cli: Cli) -> (u8, String) {
@@ -623,6 +693,125 @@ mod tests {
             Command::DeleteMultiple { ref keys }
                 if keys == &vec!["a".to_string(), "b".to_string()]
         ));
+    }
+
+    #[test]
+    fn parse_report_success() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "report-success",
+            "--vm-id",
+            "vm-1",
+            "--agent",
+            "Azure-Init/0.0.0",
+            "--message",
+            "all good",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportSuccess { ref vm_id, ref agent, ref message }
+                if vm_id == "vm-1"
+                    && agent == "Azure-Init/0.0.0"
+                    && message.as_deref() == Some("all good")
+        ));
+    }
+
+    #[test]
+    fn parse_report_failure() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "report-failure",
+            "--vm-id",
+            "vm-1",
+            "--agent",
+            "Azure-Init/0.0.0",
+            "--reason",
+            "boom",
+            "--documentation-url",
+            "https://aka.ms/x",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportFailure {
+                ref vm_id,
+                ref agent,
+                ref reason,
+                ref documentation_url,
+            } if vm_id == "vm-1"
+                && agent == "Azure-Init/0.0.0"
+                && reason == "boom"
+                && documentation_url.as_deref() == Some("https://aka.ms/x")
+        ));
+    }
+
+    #[test]
+    fn dispatch_report_success_writes_single_record() {
+        let dir = TempDir::new().unwrap();
+        let command = Command::ReportSuccess {
+            vm_id: "vm-1".into(),
+            agent: "Azure-Init/0.0.0".into(),
+            message: Some("hello".into()),
+        };
+        let (code, _) = run_dispatch(cli(&dir, command));
+        assert_eq!(code, EXIT_OK);
+
+        let entries = store_at(&dir).entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.starts_with(
+            "result=success|agent=Azure-Init/0.0.0\
+|pps_type=None|vm_id=vm-1|timestamp="
+        ));
+        assert!(value.ends_with("|message=hello"));
+    }
+
+    #[test]
+    fn dispatch_report_failure_writes_single_record() {
+        let dir = TempDir::new().unwrap();
+        let command = Command::ReportFailure {
+            vm_id: "vm-1".into(),
+            agent: "Azure-Init/0.0.0".into(),
+            reason: "boom".into(),
+            documentation_url: Some("https://aka.ms/x".into()),
+        };
+        let (code, _) = run_dispatch(cli(&dir, command));
+        assert_eq!(code, EXIT_OK);
+
+        let entries = store_at(&dir).entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.starts_with(
+            "result=error|reason=boom|agent=Azure-Init/0.0.0\
+|pps_type=None|vm_id=vm-1|timestamp="
+        ));
+        assert!(value.ends_with("|documentation_url=https://aka.ms/x"));
+    }
+
+    #[test]
+    fn dispatch_report_overrides_previous_record() {
+        let dir = TempDir::new().unwrap();
+        run_dispatch(cli(
+            &dir,
+            Command::ReportFailure {
+                vm_id: "vm-1".into(),
+                agent: "Azure-Init/0.0.0".into(),
+                reason: "boom".into(),
+                documentation_url: None,
+            },
+        ));
+        run_dispatch(cli(
+            &dir,
+            Command::ReportSuccess {
+                vm_id: "vm-1".into(),
+                agent: "Azure-Init/0.0.0".into(),
+                message: None,
+            },
+        ));
+
+        let entries = store_at(&dir).entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.starts_with("result=success|"));
     }
 
     #[test]
@@ -966,15 +1155,11 @@ mod tests {
         assert_eq!(kvp_validation.to_string(), "KVP key must not be empty");
         assert_eq!(kvp_validation.exit_code(), EXIT_USAGE_OR_VALIDATION);
 
-        let kvp_io = CliError::Kvp(KvpError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "kvp-io",
-        )));
+        let kvp_io = CliError::Kvp(KvpError::Io(io::Error::other("kvp-io")));
         assert!(kvp_io.to_string().contains("kvp-io"));
         assert_eq!(kvp_io.exit_code(), EXIT_IO);
 
-        let io_err =
-            CliError::Io(io::Error::new(io::ErrorKind::Other, "raw-io"));
+        let io_err = CliError::Io(io::Error::other("raw-io"));
         assert_eq!(io_err.to_string(), "raw-io");
         assert_eq!(io_err.exit_code(), EXIT_IO);
     }
@@ -984,8 +1169,7 @@ mod tests {
         let from_kvp: CliError = KvpError::EmptyKey.into();
         assert!(matches!(from_kvp, CliError::Kvp(_)));
 
-        let from_io: CliError =
-            io::Error::new(io::ErrorKind::Other, "boom").into();
+        let from_io: CliError = io::Error::other("boom").into();
         assert!(matches!(from_io, CliError::Io(_)));
     }
 
