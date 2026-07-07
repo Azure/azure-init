@@ -19,6 +19,10 @@ const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE_OR_VALIDATION: u8 = 2;
 const EXIT_IO: u8 = 3;
 
+/// Default reporting agent identifier, derived from this crate's version
+const DEFAULT_AGENT: &str =
+    concat!("libazureinit-kvp/", env!("CARGO_PKG_VERSION"));
+
 /// Entry point for the `libazureinit-kvp` binary.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
@@ -130,22 +134,23 @@ enum Command {
     ReportSuccess {
         /// Virtual machine identifier.
         #[arg(long)]
-        vm_id: String,
-        /// Reporting agent identifier (e.g. Azure-Init/1.2.3).
-        #[arg(long)]
+        vm_id: Option<String>,
+        /// Reporting agent identifier (e.g. libazureinit-kvp/0.1.0).
+        #[arg(long, default_value = DEFAULT_AGENT)]
         agent: String,
-        /// Optional human-readable message attached as an extra field.
-        #[arg(long)]
-        message: Option<String>,
+        /// Additional key=value supporting data, comma-separated or the
+        /// flag repeated (e.g. --supporting-data k1=v1,k2=v2).
+        #[arg(long, value_delimiter = ',', value_parser = parse_key_value_pair)]
+        supporting_data: Vec<(String, String)>,
     },
     /// Write a failure provisioning health report, overriding any existing
     /// `PROVISIONING_REPORT` record.
     ReportFailure {
-        /// Virtual machine identifier.
+        /// Virtual machine identifier ID.
         #[arg(long)]
-        vm_id: String,
-        /// Reporting agent identifier (e.g. Azure-Init/1.2.3).
-        #[arg(long)]
+        vm_id: Option<String>,
+        /// Reporting agent identifier (e.g. libazureinit-kvp/0.1.0).
+        #[arg(long, default_value = DEFAULT_AGENT)]
         agent: String,
         /// Failure reason.
         #[arg(long)]
@@ -153,6 +158,10 @@ enum Command {
         /// Optional documentation URL describing the failure.
         #[arg(long)]
         documentation_url: Option<String>,
+        /// Additional key=value supporting data, comma-separated or the
+        /// flag repeated (e.g. --supporting-data k1=v1,k2=v2).
+        #[arg(long, value_delimiter = ',', value_parser = parse_key_value_pair)]
+        supporting_data: Vec<(String, String)>,
     },
 }
 
@@ -229,14 +238,22 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
         Command::ReportSuccess {
             vm_id,
             agent,
-            message,
-        } => report_success(&store, vm_id, agent, message),
+            supporting_data,
+        } => report_success(&store, vm_id, agent, supporting_data),
         Command::ReportFailure {
             vm_id,
             agent,
             reason,
             documentation_url,
-        } => report_failure(&store, vm_id, agent, reason, documentation_url),
+            supporting_data,
+        } => report_failure(
+            &store,
+            vm_id,
+            agent,
+            reason,
+            documentation_url,
+            supporting_data,
+        ),
     }
 }
 
@@ -397,14 +414,15 @@ fn is_stale<W: Write>(
 
 fn report_success(
     store: &KvpPoolStore,
-    vm_id: String,
+    vm_id: Option<String>,
     agent: String,
-    message: Option<String>,
+    supporting_data: Vec<(String, String)>,
 ) -> Result<u8, CliError> {
+    let vm_id = resolve_vm_id(vm_id)?;
     let mut report =
         ProvisioningReport::success(agent, vm_id, ReportPpsType::None);
-    if let Some(message) = message {
-        report = report.with_extra("message", message);
+    for (key, value) in supporting_data {
+        report = report.with_extra(key, value);
     }
     write_report(store, &report)?;
     Ok(EXIT_OK)
@@ -412,18 +430,49 @@ fn report_success(
 
 fn report_failure(
     store: &KvpPoolStore,
-    vm_id: String,
+    vm_id: Option<String>,
     agent: String,
     reason: String,
     documentation_url: Option<String>,
+    supporting_data: Vec<(String, String)>,
 ) -> Result<u8, CliError> {
+    let vm_id = resolve_vm_id(vm_id)?;
     let mut report =
         ProvisioningReport::failure(agent, vm_id, reason, ReportPpsType::None);
+    for (key, value) in supporting_data {
+        report = report.with_extra(key, value);
+    }
     if let Some(url) = documentation_url {
         report = report.with_documentation_url(url);
     }
     write_report(store, &report)?;
     Ok(EXIT_OK)
+}
+
+/// Resolve the VM ID for a report, falling back to the current VM's ID when
+/// `--vm-id` was not supplied.
+fn resolve_vm_id(vm_id: Option<String>) -> Result<String, CliError> {
+    match vm_id {
+        Some(vm_id) => Ok(vm_id),
+        None => crate::vm_id::get_vm_id().ok_or_else(|| {
+            CliError::Usage(
+                "unable to determine the current VM ID automatically; \
+                 pass --vm-id explicitly"
+                    .to_string(),
+            )
+        }),
+    }
+}
+
+/// Parse a single `key=value` supporting-data pair.
+fn parse_key_value_pair(raw: &str) -> Result<(String, String), String> {
+    let (key, value) = raw.split_once('=').ok_or_else(|| {
+        format!("supporting data '{raw}' must be in key=value format")
+    })?;
+    if key.is_empty() {
+        return Err(format!("supporting data '{raw}' has an empty key"));
+    }
+    Ok((key.to_string(), value.to_string()))
 }
 
 fn writeln_json<W: Write>(
@@ -704,15 +753,30 @@ mod tests {
             "vm-1",
             "--agent",
             "Azure-Init/0.0.0",
-            "--message",
-            "all good",
+            "--supporting-data",
+            "k1=v1,k2=v2",
         ]);
         assert!(matches!(
             cli.command,
-            Command::ReportSuccess { ref vm_id, ref agent, ref message }
-                if vm_id == "vm-1"
+            Command::ReportSuccess { ref vm_id, ref agent, ref supporting_data }
+                if vm_id.as_deref() == Some("vm-1")
                     && agent == "Azure-Init/0.0.0"
-                    && message.as_deref() == Some("all good")
+                    && supporting_data == &vec![
+                        ("k1".to_string(), "v1".to_string()),
+                        ("k2".to_string(), "v2".to_string()),
+                    ]
+        ));
+    }
+
+    #[test]
+    fn parse_report_success_defaults_agent_and_vm_id() {
+        let cli = Cli::parse_from(["libazureinit-kvp", "report-success"]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportSuccess { ref vm_id, ref agent, ref supporting_data }
+                if vm_id.is_none()
+                    && agent == DEFAULT_AGENT
+                    && supporting_data.is_empty()
         ));
     }
 
@@ -729,6 +793,8 @@ mod tests {
             "boom",
             "--documentation-url",
             "https://aka.ms/x",
+            "--supporting-data",
+            "details=bad config",
         ]);
         assert!(matches!(
             cli.command,
@@ -737,20 +803,38 @@ mod tests {
                 ref agent,
                 ref reason,
                 ref documentation_url,
-            } if vm_id == "vm-1"
+                ref supporting_data,
+            } if vm_id.as_deref() == Some("vm-1")
                 && agent == "Azure-Init/0.0.0"
                 && reason == "boom"
                 && documentation_url.as_deref() == Some("https://aka.ms/x")
+                && supporting_data == &vec![
+                    ("details".to_string(), "bad config".to_string()),
+                ]
         ));
+    }
+
+    #[test]
+    fn parse_report_rejects_supporting_data_without_equals() {
+        let result = Cli::try_parse_from([
+            "libazureinit-kvp",
+            "report-success",
+            "--supporting-data",
+            "novalue",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]
     fn dispatch_report_success_writes_single_record() {
         let dir = TempDir::new().unwrap();
         let command = Command::ReportSuccess {
-            vm_id: "vm-1".into(),
+            vm_id: Some("vm-1".into()),
             agent: "Azure-Init/0.0.0".into(),
-            message: Some("hello".into()),
+            supporting_data: vec![
+                ("endpoint".into(), "http://example.com".into()),
+                ("status".into(), "404".into()),
+            ],
         };
         let (code, _) = run_dispatch(cli(&dir, command));
         assert_eq!(code, EXIT_OK);
@@ -762,17 +846,34 @@ mod tests {
             "result=success|agent=Azure-Init/0.0.0\
 |pps_type=None|vm_id=vm-1|timestamp="
         ));
-        assert!(value.ends_with("|message=hello"));
+        assert!(value.ends_with("|endpoint=http://example.com|status=404"));
+    }
+
+    #[test]
+    fn dispatch_report_success_defaults_agent() {
+        let dir = TempDir::new().unwrap();
+        let command = Command::ReportSuccess {
+            vm_id: Some("vm-1".into()),
+            agent: DEFAULT_AGENT.into(),
+            supporting_data: Vec::new(),
+        };
+        let (code, _) = run_dispatch(cli(&dir, command));
+        assert_eq!(code, EXIT_OK);
+
+        let entries = store_at(&dir).entries().unwrap();
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.contains(&format!("agent={DEFAULT_AGENT}")));
     }
 
     #[test]
     fn dispatch_report_failure_writes_single_record() {
         let dir = TempDir::new().unwrap();
         let command = Command::ReportFailure {
-            vm_id: "vm-1".into(),
+            vm_id: Some("vm-1".into()),
             agent: "Azure-Init/0.0.0".into(),
             reason: "boom".into(),
             documentation_url: Some("https://aka.ms/x".into()),
+            supporting_data: Vec::new(),
         };
         let (code, _) = run_dispatch(cli(&dir, command));
         assert_eq!(code, EXIT_OK);
@@ -788,23 +889,45 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_report_failure_places_supporting_data_before_pps_type() {
+        let dir = TempDir::new().unwrap();
+        let command = Command::ReportFailure {
+            vm_id: Some("vm-1".into()),
+            agent: "Azure-Init/0.0.0".into(),
+            reason: "boom".into(),
+            documentation_url: None,
+            supporting_data: vec![("details".into(), "bad config".into())],
+        };
+        let (code, _) = run_dispatch(cli(&dir, command));
+        assert_eq!(code, EXIT_OK);
+
+        let entries = store_at(&dir).entries().unwrap();
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.starts_with(
+            "result=error|reason=boom|agent=Azure-Init/0.0.0\
+|details=bad config|pps_type=None|vm_id=vm-1|timestamp="
+        ));
+    }
+
+    #[test]
     fn dispatch_report_overrides_previous_record() {
         let dir = TempDir::new().unwrap();
         run_dispatch(cli(
             &dir,
             Command::ReportFailure {
-                vm_id: "vm-1".into(),
+                vm_id: Some("vm-1".into()),
                 agent: "Azure-Init/0.0.0".into(),
                 reason: "boom".into(),
                 documentation_url: None,
+                supporting_data: Vec::new(),
             },
         ));
         run_dispatch(cli(
             &dir,
             Command::ReportSuccess {
-                vm_id: "vm-1".into(),
+                vm_id: Some("vm-1".into()),
                 agent: "Azure-Init/0.0.0".into(),
-                message: None,
+                supporting_data: Vec::new(),
             },
         ));
 

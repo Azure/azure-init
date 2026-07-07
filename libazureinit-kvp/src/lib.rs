@@ -14,6 +14,7 @@ mod cli;
 mod error;
 mod report;
 mod store;
+mod vm_id;
 
 pub use cli::run;
 pub use error::KvpError;
