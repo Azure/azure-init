@@ -138,10 +138,11 @@ enum Command {
         /// Reporting agent identifier (e.g. libazureinit-kvp/0.1.0).
         #[arg(long, default_value = DEFAULT_AGENT)]
         agent: String,
-        /// Additional key=value supporting data, comma-separated or the
-        /// flag repeated (e.g. --supporting-data k1=v1,k2=v2).
-        #[arg(long, value_delimiter = ',', value_parser = parse_key_value_pair)]
-        supporting_data: Vec<(String, String)>,
+        /// Additional key=value supporting data, comma-separated
+        /// (e.g. --supporting-data k1=v1,k2=v2). The flag may also be
+        /// repeated.
+        #[arg(long, value_parser = parse_supporting_data)]
+        supporting_data: Vec<SupportingData>,
     },
     /// Write a failure provisioning health report, overriding any existing
     /// `PROVISIONING_REPORT` record.
@@ -158,10 +159,22 @@ enum Command {
         /// Optional documentation URL describing the failure.
         #[arg(long)]
         documentation_url: Option<String>,
-        /// Additional key=value supporting data, comma-separated or the
-        /// flag repeated (e.g. --supporting-data k1=v1,k2=v2).
-        #[arg(long, value_delimiter = ',', value_parser = parse_key_value_pair)]
-        supporting_data: Vec<(String, String)>,
+        /// Additional key=value supporting data, comma-separated
+        /// (e.g. --supporting-data k1=v1,k2=v2). The flag may also be
+        /// repeated.
+        ///
+        /// To keep a literal comma in a value, wrap that value in matching
+        /// single or double quotes. The shell strips quotes first, so wrap
+        /// the whole argument to let the inner quotes through:
+        ///
+        /// --supporting-data "k1='a,b',k2=v2"  ->  k1=a,b  k2=v2
+        ///
+        /// --supporting-data 'k1="a,b",k2=v2'  ->  k1=a,b  k2=v2
+        ///
+        /// Quotes are only special at the start of a value and must be
+        /// balanced.
+        #[arg(long, value_parser = parse_supporting_data)]
+        supporting_data: Vec<SupportingData>,
     },
 }
 
@@ -416,12 +429,12 @@ fn report_success(
     store: &KvpPoolStore,
     vm_id: Option<String>,
     agent: String,
-    supporting_data: Vec<(String, String)>,
+    supporting_data: Vec<SupportingData>,
 ) -> Result<u8, CliError> {
     let vm_id = resolve_vm_id(vm_id)?;
     let mut report =
         ProvisioningReport::success(agent, vm_id, ReportPpsType::None);
-    for (key, value) in supporting_data {
+    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
         report = report.with_extra(key, value);
     }
     write_report(store, &report)?;
@@ -434,12 +447,12 @@ fn report_failure(
     agent: String,
     reason: String,
     documentation_url: Option<String>,
-    supporting_data: Vec<(String, String)>,
+    supporting_data: Vec<SupportingData>,
 ) -> Result<u8, CliError> {
     let vm_id = resolve_vm_id(vm_id)?;
     let mut report =
         ProvisioningReport::failure(agent, vm_id, reason, ReportPpsType::None);
-    for (key, value) in supporting_data {
+    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
         report = report.with_extra(key, value);
     }
     if let Some(url) = documentation_url {
@@ -452,9 +465,19 @@ fn report_failure(
 /// Resolve the VM ID for a report, falling back to the current VM's ID when
 /// `--vm-id` was not supplied.
 fn resolve_vm_id(vm_id: Option<String>) -> Result<String, CliError> {
+    resolve_vm_id_with(vm_id, crate::vm_id::get_vm_id)
+}
+
+/// Resolve the VM ID using `lookup` to determine the current VM's ID when
+/// `--vm-id` was not supplied. Split out from [`resolve_vm_id`] so the
+/// auto-detection branches can be tested without touching the host's DMI data.
+fn resolve_vm_id_with(
+    vm_id: Option<String>,
+    lookup: impl FnOnce() -> Option<String>,
+) -> Result<String, CliError> {
     match vm_id {
         Some(vm_id) => Ok(vm_id),
-        None => crate::vm_id::get_vm_id().ok_or_else(|| {
+        None => lookup().ok_or_else(|| {
             CliError::Usage(
                 "unable to determine the current VM ID automatically; \
                  pass --vm-id explicitly"
@@ -464,7 +487,102 @@ fn resolve_vm_id(vm_id: Option<String>) -> Result<String, CliError> {
     }
 }
 
-/// Parse a single `key=value` supporting-data pair.
+/// One or more `key=value` supporting-data pairs parsed from a single
+/// `--supporting-data` argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SupportingData(Vec<(String, String)>);
+
+/// Parse a `--supporting-data` argument into its `key=value` pairs.
+///
+/// Fields are comma-separated. A value may be wrapped in matching single or
+/// double quotes so it can contain literal commas; the quotes are honored
+/// only when they wrap the *entire* value (the opening quote immediately
+/// follows `=` and the matching quote ends the field) and are stripped from
+/// the stored value. Empty fields (such as a trailing comma) are ignored.
+///
+/// Supported (input -> parsed pairs):
+/// - `k=v` -> `k`=`v`
+/// - `k1=v1,k2=v2` -> `k1`=`v1`, `k2`=`v2`
+/// - `k='a,b'` or `k="a,b"` -> `k`=`a,b` (quotes protect the comma)
+/// - `k=a'b` -> `k`=`a'b` (a quote not at the value start is literal)
+/// - `k=v,` -> `k`=`v` (trailing/empty field ignored)
+///
+/// Rejected:
+/// - `novalue` -> missing `=`
+/// - `=v` -> empty key
+/// - `k='a,b` -> unterminated quote
+/// - `k='a,b'x` -> characters after a quoted value
+fn parse_supporting_data(raw: &str) -> Result<SupportingData, String> {
+    let mut pairs = Vec::new();
+    for field in split_supporting_data_fields(raw)? {
+        if field.is_empty() {
+            continue;
+        }
+        pairs.push(parse_key_value_pair(field)?);
+    }
+    Ok(SupportingData(pairs))
+}
+
+/// Split a `--supporting-data` argument into `key=value` field slices on
+/// top-level commas. See [`parse_supporting_data`] for the quoting rules.
+fn split_supporting_data_fields(raw: &str) -> Result<Vec<&str>, String> {
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut fields = Vec::new();
+    let mut idx = 0;
+
+    loop {
+        let field_start = idx;
+
+        while idx < len && bytes[idx] != b'=' && bytes[idx] != b',' {
+            idx += 1;
+        }
+
+        if idx < len && bytes[idx] == b'=' {
+            idx += 1;
+            if idx < len && (bytes[idx] == b'\'' || bytes[idx] == b'"') {
+                let quote = bytes[idx];
+                idx += 1;
+                let mut closed = false;
+                while idx < len {
+                    let ch = bytes[idx];
+                    idx += 1;
+                    if ch == quote {
+                        closed = true;
+                        break;
+                    }
+                }
+                if !closed {
+                    return Err(format!(
+                        "supporting data '{raw}' has an unterminated quote"
+                    ));
+                }
+                if idx < len && bytes[idx] != b',' {
+                    return Err(format!(
+                        "supporting data '{raw}' has unexpected characters \
+                         after a quoted value"
+                    ));
+                }
+            } else {
+                while idx < len && bytes[idx] != b',' {
+                    idx += 1;
+                }
+            }
+        }
+
+        fields.push(&raw[field_start..idx]);
+
+        if idx >= len {
+            break;
+        }
+        idx += 1;
+    }
+
+    Ok(fields)
+}
+
+/// Parse a single `key=value` supporting-data pair, stripping one layer of
+/// surrounding single or double quotes from the value.
 fn parse_key_value_pair(raw: &str) -> Result<(String, String), String> {
     let (key, value) = raw.split_once('=').ok_or_else(|| {
         format!("supporting data '{raw}' must be in key=value format")
@@ -472,16 +590,26 @@ fn parse_key_value_pair(raw: &str) -> Result<(String, String), String> {
     if key.is_empty() {
         return Err(format!("supporting data '{raw}' has an empty key"));
     }
-    Ok((key.to_string(), value.to_string()))
+    Ok((key.to_string(), unquote(value).to_string()))
+}
+
+/// Strip one layer of matching surrounding single or double quotes.
+fn unquote(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        if (first == b'\'' || first == b'"') && bytes[bytes.len() - 1] == first
+        {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
 }
 
 fn writeln_json<W: Write>(
     stdout: &mut W,
     value: &serde_json::Value,
 ) -> Result<(), CliError> {
-    // Serializing `serde_json::Value` to a String only fails on writer
-    // I/O errors, which `to_string` cannot produce, so this is safe to
-    // unwrap.
     let rendered = serde_json::to_string(value)
         .expect("serde_json::Value always serializes to a String");
     stdout.write_all(rendered.as_bytes())?;
@@ -761,10 +889,28 @@ mod tests {
             Command::ReportSuccess { ref vm_id, ref agent, ref supporting_data }
                 if vm_id.as_deref() == Some("vm-1")
                     && agent == "Azure-Init/0.0.0"
-                    && supporting_data == &vec![
+                    && supporting_data == &vec![SupportingData(vec![
                         ("k1".to_string(), "v1".to_string()),
                         ("k2".to_string(), "v2".to_string()),
-                    ]
+                    ])]
+        ));
+    }
+
+    #[test]
+    fn parse_report_supporting_data_preserves_commas_in_values() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "report-success",
+            "--supporting-data",
+            "k1='foo,bar',k2=foo2",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportSuccess { ref supporting_data, .. }
+                if supporting_data == &vec![SupportingData(vec![
+                    ("k1".to_string(), "foo,bar".to_string()),
+                    ("k2".to_string(), "foo2".to_string()),
+                ])]
         ));
     }
 
@@ -808,9 +954,9 @@ mod tests {
                 && agent == "Azure-Init/0.0.0"
                 && reason == "boom"
                 && documentation_url.as_deref() == Some("https://aka.ms/x")
-                && supporting_data == &vec![
+                && supporting_data == &vec![SupportingData(vec![
                     ("details".to_string(), "bad config".to_string()),
-                ]
+                ])]
         ));
     }
 
@@ -825,16 +971,143 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[rstest]
+    #[case::key_value("k=v", Ok(("k".to_string(), "v".to_string())))]
+    #[case::value_with_commas(
+        "k=foo,bar",
+        Ok(("k".to_string(), "foo,bar".to_string()))
+    )]
+    #[case::quoted_value(
+        "k='foo,bar'",
+        Ok(("k".to_string(), "foo,bar".to_string()))
+    )]
+    #[case::missing_separator(
+        "novalue",
+        Err("supporting data 'novalue' must be in key=value format".to_string())
+    )]
+    #[case::empty_key("=v", Err("supporting data '=v' has an empty key".to_string()))]
+    fn parse_key_value_pair_handles_input(
+        #[case] raw: &str,
+        #[case] expected: Result<(String, String), String>,
+    ) {
+        assert_eq!(parse_key_value_pair(raw), expected);
+    }
+
+    #[rstest]
+    #[case::single("k=v", vec![("k", "v")])]
+    #[case::multiple("k1=v1,k2=v2", vec![("k1", "v1"), ("k2", "v2")])]
+    #[case::single_quoted_comma("k1='a,b',k2=v2", vec![("k1", "a,b"), ("k2", "v2")])]
+    #[case::double_quoted_comma("k1=\"a,b\"", vec![("k1", "a,b")])]
+    #[case::apostrophe_in_bare_value_is_literal(
+        "k1=it's,k2=v2",
+        vec![("k1", "it's"), ("k2", "v2")]
+    )]
+    #[case::quote_in_middle_is_literal("k=a'b", vec![("k", "a'b")])]
+    #[case::trailing_comma_ignored("k=v,", vec![("k", "v")])]
+    #[case::empty_input("", vec![])]
+    #[case::leading_comma_ignored(",k=v", vec![("k", "v")])]
+    #[case::only_commas_ignored(",,", vec![])]
+    #[case::consecutive_commas_ignored(
+        "k1=v1,,k2=v2",
+        vec![("k1", "v1"), ("k2", "v2")]
+    )]
+    #[case::empty_quoted_value("k=''", vec![("k", "")])]
+    #[case::empty_bare_value("k=", vec![("k", "")])]
+    #[case::bare_value_with_equals("k=a=b", vec![("k", "a=b")])]
+    #[case::quoted_value_with_equals_and_comma(
+        "k='a=b,c'",
+        vec![("k", "a=b,c")]
+    )]
+    #[case::mixed_quote_types(
+        "k1='a,b',k2=\"c,d\"",
+        vec![("k1", "a,b"), ("k2", "c,d")]
+    )]
+    #[case::quoted_value_then_trailing_comma("k='a,b',", vec![("k", "a,b")])]
+    fn parse_supporting_data_splits_and_unquotes(
+        #[case] raw: &str,
+        #[case] expected: Vec<(&str, &str)>,
+    ) {
+        let expected: Vec<(String, String)> = expected
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        assert_eq!(
+            parse_supporting_data(raw).unwrap(),
+            SupportingData(expected)
+        );
+    }
+
+    #[rstest]
+    #[case::missing_separator(
+        "k1=v1,bad",
+        "supporting data 'bad' must be in key=value format"
+    )]
+    #[case::empty_key("=v", "supporting data '=v' has an empty key")]
+    #[case::unterminated_quote(
+        "k1='a,b",
+        "supporting data 'k1='a,b' has an unterminated quote"
+    )]
+    #[case::chars_after_quoted_value(
+        "k1='a,b'x",
+        "supporting data 'k1='a,b'x' has unexpected characters after a quoted value"
+    )]
+    #[case::chars_after_empty_quoted_value(
+        "k=''x",
+        "supporting data 'k=''x' has unexpected characters after a quoted value"
+    )]
+    #[case::double_quote_unterminated(
+        "k=\"a,b",
+        "supporting data 'k=\"a,b' has an unterminated quote"
+    )]
+    #[case::missing_key_on_quoted_field(
+        "k1=v1,'a,b'",
+        "supporting data ''a' must be in key=value format"
+    )]
+    fn parse_supporting_data_rejects_invalid_fields(
+        #[case] raw: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(parse_supporting_data(raw).unwrap_err(), expected);
+    }
+
+    #[rstest]
+    #[case::explicit(Some("vm-1"), Some("auto-vm"), Ok("vm-1"))]
+    #[case::fallback_to_lookup(None, Some("auto-vm"), Ok("auto-vm"))]
+    #[case::lookup_fails(
+        None,
+        None,
+        Err("unable to determine the current VM ID automatically")
+    )]
+    fn resolve_vm_id_resolves_from_flag_or_lookup(
+        #[case] vm_id: Option<&str>,
+        #[case] lookup: Option<&str>,
+        #[case] expected: Result<&str, &str>,
+    ) {
+        let result = resolve_vm_id_with(vm_id.map(str::to_string), || {
+            lookup.map(str::to_string)
+        });
+
+        match expected {
+            Ok(vm) => assert_eq!(result.unwrap(), vm),
+            Err(needle) => {
+                let err = result.unwrap_err();
+                assert!(matches!(err, CliError::Usage(_)));
+                assert_eq!(err.exit_code(), EXIT_USAGE_OR_VALIDATION);
+                assert!(err.to_string().contains(needle));
+            }
+        }
+    }
+
     #[test]
     fn dispatch_report_success_writes_single_record() {
         let dir = TempDir::new().unwrap();
         let command = Command::ReportSuccess {
             vm_id: Some("vm-1".into()),
             agent: "Azure-Init/0.0.0".into(),
-            supporting_data: vec![
+            supporting_data: vec![SupportingData(vec![
                 ("endpoint".into(), "http://example.com".into()),
                 ("status".into(), "404".into()),
-            ],
+            ])],
         };
         let (code, _) = run_dispatch(cli(&dir, command));
         assert_eq!(code, EXIT_OK);
@@ -896,7 +1169,10 @@ mod tests {
             agent: "Azure-Init/0.0.0".into(),
             reason: "boom".into(),
             documentation_url: None,
-            supporting_data: vec![("details".into(), "bad config".into())],
+            supporting_data: vec![SupportingData(vec![(
+                "details".into(),
+                "bad config".into(),
+            )])],
         };
         let (code, _) = run_dispatch(cli(&dir, command));
         assert_eq!(code, EXIT_OK);
