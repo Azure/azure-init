@@ -254,3 +254,47 @@ fn json_read_round_trips_value_with_equals_and_newline() {
     assert_eq!(value["key"], "url");
     assert_eq!(value["value"], raw_value);
 }
+
+#[test]
+fn report_success_defaults_agent_and_accepts_supporting_data() {
+    let dir = TempDir::new().unwrap();
+    assert_success(kvp(&with_dir(
+        &dir,
+        &[
+            "report-success",
+            "--vm-id",
+            "vm-1",
+            "--supporting-data",
+            "build=123,commit=abc",
+        ],
+    )));
+
+    let report =
+        assert_success(kvp(&with_dir(&dir, &["read", "PROVISIONING_REPORT"])));
+    let expected_agent =
+        format!("agent=libazureinit-kvp/{}", env!("CARGO_PKG_VERSION"));
+    assert!(report.contains(&expected_agent), "report was: {report}");
+    assert!(report.contains("vm_id=vm-1"), "report was: {report}");
+    assert!(report.trim_end().ends_with("|build=123|commit=abc"));
+}
+
+#[test]
+fn report_failure_rejects_invalid_supporting_data() {
+    let dir = TempDir::new().unwrap();
+    let output = kvp(&with_dir(
+        &dir,
+        &[
+            "report-failure",
+            "--vm-id",
+            "vm-1",
+            "--reason",
+            "boom",
+            "--supporting-data",
+            "novalue",
+        ],
+    ));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("key=value"));
+}
