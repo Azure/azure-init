@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::{
-    write_report, KvpError, KvpPool, KvpPoolStore, PoolMode,
-    ProvisioningReport, ReportPpsType,
+    write_report, DiagnosticEvent, DiagnosticRecord, DiagnosticsKvp, KvpError,
+    KvpPool, KvpPoolStore, PoolMode, ProvisioningReport, ReportPpsType,
 };
 
 const EXIT_OK: u8 = 0;
@@ -176,6 +176,50 @@ enum Command {
         #[arg(long, value_parser = parse_supporting_data)]
         supporting_data: Vec<SupportingData>,
     },
+    /// Inspect decoded diagnostic events, reassembling chunked records.
+    Diag {
+        #[command(subcommand)]
+        command: DiagCommand,
+    },
+}
+
+/// Diagnostics subcommands operating on the reassembled event view.
+#[derive(Subcommand, Debug)]
+enum DiagCommand {
+    /// Print every record, reassembling chunked events. Raw records
+    /// (e.g. PROVISIONING_REPORT) are hidden unless --include-raw.
+    Dump {
+        /// Also print raw (non-event) records.
+        #[arg(long)]
+        include_raw: bool,
+    },
+    /// Print decoded events (oldest first), optionally filtered.
+    Events {
+        /// Only show events at this level (error, warn, info, debug, trace).
+        #[arg(long)]
+        level: Option<String>,
+        /// Only show events whose name contains this substring.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Print the last COUNT events (default 20).
+    Tail {
+        /// Number of trailing events to print.
+        #[arg(short = 'n', long = "count", default_value_t = 20)]
+        count: usize,
+    },
+    /// Remove this layer's events, leaving raw records intact.
+    Clear {
+        /// VM identifier whose events to remove.
+        #[arg(long)]
+        vm_id: String,
+        /// Event key prefix whose events to remove.
+        #[arg(long)]
+        event_prefix: String,
+        /// Confirm the removal (required).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,6 +311,7 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
             documentation_url,
             supporting_data,
         ),
+        Command::Diag { command } => diag(&store, stdout, command, output),
     }
 }
 
@@ -423,6 +468,188 @@ fn is_stale<W: Write>(
         OutputMode::Json => writeln_json(stdout, &json!({ "stale": stale }))?,
     }
     Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
+}
+
+fn diag<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    command: DiagCommand,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    match command {
+        DiagCommand::Dump { include_raw } => {
+            diag_dump(store, stdout, include_raw, output)
+        }
+        DiagCommand::Events { level, name } => {
+            diag_events(store, stdout, level, name, None, output)
+        }
+        DiagCommand::Tail { count } => {
+            diag_events(store, stdout, None, None, Some(count), output)
+        }
+        DiagCommand::Clear {
+            vm_id,
+            event_prefix,
+            yes,
+        } => diag_clear(store, stdout, vm_id, event_prefix, yes, output),
+    }
+}
+
+fn diag_dump<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    include_raw: bool,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let diagnostics = DiagnosticsKvp::new(store.clone(), "", "");
+    let records: Vec<_> = diagnostics
+        .records()?
+        .into_iter()
+        .filter(|record| {
+            include_raw || !matches!(record, DiagnosticRecord::Raw { .. })
+        })
+        .collect();
+
+    match output {
+        OutputMode::Text => {
+            for record in &records {
+                let line = match record {
+                    DiagnosticRecord::Event { event, chunks } => format!(
+                        "event level={} name={} event_id={} chunks={} \
+                         message={}",
+                        event.level,
+                        event.name,
+                        event.event_id,
+                        chunks,
+                        event.message
+                    ),
+                    DiagnosticRecord::Raw { key, value } => {
+                        format!("raw key={key} value={value}")
+                    }
+                    DiagnosticRecord::Malformed { key, value, reason } => {
+                        format!(
+                            "malformed key={key} reason={reason} \
+                             value={value}"
+                        )
+                    }
+                };
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        OutputMode::Json => {
+            let array: Vec<_> = records.iter().map(diag_record_json).collect();
+            writeln_json(stdout, &serde_json::Value::Array(array))?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn diag_events<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    level: Option<String>,
+    name: Option<String>,
+    tail: Option<usize>,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let level = level.as_deref().map(parse_level_filter).transpose()?;
+
+    let diagnostics = DiagnosticsKvp::new(store.clone(), "", "");
+    let mut events = diagnostics.events()?;
+
+    if let Some(level) = level {
+        events.retain(|event| event.level == level);
+    }
+    if let Some(needle) = name.as_deref() {
+        events.retain(|event| event.name.contains(needle));
+    }
+    if let Some(count) = tail {
+        let excess = events.len().saturating_sub(count);
+        events.drain(..excess);
+    }
+
+    match output {
+        OutputMode::Text => {
+            for event in &events {
+                let line = format!(
+                    "event level={} name={} event_id={} message={}",
+                    event.level, event.name, event.event_id, event.message
+                );
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        OutputMode::Json => {
+            let array: Vec<_> = events.iter().map(diag_event_json).collect();
+            writeln_json(stdout, &serde_json::Value::Array(array))?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn diag_clear<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    vm_id: String,
+    event_prefix: String,
+    yes: bool,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    if !yes {
+        return Err(CliError::Usage(
+            "refusing to clear diagnostic events without --yes".to_string(),
+        ));
+    }
+    let diagnostics = DiagnosticsKvp::new(store.clone(), vm_id, event_prefix);
+    diagnostics.clear()?;
+    match output {
+        OutputMode::Text => writeln!(stdout, "cleared")?,
+        OutputMode::Json => writeln_json(stdout, &json!({ "cleared": true }))?,
+    }
+    Ok(EXIT_OK)
+}
+
+/// Parse a `--level` filter argument into a [`tracing::Level`].
+fn parse_level_filter(level: &str) -> Result<tracing::Level, CliError> {
+    level.parse::<tracing::Level>().map_err(|_| {
+        CliError::Usage(format!(
+            "invalid level '{level}' (expected error, warn, info, debug, \
+             or trace)"
+        ))
+    })
+}
+
+/// Render a [`DiagnosticRecord`] as a JSON object.
+fn diag_record_json(record: &DiagnosticRecord) -> serde_json::Value {
+    match record {
+        DiagnosticRecord::Event { event, chunks } => {
+            let mut value = diag_event_json(event);
+            if let serde_json::Value::Object(map) = &mut value {
+                map.insert("chunks".to_string(), json!(chunks));
+            }
+            value
+        }
+        DiagnosticRecord::Raw { key, value } => json!({
+            "kind": "raw",
+            "key": key,
+            "value": value,
+        }),
+        DiagnosticRecord::Malformed { key, value, reason } => json!({
+            "kind": "malformed",
+            "key": key,
+            "value": value,
+            "reason": reason,
+        }),
+    }
+}
+
+/// Render a [`DiagnosticEvent`] as a JSON object (without chunk count).
+fn diag_event_json(event: &DiagnosticEvent) -> serde_json::Value {
+    json!({
+        "kind": "event",
+        "level": event.level.to_string(),
+        "name": event.name,
+        "event_id": event.event_id,
+        "message": event.message,
+    })
 }
 
 fn report_success(
