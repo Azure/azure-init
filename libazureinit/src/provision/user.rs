@@ -129,12 +129,28 @@ impl UserProvisioner {
     /// fails (for example, running the underlying system commands or writing the
     /// sudoers file), an appropriate `Err(Error)` is returned.
     pub(crate) fn create(&self, user: &User) -> Result<(), Error> {
+        self.create_user_account(user)?;
+        self.configure_sudoers(
+            user.name.as_str(),
+            "/etc/sudoers.d/azure-init-user",
+        )
+    }
+
+    fn create_user_account(&self, user: &User) -> Result<(), Error> {
         match self {
-            Self::Useradd => {
-                useradd(user)?;
-                let path = "/etc/sudoers.d/azure-init-user";
-                add_user_for_passwordless_sudo(user.name.as_str(), path)
-            }
+            Self::Useradd => useradd(user),
+            #[cfg(test)]
+            Self::FakeUseradd => Ok(()),
+        }
+    }
+
+    fn configure_sudoers(
+        &self,
+        username: &str,
+        path: &str,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Useradd => add_user_for_passwordless_sudo(username, path),
             #[cfg(test)]
             Self::FakeUseradd => Ok(()),
         }
@@ -228,6 +244,7 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
     use tempfile::tempdir;
 
+    use crate::config::UserProvisioner;
     use crate::User;
 
     use super::add_user_for_passwordless_sudo;
@@ -259,10 +276,7 @@ mod tests {
             add_user_for_passwordless_sudo(&_user_insecure.name, path_str);
 
         assert!(ret.is_ok());
-        assert!(
-            fs::metadata(path.clone()).is_ok(),
-            "{path_str} file not created"
-        );
+        assert!(fs::metadata(path.clone()).is_ok());
         let mode = fs::metadata(path_str)
             .expect("Sudoer file not created")
             .permissions()
@@ -270,8 +284,38 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "Permissions are not set properly");
         assert_eq!(
             fs::read_to_string(path).unwrap(),
-            "azureuser ALL=(ALL) NOPASSWD: ALL\n",
-            "Contents of the file are not as expected"
+            "azureuser ALL=(ALL) NOPASSWD: ALL\n"
+        );
+    }
+
+    #[test]
+    fn test_user_provisioner_fake_create() {
+        let user = User::new("azureuser", []);
+        let provisioner = UserProvisioner::FakeUseradd;
+        assert!(provisioner.create(&user).is_ok());
+    }
+
+    #[test]
+    fn test_user_provisioner_useradd_create() {
+        let user = User::new("azureuser", []);
+        let provisioner = UserProvisioner::Useradd;
+        // Without root, useradd will fail — just exercising the match arm.
+        let _ = provisioner.create(&user);
+    }
+
+    #[test]
+    fn test_configure_sudoers_via_fake() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sudoers_file");
+        let path_str = path.to_str().unwrap();
+
+        let provisioner = UserProvisioner::Useradd;
+        let result = provisioner.configure_sudoers("testuser", path_str);
+        let ok = result.is_ok();
+        assert!(ok, "configure_sudoers should write sudoers file");
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "testuser ALL=(ALL) NOPASSWD: ALL\n"
         );
     }
 }
