@@ -23,6 +23,7 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
     elif command -v tdnf >/dev/null 2>&1; then \
     # Azure Linux (tdnf-based) \
     tdnf install -y \
+    libseccomp \
     systemd \
     dbus \
     curl \
