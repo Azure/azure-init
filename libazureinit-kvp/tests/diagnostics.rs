@@ -65,11 +65,21 @@ fn long_event_splits_across_records_and_reassembles() {
     let event = DiagnosticEvent::new(Level::DEBUG, "config:dump", &message);
     diag.emit(&event).unwrap();
 
-    // Split across four records that all share one key (split keys).
+    // Split across four records, each with a unique `|<subevent_index>`
+    // key so the Hyper-V host (one record per key) keeps every chunk;
+    // they share one event-key base.
     let dumped = diag.store().dump().unwrap();
     assert_eq!(dumped.len(), 4);
-    let key = &dumped[0].0;
-    assert!(dumped.iter().all(|(k, _)| k == key));
+    let base_of = |k: &str| k.rsplit_once('|').unwrap().0.to_string();
+    let base = base_of(&dumped[0].0);
+    assert!(
+        dumped.iter().all(|(k, _)| base_of(k) == base),
+        "all chunks share one event-key base"
+    );
+    let mut keys: Vec<String> = dumped.iter().map(|(k, _)| k.clone()).collect();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), 4, "each chunk must have a unique key");
 
     let records = diag.records().unwrap();
     assert_eq!(records.len(), 1);
@@ -83,6 +93,31 @@ fn long_event_splits_across_records_and_reassembles() {
         }
         other => panic!("expected event, got {other:?}"),
     }
+}
+
+#[test]
+fn multi_chunk_event_uses_unique_keys_so_host_keeps_all() {
+    let dir = TempDir::new().unwrap();
+    let diag = diagnostics(&dir);
+
+    let message = "z".repeat(MAX_CHUNK_BYTES * 2 + 1);
+    diag.emit(&DiagnosticEvent::new(Level::INFO, "big:event", &message))
+        .unwrap();
+
+    // Three records, no two sharing a key: the Hyper-V host keeps only one
+    // record per key, so shared keys would silently drop chunks.
+    let dumped = diag.store().dump().unwrap();
+    assert_eq!(dumped.len(), 3);
+    let total = dumped.len();
+    let mut keys: Vec<String> = dumped.into_iter().map(|(k, _)| k).collect();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), total, "chunk keys must be unique");
+
+    // The event still reassembles to the full message.
+    let events = diag.events().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].message, message);
 }
 
 #[test]

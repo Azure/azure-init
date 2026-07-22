@@ -14,8 +14,12 @@
 //! - **Chunking**: a single KVP record caps the value at the store's
 //!   per-record limit (see [`MAX_CHUNK_BYTES`] for the safe-mode value).
 //!   Longer messages are split at UTF-8 codepoint boundaries into
-//!   multiple records that share one key, written atomically under a
-//!   single lock, and reassembled on read.
+//!   multiple records written atomically under a single lock. Each chunk
+//!   gets a unique key — the event key with a `|<subevent_index>` suffix
+//!   (`<prefix>|<vm_id>|<level>|<name>|<event_id>|<subevent_index>`),
+//!   matching cloud-init's naming — so the Hyper-V host, which keeps only
+//!   one record per key, retains every chunk. The chunks are regrouped
+//!   into one event on read.
 //! - **Classification**: [`records`](DiagnosticsKvp::records) sorts every
 //!   stored record into a [`DiagnosticRecord`] — a reassembled
 //!   [`DiagnosticEvent`], an unstructured [`Raw`](DiagnosticRecord::Raw)
@@ -51,8 +55,8 @@
 //!     "Creating user azureuser",
 //! ))?;
 //!
-//! // A long message is split across records that share one key and is
-//! // reassembled transparently on read.
+//! // A long message is split across records each with a unique
+//! // `|<subevent_index>`-suffixed key, and reassembled on read.
 //! let long = "x".repeat(MAX_CHUNK_BYTES * 2 + 10);
 //! diagnostics
 //!     .emit(&DiagnosticEvent::new(Level::DEBUG, "config:dump", &long))?;
@@ -314,9 +318,12 @@ impl DiagnosticsKvp {
     /// Write `event`.
     ///
     /// Messages longer than the store's per-record value limit are split
-    /// at UTF-8 codepoint boundaries and written as multiple records that
-    /// share one key, atomically under a single lock via
-    /// [`KvpPoolStore::append_multiple`].
+    /// at UTF-8 codepoint boundaries and written as multiple records
+    /// atomically under a single lock via
+    /// [`KvpPoolStore::append_multiple`]. Each chunk is keyed by the event
+    /// key with a `|<subevent_index>` suffix so every record is unique —
+    /// the Hyper-V host keeps only one record per key — and the chunks are
+    /// regrouped by [`records`](Self::records) on read.
     ///
     /// Returns [`KvpError::EventFieldContainsDelimiter`] if the
     /// `event_prefix`, `vm_id`, `name`, or `event_id` contains the `|`
@@ -339,21 +346,41 @@ impl DiagnosticsKvp {
         self.write_chunked(&key, &event.message)
     }
 
-    /// Split `value` at the store's per-record limit and append every
-    /// chunk under the same `key` in one atomic batch.
+    /// Split `value` at the store's per-record limit and append the
+    /// chunks under `key` in one atomic batch.
+    ///
+    /// A single-record value keeps the bare event `key`. A value that
+    /// spans multiple records gets one record per chunk, each keyed
+    /// `<key>|<subevent_index>` (`0`, `1`, …) so no two records collide —
+    /// the Hyper-V host keeps only one record per key. [`reassemble`]
+    /// strips the subevent index to regroup the chunks on read.
     fn write_chunked(&self, key: &str, value: &str) -> Result<(), KvpError> {
         let chunks = chunk_at_char_boundary(value, self.store.max_value_size());
-        self.store
-            .append_multiple(chunks.into_iter().map(|chunk| (key, chunk)))
+        if chunks.len() == 1 {
+            return self
+                .store
+                .append_multiple(chunks.into_iter().map(|chunk| (key, chunk)));
+        }
+        let records: Vec<(String, &str)> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(subevent_index, chunk)| {
+                let chunk_key =
+                    format!("{key}{EVENT_KEY_DELIMITER}{subevent_index}");
+                (chunk_key, chunk)
+            })
+            .collect();
+        self.store.append_multiple(records)
     }
 
     /// Read every record, reassembling chunked events and classifying
     /// each into a [`DiagnosticRecord`].
     ///
     /// Records are returned in on-disk order. Consecutive records that
-    /// share a key are one event; because [`emit`](Self::emit) writes an
-    /// event's chunks contiguously under a single lock, reassembly is
-    /// correct even under concurrent writers.
+    /// share an event key — ignoring the `|<subevent_index>` suffix — are
+    /// one event; because [`emit`](Self::emit) writes an event's chunks
+    /// contiguously under a single lock, reassembly is correct even under
+    /// concurrent writers.
     pub fn records(&self) -> Result<Vec<DiagnosticRecord>, KvpError> {
         Ok(reassemble(self.store.dump()?))
     }
@@ -373,8 +400,10 @@ impl DiagnosticsKvp {
     }
 
     /// Remove this layer's events — keys that parse as an event key
-    /// whose `prefix` and `vm_id` match this instance — under a single
-    /// lock. Raw records such as `PROVISIONING_REPORT` are left intact.
+    /// (including every `|<subevent_index>` chunk of a multi-record
+    /// event) whose `prefix` and `vm_id` match this instance — under a
+    /// single lock. Raw records such as `PROVISIONING_REPORT` are left
+    /// intact.
     pub fn clear(&self) -> Result<(), KvpError> {
         let keys: Vec<String> = self
             .store
@@ -382,7 +411,7 @@ impl DiagnosticsKvp {
             .into_iter()
             .filter_map(|(key, _)| {
                 let is_mine = matches!(
-                    classify_key(&key),
+                    classify_key(base_event_key(&key)),
                     KeyClass::Event { prefix, vm_id, .. }
                         if prefix == self.event_prefix
                             && vm_id == self.vm_id
@@ -395,21 +424,47 @@ impl DiagnosticsKvp {
     }
 }
 
-/// Group consecutive same-key records from [`KvpPoolStore::dump`] and
-/// classify each group into a [`DiagnosticRecord`].
+/// The event key a chunk belongs to.
+///
+/// [`DiagnosticsKvp::write_chunked`] gives each chunk of a multi-record
+/// event a unique key by appending a `|<subevent_index>` (cloud-init's
+/// term) to the event key, so the Hyper-V host — which keeps only one
+/// record per key — retains every chunk. This returns the shared event
+/// key used to regroup them on read: for a chunk key
+/// `<event-key>|<subevent_index>` it strips the trailing index; any other
+/// key (a single-record event, `PROVISIONING_REPORT`, a malformed key, …)
+/// is returned unchanged.
+fn base_event_key(key: &str) -> &str {
+    if let Some((base, subevent_index)) = key.rsplit_once(EVENT_KEY_DELIMITER) {
+        if subevent_index.parse::<u32>().is_ok()
+            && matches!(classify_key(base), KeyClass::Event { .. })
+        {
+            return base;
+        }
+    }
+    key
+}
+
+/// Group consecutive records sharing an event key — chunk
+/// `|<subevent_index>` suffixes stripped — from [`KvpPoolStore::dump`]
+/// and classify each group into a [`DiagnosticRecord`].
 fn reassemble(dumped: Vec<(String, String)>) -> Vec<DiagnosticRecord> {
     let mut records = Vec::new();
     let mut dumped = dumped.into_iter().peekable();
 
     while let Some((key, value)) = dumped.next() {
+        let base = base_event_key(&key).to_string();
         let mut message = value;
         let mut chunks = 1;
-        while dumped.peek().is_some_and(|(next, _)| *next == key) {
+        while dumped
+            .peek()
+            .is_some_and(|(next, _)| base_event_key(next) == base)
+        {
             let (_, next_value) = dumped.next().expect("peeked value exists");
             message.push_str(&next_value);
             chunks += 1;
         }
-        records.push(classify_record(key, message, chunks));
+        records.push(classify_record(base, message, chunks));
     }
 
     records
@@ -627,5 +682,53 @@ mod tests {
             &records[1],
             DiagnosticRecord::Event { chunks: 1, .. }
         ));
+    }
+
+    #[rstest]
+    #[case::indexed_chunk("p|vm|INFO|name|id|0", "p|vm|INFO|name|id")]
+    #[case::indexed_chunk_multi_digit(
+        "p|vm|INFO|name|id|12",
+        "p|vm|INFO|name|id"
+    )]
+    #[case::single_event_unchanged("p|vm|INFO|name|id", "p|vm|INFO|name|id")]
+    #[case::raw_unchanged("PROVISIONING_REPORT", "PROVISIONING_REPORT")]
+    #[case::non_event_numeric_tail_unchanged("foo|3", "foo|3")]
+    #[case::malformed_unchanged("p|vm|NOPE|name|id", "p|vm|NOPE|name|id")]
+    fn base_event_key_strips_event_subevent_index(
+        #[case] key: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(base_event_key(key), expected);
+    }
+
+    #[test]
+    fn reassemble_groups_indexed_chunk_keys() {
+        let base = format_event_key(
+            PREFIX,
+            VM_ID,
+            Level::INFO,
+            "config:dump",
+            EVENT_ID,
+        );
+        let dumped = vec![
+            (format!("{base}|0"), "part-one/".to_string()),
+            (format!("{base}|1"), "part-two/".to_string()),
+            (format!("{base}|2"), "part-three".to_string()),
+        ];
+
+        let records = reassemble(dumped);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0],
+            DiagnosticRecord::Event {
+                event: DiagnosticEvent {
+                    level: Level::INFO,
+                    name: "config:dump".to_string(),
+                    event_id: EVENT_ID.to_string(),
+                    message: "part-one/part-two/part-three".to_string(),
+                },
+                chunks: 3,
+            }
+        );
     }
 }
