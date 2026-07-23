@@ -11,6 +11,10 @@ pub enum KvpError {
     EmptyKey,
     /// An underlying I/O error.
     Io(io::Error),
+    /// An event key field (`event_prefix`, `vm_id`, `name`, or
+    /// `event_id`) contained the `|` delimiter, which would make the
+    /// formatted event key ambiguous to parse back.
+    EventFieldContainsDelimiter { field: &'static str },
     /// The key contains a null byte, which is incompatible with the
     /// on-disk format (null-padded fixed-width fields).
     KeyContainsNull,
@@ -29,6 +33,9 @@ impl fmt::Display for KvpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyKey => write!(f, "KVP key must not be empty"),
+            Self::EventFieldContainsDelimiter { field } => {
+                write!(f, "event key field '{field}' must not contain '|'")
+            }
             Self::Io(e) => write!(f, "{e}"),
             Self::KeyContainsNull => {
                 write!(f, "KVP key must not contain null bytes")

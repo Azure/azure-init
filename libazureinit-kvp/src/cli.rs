@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::{
-    write_report, KvpError, KvpPool, KvpPoolStore, PoolMode,
-    ProvisioningReport, ReportPpsType,
+    write_report, DiagnosticEvent, DiagnosticRecord, DiagnosticsKvp, KvpError,
+    KvpPool, KvpPoolStore, PoolMode, ProvisioningReport, ReportPpsType,
 };
 
 const EXIT_OK: u8 = 0;
@@ -89,7 +89,41 @@ enum Command {
     /// Print store metadata.
     Info,
     /// Print every record in insertion order as KEY=VALUE lines.
-    Dump,
+    ///
+    /// With --parse-diagnostics, reassemble chunked diagnostic events and
+    /// decode each record instead of printing raw KEY=VALUE lines.
+    Dump {
+        /// Reassemble chunked diagnostic events and decode each record as
+        /// an event, raw, or malformed entry.
+        #[arg(long)]
+        parse_diagnostics: bool,
+        /// Also print raw (non-event) records such as PROVISIONING_REPORT.
+        /// Only applies to the unfiltered view; --level/--name/--tail
+        /// produce an events-only view where raw records never appear.
+        #[arg(
+            long,
+            requires = "parse_diagnostics",
+            conflicts_with_all = ["level", "name", "tail"]
+        )]
+        include_raw: bool,
+        /// Only show events at this level (error, warn, info, debug,
+        /// trace).
+        #[arg(long, requires = "parse_diagnostics")]
+        level: Option<String>,
+        /// Only show events whose name contains this substring.
+        #[arg(long, requires = "parse_diagnostics")]
+        name: Option<String>,
+        /// Print only the last COUNT events (default 20 when COUNT is
+        /// omitted).
+        #[arg(
+            short = 'n',
+            long = "tail",
+            num_args = 0..=1,
+            default_missing_value = "20",
+            requires = "parse_diagnostics"
+        )]
+        tail: Option<usize>,
+    },
     /// Print key=last_value entries sorted by key.
     Entries,
     /// Print the last value for KEY (exit 1 if missing).
@@ -121,11 +155,16 @@ enum Command {
         #[arg(required = true)]
         keys: Vec<String>,
     },
-    /// Clear the pool. Pass --if-stale to clear only when stale.
+    /// Clear the pool. Pass --if-stale to clear only when stale, or
+    /// --diagnostics to remove only diagnostic event keys.
     Clear {
         /// Only clear if the store is currently stale.
-        #[arg(long = "if-stale")]
+        #[arg(long = "if-stale", conflicts_with = "diagnostics")]
         if_stale: bool,
+        /// Remove every diagnostic event key (valid or malformed),
+        /// leaving raw records such as PROVISIONING_REPORT intact.
+        #[arg(long)]
+        diagnostics: bool,
     },
     /// Print whether the pool is stale (exit 0 if stale, 1 otherwise).
     IsStale,
@@ -222,7 +261,21 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
 
     match cli.command {
         Command::Info => info(&store, stdout, output),
-        Command::Dump => dump(&store, stdout, output),
+        Command::Dump {
+            parse_diagnostics,
+            include_raw,
+            level,
+            name,
+            tail,
+        } => {
+            let parse = parse_diagnostics.then_some(ParseDiagnosticsArgs {
+                include_raw,
+                level,
+                name,
+                tail,
+            });
+            dump(&store, stdout, parse, output)
+        }
         Command::Entries => entries(&store, stdout, output),
         Command::Read { key } => read(&store, stdout, &key, output),
         Command::Write { append, key, value } => {
@@ -239,8 +292,13 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
         Command::DeleteMultiple { keys } => {
             delete_multiple(&store, stdout, keys, output)
         }
-        Command::Clear { if_stale } => {
-            if if_stale {
+        Command::Clear {
+            if_stale,
+            diagnostics,
+        } => {
+            if diagnostics {
+                DiagnosticsKvp::new(store.clone(), "", "").clear()?;
+            } else if if_stale {
                 store.clear_if_stale()?;
             } else {
                 store.clear()?;
@@ -312,11 +370,38 @@ fn info<W: Write>(
     Ok(EXIT_OK)
 }
 
+/// Options for the `dump --parse-diagnostics` view; absent for a raw dump.
+struct ParseDiagnosticsArgs {
+    include_raw: bool,
+    level: Option<String>,
+    name: Option<String>,
+    tail: Option<usize>,
+}
+
 fn dump<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
+    parse: Option<ParseDiagnosticsArgs>,
     output: OutputMode,
 ) -> Result<u8, CliError> {
+    if let Some(parse) = parse {
+        // --level/--name/--tail select the decoded events-only view;
+        // otherwise every record is shown (raw hidden unless
+        // --include-raw).
+        if parse.level.is_some() || parse.name.is_some() || parse.tail.is_some()
+        {
+            return diagnostics_events(
+                store,
+                stdout,
+                parse.level,
+                parse.name,
+                parse.tail,
+                output,
+            );
+        }
+        return diagnostics_records(store, stdout, parse.include_raw, output);
+    }
+
     let records = store.dump()?;
     match output {
         OutputMode::Text => {
@@ -423,6 +508,144 @@ fn is_stale<W: Write>(
         OutputMode::Json => writeln_json(stdout, &json!({ "stale": stale }))?,
     }
     Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
+}
+
+fn diagnostics_records<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    include_raw: bool,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let diagnostics = DiagnosticsKvp::new(store.clone(), "", "");
+    let records: Vec<_> = diagnostics
+        .records()?
+        .into_iter()
+        .filter(|record| {
+            include_raw || !matches!(record, DiagnosticRecord::Raw { .. })
+        })
+        .collect();
+
+    match output {
+        OutputMode::Text => {
+            for record in &records {
+                let line = match record {
+                    DiagnosticRecord::Event { event, chunks } => format!(
+                        "event level={} name={} event_id={} chunks={} \
+                         message={}",
+                        event.level,
+                        event.name,
+                        event.event_id,
+                        chunks,
+                        event.message
+                    ),
+                    DiagnosticRecord::Raw { key, value } => {
+                        format!("raw key={key} value={value}")
+                    }
+                    DiagnosticRecord::Malformed { key, value, reason } => {
+                        format!(
+                            "malformed key={key} reason={reason} \
+                             value={value}"
+                        )
+                    }
+                };
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        OutputMode::Json => {
+            let array: Vec<_> =
+                records.iter().map(diagnostics_record_json).collect();
+            writeln_json(stdout, &serde_json::Value::Array(array))?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn diagnostics_events<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    level: Option<String>,
+    name: Option<String>,
+    tail: Option<usize>,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let level = level.as_deref().map(parse_level_filter).transpose()?;
+
+    let diagnostics = DiagnosticsKvp::new(store.clone(), "", "");
+    let mut events = diagnostics.events()?;
+
+    if let Some(level) = level {
+        events.retain(|event| event.level == level);
+    }
+    if let Some(needle) = name.as_deref() {
+        events.retain(|event| event.name.contains(needle));
+    }
+    if let Some(count) = tail {
+        let excess = events.len().saturating_sub(count);
+        events.drain(..excess);
+    }
+
+    match output {
+        OutputMode::Text => {
+            for event in &events {
+                let line = format!(
+                    "event level={} name={} event_id={} message={}",
+                    event.level, event.name, event.event_id, event.message
+                );
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        OutputMode::Json => {
+            let array: Vec<_> =
+                events.iter().map(diagnostics_event_json).collect();
+            writeln_json(stdout, &serde_json::Value::Array(array))?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+/// Parse a `--level` filter argument into a [`tracing::Level`].
+fn parse_level_filter(level: &str) -> Result<tracing::Level, CliError> {
+    level.parse::<tracing::Level>().map_err(|_| {
+        CliError::Usage(format!(
+            "invalid level '{level}' (expected error, warn, info, debug, \
+             or trace)"
+        ))
+    })
+}
+
+/// Render a [`DiagnosticRecord`] as a JSON object.
+fn diagnostics_record_json(record: &DiagnosticRecord) -> serde_json::Value {
+    match record {
+        DiagnosticRecord::Event { event, chunks } => {
+            let mut value = diagnostics_event_json(event);
+            if let serde_json::Value::Object(map) = &mut value {
+                map.insert("chunks".to_string(), json!(chunks));
+            }
+            value
+        }
+        DiagnosticRecord::Raw { key, value } => json!({
+            "kind": "raw",
+            "key": key,
+            "value": value,
+        }),
+        DiagnosticRecord::Malformed { key, value, reason } => json!({
+            "kind": "malformed",
+            "key": key,
+            "value": value,
+            "reason": reason,
+        }),
+    }
+}
+
+/// Render a [`DiagnosticEvent`] as a JSON object (without chunk count).
+fn diagnostics_event_json(event: &DiagnosticEvent) -> serde_json::Value {
+    json!({
+        "kind": "event",
+        "level": event.level.to_string(),
+        "name": event.name,
+        "event_id": event.event_id,
+        "message": event.message,
+    })
 }
 
 fn report_success(
@@ -771,6 +994,17 @@ mod tests {
         (code, String::from_utf8(out).unwrap())
     }
 
+    /// A plain `dump` command with no diagnostics parsing.
+    fn dump_cmd() -> Command {
+        Command::Dump {
+            parse_diagnostics: false,
+            include_raw: false,
+            level: None,
+            name: None,
+            tail: None,
+        }
+    }
+
     fn set_mtime_to_epoch(path: &Path) {
         let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let times = [libc::timeval {
@@ -810,7 +1044,7 @@ mod tests {
         assert_eq!(cli.dir, Some(PathBuf::from("/tmp/kvp")));
         assert!(cli.unsafe_mode);
         assert!(cli.json);
-        assert!(matches!(cli.command, Command::Dump));
+        assert!(matches!(cli.command, Command::Dump { .. }));
     }
 
     #[test]
@@ -1306,7 +1540,7 @@ mod tests {
             },
         ));
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
         assert_eq!(dumped, "k=1\nk=2\n");
     }
 
@@ -1330,7 +1564,7 @@ mod tests {
         store.insert("b", "two").unwrap();
         store.insert("a", "one").unwrap();
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
         assert!(dumped.contains("a=one"));
         assert!(dumped.contains("b=two"));
 
@@ -1370,7 +1604,7 @@ mod tests {
                 .unwrap();
         assert_eq!(code, EXIT_OK);
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
         assert_eq!(dumped, "a=1\na=2\nb=3\n");
     }
 
@@ -1395,7 +1629,7 @@ mod tests {
         assert_eq!(code, EXIT_OK);
         assert_eq!(out, "2\n");
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
         assert_eq!(dumped, "b=2\n");
     }
 
@@ -1409,7 +1643,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         store_at(&dir).insert("k", "v").unwrap();
 
-        let (code, _) = run_dispatch(cli(&dir, Command::Clear { if_stale }));
+        let (code, _) = run_dispatch(cli(
+            &dir,
+            Command::Clear {
+                if_stale,
+                diagnostics: false,
+            },
+        ));
         assert_eq!(code, EXIT_OK);
         assert_eq!(store_at(&dir).is_empty().unwrap(), expect_empty_after);
     }
@@ -1602,7 +1842,7 @@ mod tests {
         store.append("b", "two-prime").unwrap();
         store.insert("a", "one").unwrap();
 
-        let (_, out) = run_dispatch(cli_json(&dir, Command::Dump));
+        let (_, out) = run_dispatch(cli_json(&dir, dump_cmd()));
         let json = parse_json(&out);
         let array = json.as_array().expect("dump --json returns array");
         assert_eq!(array.len(), 3);
