@@ -193,22 +193,32 @@ fn clear_removes_events_but_keeps_raw() {
 }
 
 #[test]
-fn clear_is_scoped_to_matching_prefix_and_vm_id() {
+fn clear_removes_all_diagnostics_regardless_of_scope() {
     let dir = TempDir::new().unwrap();
     let diag = diagnostics(&dir);
 
     diag.emit(&DiagnosticEvent::new(Level::INFO, "a:b", "mine"))
         .unwrap();
-    // An event from a different agent/VM must survive clear().
+    // Events from a different agent/VM and a malformed event key are also
+    // diagnostic keys, so clear() removes them too.
     diag.store()
         .append("other-agent|other-vm|INFO|x:y|id", "theirs")
+        .unwrap();
+    diag.store().append("p|vm|NOPE|c:d|id", "junk").unwrap();
+    // A raw record survives.
+    diag.store()
+        .append("PROVISIONING_REPORT", "result=success")
         .unwrap();
 
     diag.clear().unwrap();
 
-    let events = diag.events().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].message, "theirs");
+    let records = diag.records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(matches!(
+        &records[0],
+        DiagnosticRecord::Raw { key, .. } if key == "PROVISIONING_REPORT"
+    ));
+    assert!(diag.events().unwrap().is_empty());
 }
 
 #[test]

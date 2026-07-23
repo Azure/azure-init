@@ -112,8 +112,6 @@ fn format_event_key(
 enum KeyClass<'a> {
     /// The key is a well-formed event key.
     Event {
-        prefix: &'a str,
-        vm_id: &'a str,
         level: Level,
         name: &'a str,
         event_id: &'a str,
@@ -129,8 +127,8 @@ fn classify_key(key: &str) -> KeyClass<'_> {
     let mut segments = key.split(EVENT_KEY_DELIMITER);
 
     // `str::split` always yields at least one element.
-    let prefix = segments.next().unwrap_or_default();
-    let (Some(vm_id), Some(level), Some(name), Some(event_id)) = (
+    let _prefix = segments.next();
+    let (Some(_vm_id), Some(level), Some(name), Some(event_id)) = (
         segments.next(),
         segments.next(),
         segments.next(),
@@ -145,8 +143,6 @@ fn classify_key(key: &str) -> KeyClass<'_> {
 
     match level.parse::<Level>() {
         Ok(level) => KeyClass::Event {
-            prefix,
-            vm_id,
             level,
             name,
             event_id,
@@ -275,8 +271,8 @@ pub enum DiagnosticRecord {
 
 /// A typed diagnostics view over a [`KvpPoolStore`].
 ///
-/// Owns the event-key `prefix` and `vm_id` used to format and
-/// [`scope`](Self::clear) this layer's events. See the
+/// Owns the event-key `prefix` and `vm_id` stamped into this layer's
+/// events by [`emit`](Self::emit). See the
 /// [module documentation](self) for the on-disk format.
 #[derive(Clone, Debug)]
 pub struct DiagnosticsKvp {
@@ -399,24 +395,21 @@ impl DiagnosticsKvp {
             .collect())
     }
 
-    /// Remove this layer's events — keys that parse as an event key
-    /// (including every `|<subevent_index>` chunk of a multi-record
-    /// event) whose `prefix` and `vm_id` match this instance — under a
-    /// single lock. Raw records such as `PROVISIONING_REPORT` are left
-    /// intact.
+    /// Remove every diagnostic key under a single lock: any key that
+    /// parses as an event key (including every `|<subevent_index>` chunk
+    /// of a multi-record event) or a malformed event key. Raw records
+    /// such as `PROVISIONING_REPORT` are left intact.
     pub fn clear(&self) -> Result<(), KvpError> {
         let keys: Vec<String> = self
             .store
             .dump()?
             .into_iter()
             .filter_map(|(key, _)| {
-                let is_mine = matches!(
+                let is_diagnostic = !matches!(
                     classify_key(base_event_key(&key)),
-                    KeyClass::Event { prefix, vm_id, .. }
-                        if prefix == self.event_prefix
-                            && vm_id == self.vm_id
+                    KeyClass::Raw
                 );
-                is_mine.then_some(key)
+                is_diagnostic.then_some(key)
             })
             .collect();
         self.store.delete_multiple(keys)?;
@@ -481,7 +474,6 @@ fn classify_record(
             level,
             name,
             event_id,
-            ..
         } => DiagnosticRecord::Event {
             event: DiagnosticEvent {
                 level,
@@ -523,14 +515,10 @@ mod tests {
         assert!(matches!(
             classify_key(&formatted),
             KeyClass::Event {
-                prefix,
-                vm_id,
                 level,
                 name,
                 event_id,
-            } if prefix == PREFIX
-                && vm_id == VM_ID
-                && level == Level::INFO
+            } if level == Level::INFO
                 && name == "user:create_user"
                 && event_id == EVENT_ID
         ));

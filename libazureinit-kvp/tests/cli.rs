@@ -300,7 +300,7 @@ fn report_failure_rejects_invalid_supporting_data() {
 }
 
 #[test]
-fn diag_dump_json_reassembles_and_classifies() {
+fn dump_parse_diagnostics_json_reassembles_and_classifies() {
     let dir = TempDir::new().unwrap();
     // A two-chunk event (same key repeated) plus a raw record.
     assert_success(kvp(&with_dir(
@@ -316,7 +316,10 @@ fn diag_dump_json_reassembles_and_classifies() {
         &["write", "PROVISIONING_REPORT", "result=success"],
     )));
 
-    let out = assert_success(kvp(&with_dir(&dir, &["--json", "diag", "dump"])));
+    let out = assert_success(kvp(&with_dir(
+        &dir,
+        &["--json", "dump", "--parse-diagnostics"],
+    )));
     assert!(out.contains("\"kind\":\"event\""));
     assert!(out.contains("\"chunks\":2"));
     assert!(out.contains("\"message\":\"one/two\""));
@@ -325,14 +328,14 @@ fn diag_dump_json_reassembles_and_classifies() {
 
     let out_raw = assert_success(kvp(&with_dir(
         &dir,
-        &["--json", "diag", "dump", "--include-raw"],
+        &["--json", "dump", "--parse-diagnostics", "--include-raw"],
     )));
     assert!(out_raw.contains("\"kind\":\"raw\""));
     assert!(out_raw.contains("PROVISIONING_REPORT"));
 }
 
 #[test]
-fn diag_events_filters_by_level() {
+fn dump_parse_diagnostics_filters_by_level() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
         &dir,
@@ -345,46 +348,45 @@ fn diag_events_filters_by_level() {
 
     let out = assert_success(kvp(&with_dir(
         &dir,
-        &["diag", "events", "--level", "error"],
+        &["dump", "--parse-diagnostics", "--level", "error"],
     )));
     assert!(out.contains("err-msg"));
     assert!(!out.contains("info-msg"));
 }
 
 #[test]
-fn diag_clear_requires_confirmation_then_scopes_removal() {
+fn clear_diagnostics_removes_events_and_malformed_keeps_raw() {
     let dir = TempDir::new().unwrap();
+    // An event, a malformed event key, and a raw record.
     assert_success(kvp(&with_dir(
         &dir,
         &["write", "--append", "p|vm|INFO|a:b|i1", "msg"],
     )));
-
-    // Without --yes the command refuses and exits with a usage error.
-    let refused = kvp(&with_dir(
-        &dir,
-        &["diag", "clear", "--vm-id", "vm", "--event-prefix", "p"],
-    ));
-    assert_eq!(refused.status.code(), Some(2));
-
-    // With --yes the matching event is removed.
     assert_success(kvp(&with_dir(
         &dir,
-        &[
-            "diag",
-            "clear",
-            "--vm-id",
-            "vm",
-            "--event-prefix",
-            "p",
-            "--yes",
-        ],
+        &["write", "--append", "p|vm|NOPE|c:d|i2", "junk"],
     )));
-    let out = assert_success(kvp(&with_dir(&dir, &["diag", "dump"])));
-    assert!(out.trim().is_empty());
+    assert_success(kvp(&with_dir(
+        &dir,
+        &["write", "PROVISIONING_REPORT", "result=success"],
+    )));
+
+    assert_success(kvp(&with_dir(&dir, &["clear", "--diagnostics"])));
+
+    let out = assert_success(kvp(&with_dir(&dir, &["dump"])));
+    assert_eq!(out, "PROVISIONING_REPORT=result=success\n");
 }
 
 #[test]
-fn diag_dump_text_renders_all_record_kinds() {
+fn clear_diagnostics_conflicts_with_if_stale() {
+    let dir = TempDir::new().unwrap();
+    let output =
+        kvp(&with_dir(&dir, &["clear", "--diagnostics", "--if-stale"]));
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn dump_parse_diagnostics_text_renders_all_record_kinds() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
         &dir,
@@ -405,7 +407,7 @@ fn diag_dump_text_renders_all_record_kinds() {
 
     let out = assert_success(kvp(&with_dir(
         &dir,
-        &["diag", "dump", "--include-raw"],
+        &["dump", "--parse-diagnostics", "--include-raw"],
     )));
     assert!(out.contains(
         "event level=INFO name=a:b event_id=id1 chunks=2 message=one/two"
@@ -416,7 +418,7 @@ fn diag_dump_text_renders_all_record_kinds() {
 }
 
 #[test]
-fn diag_tail_limits_to_last_events() {
+fn dump_parse_diagnostics_tail_limits_to_last_events() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
         &dir,
@@ -427,14 +429,42 @@ fn diag_tail_limits_to_last_events() {
         &["write", "--append", "p|vm|INFO|c:d|i2", "second"],
     )));
 
-    let out =
-        assert_success(kvp(&with_dir(&dir, &["diag", "tail", "-n", "1"])));
+    let out = assert_success(kvp(&with_dir(
+        &dir,
+        &["dump", "--parse-diagnostics", "-n", "1"],
+    )));
     assert!(out.contains("second"));
     assert!(!out.contains("first"));
 }
 
 #[test]
-fn diag_events_filters_by_name_substring() {
+fn dump_parse_diagnostics_tail_defaults_to_20_when_count_omitted() {
+    let dir = TempDir::new().unwrap();
+    for i in 1..=25 {
+        assert_success(kvp(&with_dir(
+            &dir,
+            &[
+                "write",
+                "--append",
+                &format!("p|vm|INFO|n:{i}|id{i}"),
+                &format!("msg{i}"),
+            ],
+        )));
+    }
+
+    // Bare --tail keeps the last 20 events (msg6..msg25).
+    let out = assert_success(kvp(&with_dir(
+        &dir,
+        &["dump", "--parse-diagnostics", "--tail"],
+    )));
+    assert_eq!(out.lines().count(), 20);
+    assert!(out.contains("msg25"));
+    assert!(out.contains("msg6"));
+    assert!(!out.contains("msg5"));
+}
+
+#[test]
+fn dump_parse_diagnostics_filters_by_name_substring() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
         &dir,
@@ -447,21 +477,40 @@ fn diag_events_filters_by_name_substring() {
 
     let out = assert_success(kvp(&with_dir(
         &dir,
-        &["diag", "events", "--name", "ssh"],
+        &["dump", "--parse-diagnostics", "--name", "ssh"],
     )));
     assert!(out.contains("ssh:key"));
     assert!(!out.contains("user:add"));
 }
 
 #[test]
-fn diag_events_rejects_invalid_level() {
+fn dump_parse_diagnostics_rejects_invalid_level() {
     let dir = TempDir::new().unwrap();
-    let output = kvp(&with_dir(&dir, &["diag", "events", "--level", "bogus"]));
+    let output = kvp(&with_dir(
+        &dir,
+        &["dump", "--parse-diagnostics", "--level", "bogus"],
+    ));
     assert_eq!(output.status.code(), Some(2));
 }
 
 #[test]
-fn diag_json_covers_malformed_events_and_clear() {
+fn dump_parse_diagnostics_include_raw_conflicts_with_filters() {
+    let dir = TempDir::new().unwrap();
+    let output = kvp(&with_dir(
+        &dir,
+        &[
+            "dump",
+            "--parse-diagnostics",
+            "--include-raw",
+            "--level",
+            "info",
+        ],
+    ));
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn dump_parse_diagnostics_json_covers_events_and_malformed() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
         &dir,
@@ -472,27 +521,19 @@ fn diag_json_covers_malformed_events_and_clear() {
         &["write", "--append", "p|vm|NOPE|c:d|i2", "junk"],
     )));
 
-    let dump =
-        assert_success(kvp(&with_dir(&dir, &["--json", "diag", "dump"])));
+    let dump = assert_success(kvp(&with_dir(
+        &dir,
+        &["--json", "dump", "--parse-diagnostics"],
+    )));
     assert!(dump.contains("\"kind\":\"event\""));
     assert!(dump.contains("\"kind\":\"malformed\""));
     assert!(dump.contains("\"reason\":"));
 
-    let events =
-        assert_success(kvp(&with_dir(&dir, &["--json", "diag", "events"])));
-    assert!(events.contains("\"message\":\"hello\""));
-    let cleared = assert_success(kvp(&with_dir(
+    // Filtering by name yields the events-only view.
+    let events = assert_success(kvp(&with_dir(
         &dir,
-        &[
-            "--json",
-            "diag",
-            "clear",
-            "--vm-id",
-            "vm",
-            "--event-prefix",
-            "p",
-            "--yes",
-        ],
+        &["--json", "dump", "--parse-diagnostics", "--name", "a:b"],
     )));
-    assert!(cleared.contains("\"cleared\":true"));
+    assert!(events.contains("\"message\":\"hello\""));
+    assert!(!events.contains("\"kind\":\"malformed\""));
 }
