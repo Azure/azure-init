@@ -232,7 +232,7 @@ Only the exact `PROVISIONING_REPORT` key selects report parsing. Its value is on
 
 Writing is the inverse: `DiagnosticWriter` stamps `DIAG_V1`, converts the typed payload according to `encoding`, frames it into records, and appends them to the `KvpPoolStore`.
 
-The reader preserves first-seen pool order: a complete chunk group occupies its first physical position, and failed groups remain raw records at their original positions. Only the CLI's `dump --parse` sorts diagnostics and reports by timestamp, oldest first, with stable ties and raw entries last. A span's timeline can be summarized as:
+The reader preserves first-seen pool order: a complete chunk group occupies its first physical position, and failed groups remain raw records at their original positions. The CLI's `dump --parse` renders entries in that same pool order. A span's timeline can be summarized as:
 
 ```text
 2026-08-31T12:34:56.789Z  start   provision:run
@@ -434,7 +434,7 @@ impl DiagnosticWriter {
 
 `dump` defaults to JSON; `--json` makes that explicit and `--text` selects human-readable output. Without `--parse`, it returns every physical record in pool order. `--parse` calls `DiagnosticReader::entries()`, returning typed diagnostics and reports while preserving other or invalid records as `Raw`. Both modes require a successful string-based snapshot; invalid physical UTF-8 fails the command without returning records.
 
-Parsed JSON and text output sort diagnostics and reports by their timestamps as instants, oldest first, including timezone offsets and available fractional precision. Equal timestamps retain first-seen pool order. Raw entries follow the timestamped entries in their original relative pool order; the CLI does not infer timestamps from malformed or unrecognized records. This presentation does not change the reader API's ordering or write to the pool.
+Parsed JSON and text output preserve the reader's first-seen pool order; the CLI does not reorder entries. In parsed text output, binary payloads render as `payload_b64=<base64>`. This presentation does not change the reader API's ordering or write to the pool.
 
 ```text
 dump                    -> JSON array of every physical {key, value} record

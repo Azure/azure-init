@@ -351,22 +351,21 @@ fn parsed_dump_reassembles_and_filters_without_dropping_other_entries() {
     assert_eq!(entries[0]["kind"], "event");
     assert_eq!(entries[0]["name"], "a:b");
     assert_eq!(entries[0]["payload"], "one/two");
-    let timed_entries = &entries.as_array().unwrap()[1..3];
-    assert!(timed_entries.iter().any(|entry| {
-        entry["type"] == "PROVISIONING_REPORT" && entry["result"] == "success"
-    }));
-    assert!(timed_entries.iter().any(|entry| entry["name"] == "ssh:key"));
     assert_eq!(
-        entries[3],
+        entries[1],
         json!({"type": "raw", "key": "note", "value": "raw value"})
     );
     assert_eq!(
-        entries[4],
+        entries[2],
         json!({
             "type": "raw", "key": "DIAG_V2|future", "value": "preserved",
             "error": "unsupported_version",
         })
     );
+    assert_eq!(entries[3]["type"], "PROVISIONING_REPORT");
+    assert_eq!(entries[3]["result"], "success");
+    assert_eq!(entries[4]["type"], "diagnostic");
+    assert_eq!(entries[4]["name"], "ssh:key");
 
     let filtered = assert_json(kvp(&with_dir(
         &dir,
@@ -380,66 +379,40 @@ fn parsed_dump_reassembles_and_filters_without_dropping_other_entries() {
 }
 
 #[test]
-fn parsed_dump_sorts_timestamps_without_reordering_reader_or_raw_dump() {
+fn parsed_dump_preserves_reader_pool_order() {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
     let key = |name: &str, timestamp: &str| {
         format!("DIAG_V1|agent|{VM_ID}|event|{name}|{event_id}|{timestamp}|none|||0")
     };
-    let records = vec![
+    // Timestamps are deliberately out of order to prove the CLI does not sort.
+    let records = [
         ("note".into(), "raw first"),
         (key("latest", "2026-08-31T00:00:03.000Z"), "latest"),
         (
-            format!("CLOUD_INIT|100|event|cloud|{VM_ID}|{event_id}"),
-            r#"{"name":"cloud","type":"event","ts":"2026-08-31T00:00:02.000500Z","msg":"cloud"}"#,
-        ),
-        (
             PROVISIONING_REPORT_KEY.into(),
-            "result=success|agent=agent|vm_id=vm|pps_type=None|timestamp=2026-08-31T02:00:02+02:00",
+            "result=success|agent=agent|vm_id=vm|pps_type=None|timestamp=2026-08-31T00:00:02Z",
         ),
         ("DIAG_V2|future".into(), "raw second"),
-        (key("tie-first", "2026-08-31T00:00:02.000Z"), "first tie"),
         (key("earliest", "2026-08-31T00:00:01.000Z"), "earliest"),
-        (key("tie-second", "2026-08-31T00:00:02.000Z"), "second tie"),
     ];
     store
         .append_multiple(records.iter().map(|(key, value)| (key, *value)))
         .unwrap();
     let before = fs::read(store.path()).unwrap();
+
+    // Parsed output matches the reader entries verbatim (first-seen pool order).
     let reader_entries = serde_json::to_value(
         libazureinit_kvp::DiagnosticReader::new(store.clone())
             .entries()
             .unwrap(),
     )
     .unwrap();
-    let expected = Value::Array(
-        [6, 3, 5, 7, 2, 1, 0, 4]
-            .into_iter()
-            .map(|position| reader_entries[position].clone())
-            .collect(),
-    );
     let parsed = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
-    assert_eq!(parsed, expected);
-    assert_eq!(parsed[1]["timestamp"], "2026-08-31T02:00:02+02:00");
+    assert_eq!(parsed, reader_entries);
 
-    let text =
-        assert_success(kvp(&with_dir(&dir, &["dump", "--parse", "--text"])));
-    let expected_labels = [
-        "name=earliest ",
-        "PROVISIONING_REPORT=",
-        "name=tie-first ",
-        "name=tie-second ",
-        "name=cloud ",
-        "name=latest ",
-        "raw key=note ",
-        "raw key=DIAG_V2|future ",
-    ];
-    assert_eq!(text.lines().count(), expected_labels.len());
-    for (line, label) in text.lines().zip(expected_labels) {
-        assert!(line.contains(label), "expected {label:?} in {line:?}");
-    }
-
+    // Physical dump keeps every record in file order.
     let physical = assert_json(kvp(&with_dir(&dir, &["dump"])));
     let expected_physical: Vec<_> = records
         .iter()
@@ -529,15 +502,15 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
     assert_eq!(lines.len(), 4);
     assert!(lines[0]
         .contains("encoding=gz+b64 result=fail duration=7ms payload_b64=AP8="));
+    assert_eq!(lines[1], "raw key=note value=raw value");
+    assert_eq!(lines[2], "raw key=DIAG_V1|bad value=junk error=malformed diagnostic or provisioning report");
     assert_eq!(
-        lines[1],
+        lines[3],
         format!(
             "PROVISIONING_REPORT={}",
             store.read(PROVISIONING_REPORT_KEY).unwrap().unwrap()
         )
     );
-    assert_eq!(lines[2], "raw key=note value=raw value");
-    assert_eq!(lines[3], "raw key=DIAG_V1|bad value=junk error=malformed diagnostic or provisioning report");
 
     let entries =
         assert_json(kvp(&with_dir(&dir, &["dump", "--parse", "--json"])));
@@ -545,8 +518,8 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
         entries[0]["payload"],
         json!({"type": "bytes", "encoding": "base64", "data": "AP8="})
     );
-    assert_eq!(entries[1]["reason"], "bad input");
-    assert_eq!(entries[3]["error"], "malformed");
+    assert_eq!(entries[2]["error"], "malformed");
+    assert_eq!(entries[3]["reason"], "bad input");
 }
 
 #[test]
@@ -556,6 +529,75 @@ fn dump_name_requires_parse() {
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("--parse"));
+}
+
+#[test]
+fn parsed_dump_filters_by_kind() {
+    let dir = TempDir::new().unwrap();
+    let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
+    let ts = "2026-08-31T00:00:00.000Z";
+    let diag = |kind: &str, name: &str, result: &str, duration: &str| {
+        format!(
+            "DIAG_V1|agent|{VM_ID}|{kind}|{name}|{event_id}|{ts}|none|{result}|{duration}|0"
+        )
+    };
+    for (key, value) in [
+        (diag("start", "provision:run", "", ""), "starting"),
+        (diag("finish", "provision:run", "success", "312"), "done"),
+        (diag("event", "imds", "", ""), "ok"),
+        ("note".to_string(), "raw value"),
+    ] {
+        assert_success(kvp(&with_dir(
+            &dir,
+            &["write", "--append", &key, value],
+        )));
+    }
+    assert_success(kvp(&with_dir(&dir, &["report-success", "--vm-id", VM_ID])));
+
+    // --kind keeps only diagnostics of that kind; reports and raw remain.
+    let finish = assert_json(kvp(&with_dir(
+        &dir,
+        &["dump", "--parse", "--kind", "finish"],
+    )));
+    let finish = finish.as_array().unwrap();
+    assert_eq!(finish.len(), 3);
+    assert_eq!(finish[0]["kind"], "finish");
+    assert_eq!(finish[0]["name"], "provision:run");
+    assert_eq!(
+        finish[1],
+        json!({"type": "raw", "key": "note", "value": "raw value"})
+    );
+    assert_eq!(finish[2]["type"], "PROVISIONING_REPORT");
+
+    // --name and --kind combine with AND semantics.
+    let combined = assert_json(kvp(&with_dir(
+        &dir,
+        &["dump", "--parse", "--kind", "start", "--name", "provision"],
+    )));
+    let combined = combined.as_array().unwrap();
+    assert_eq!(combined.len(), 3);
+    assert_eq!(combined[0]["kind"], "start");
+
+    // A kind/name pair matching no diagnostic keeps only reports and raw.
+    let empty = assert_json(kvp(&with_dir(
+        &dir,
+        &["dump", "--parse", "--kind", "start", "--name", "imds"],
+    )));
+    let empty = empty.as_array().unwrap();
+    assert_eq!(empty.len(), 2);
+    assert!(empty.iter().all(|entry| entry["type"] != "diagnostic"));
+}
+
+#[test]
+fn dump_kind_requires_parse_and_rejects_unknown_value() {
+    let requires_parse = kvp(&["dump", "--kind", "finish"]);
+    assert_eq!(requires_parse.status.code(), Some(2));
+    assert!(String::from_utf8(requires_parse.stderr)
+        .unwrap()
+        .contains("--parse"));
+
+    let unknown = kvp(&["dump", "--parse", "--kind", "bogus"]);
+    assert_eq!(unknown.status.code(), Some(2));
 }
 
 #[test]

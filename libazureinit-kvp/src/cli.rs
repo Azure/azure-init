@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::{
     write_report, Diagnostic, DiagnosticPayload, DiagnosticReader,
-    DiagnosticWriter, Entry, KvpError, KvpPool, KvpPoolStore, PoolMode,
+    DiagnosticWriter, Entry, Kind, KvpError, KvpPool, KvpPoolStore, PoolMode,
     ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
 };
 
@@ -98,15 +98,18 @@ enum Command {
     Info,
     /// Print every record in pool order (JSON by default; --text for KEY=VALUE).
     ///
-    /// With --parse, sort diagnostics and reports by timestamp, oldest first.
-    /// Equal timestamps keep pool order; raw entries follow in pool order.
+    /// With --parse, decode diagnostics and reports, preserving other or
+    /// invalid records as raw entries. Entries stay in pool order.
     Dump {
-        /// Decode diagnostics and reports in oldest-first timestamp order.
+        /// Decode diagnostics and provisioning reports (kept in pool order).
         #[arg(long)]
         parse: bool,
         /// Filter diagnostic names by substring; retain reports and raw entries.
         #[arg(long, requires = "parse")]
         name: Option<String>,
+        /// Filter diagnostics by kind; retain reports and raw entries.
+        #[arg(long, value_enum, requires = "parse")]
+        kind: Option<KindArg>,
     },
     /// Print key=last_value entries sorted by key.
     Entries,
@@ -238,6 +241,24 @@ impl From<PoolArg> for KvpPool {
     }
 }
 
+/// Diagnostic kind accepted by `dump --parse --kind`.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum KindArg {
+    Start,
+    Finish,
+    Event,
+}
+
+impl From<KindArg> for Kind {
+    fn from(value: KindArg) -> Self {
+        match value {
+            KindArg::Start => Self::Start,
+            KindArg::Finish => Self::Finish,
+            KindArg::Event => Self::Event,
+        }
+    }
+}
+
 fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
     if cli.json && cli.text {
         return Err(CliError::Usage(
@@ -260,13 +281,20 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
 
     match cli.command {
         Command::Info => info(&store, stdout, output),
-        Command::Dump { parse, name } => {
+        Command::Dump { parse, name, kind } => {
             let output = if cli.text {
                 OutputMode::Text
             } else {
                 OutputMode::Json
             };
-            dump(&store, stdout, parse, name.as_deref(), output)
+            dump(
+                &store,
+                stdout,
+                parse,
+                name.as_deref(),
+                kind.map(Kind::from),
+                output,
+            )
         }
         Command::Entries => entries(&store, stdout, output),
         Command::Read { key } => read(&store, stdout, &key, output),
@@ -368,10 +396,11 @@ fn dump<W: Write>(
     stdout: &mut W,
     parse: bool,
     name: Option<&str>,
+    kind: Option<Kind>,
     output: OutputMode,
 ) -> Result<u8, CliError> {
     if parse {
-        return diagnostics_entries(store, stdout, name, output);
+        return diagnostics_entries(store, stdout, name, kind, output);
     }
 
     let records = store.dump()?;
@@ -486,27 +515,20 @@ fn diagnostics_entries<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
     name: Option<&str>,
+    kind: Option<Kind>,
     output: OutputMode,
 ) -> Result<u8, CliError> {
     let mut entries = DiagnosticReader::new(store.clone()).entries()?;
 
-    if let Some(needle) = name {
+    if name.is_some() || kind.is_some() {
         entries.retain(|entry| match entry {
             Entry::Diagnostic(diagnostic) => {
-                diagnostic.key().name.contains(needle)
+                name.is_none_or(|needle| diagnostic.key().name.contains(needle))
+                    && kind.is_none_or(|wanted| diagnostic.kind() == wanted)
             }
             Entry::Report(_) | Entry::Raw(_) => true,
         });
     }
-
-    entries.sort_by_cached_key(|entry| {
-        let timestamp = match entry {
-            Entry::Diagnostic(diagnostic) => Some(diagnostic.key().timestamp),
-            Entry::Report(report) => Some(report.timestamp()),
-            Entry::Raw(_) => None,
-        };
-        (timestamp.is_none(), timestamp)
-    });
 
     match output {
         OutputMode::Text => {
@@ -933,6 +955,7 @@ mod tests {
         Command::Dump {
             parse: false,
             name: None,
+            kind: None,
         }
     }
 
@@ -1887,21 +1910,22 @@ mod tests {
             Command::Dump {
                 parse: true,
                 name: Some("keep".into()),
+                kind: None,
             },
         ));
         let entries = parse_json(&output);
         let entries = entries.as_array().unwrap();
         assert_eq!(entries.len(), 4);
-        assert_eq!(entries[0]["type"], "diagnostic");
-        assert_eq!(entries[0]["name"], "keep");
-        assert_eq!(entries[0]["payload"], "visible");
         assert_eq!(
-            entries[1],
-            serde_json::to_value(Entry::Report(report)).unwrap()
+            entries[0],
+            json!({"type": "raw", "key": "note", "value": "raw value"})
         );
+        assert_eq!(entries[1]["type"], "diagnostic");
+        assert_eq!(entries[1]["name"], "keep");
+        assert_eq!(entries[1]["payload"], "visible");
         assert_eq!(
             entries[2],
-            json!({"type": "raw", "key": "note", "value": "raw value"})
+            serde_json::to_value(Entry::Report(report)).unwrap()
         );
         assert_eq!(
             entries[3],
@@ -1909,6 +1933,39 @@ mod tests {
                 "type": "raw", "key": "DIAG_V2|future", "value": "preserved",
                 "error": "unsupported_version",
             })
+        );
+    }
+
+    #[test]
+    fn dispatch_parsed_dump_filters_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let event_id = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
+        let ts = "2026-08-31T12:34:56.789Z";
+        let vm = "00000000-0000-0000-0000-000000000abc";
+        let diag = |kind: &str| {
+            format!("DIAG_V1|agent|{vm}|{kind}|span|{event_id}|{ts}|none|||0")
+        };
+        store.append(&diag("start"), "starting").unwrap();
+        store.append(&diag("event"), "obs").unwrap();
+        store.append("note", "raw").unwrap();
+
+        let (_, output) = run_dispatch(cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: None,
+                kind: Some(KindArg::Start),
+            },
+        ));
+        let entries = parse_json(&output);
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["kind"], "start");
+        assert_eq!(entries[0]["name"], "span");
+        assert_eq!(
+            entries[1],
+            json!({"type": "raw", "key": "note", "value": "raw"})
         );
     }
 

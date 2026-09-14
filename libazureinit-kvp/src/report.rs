@@ -209,14 +209,6 @@ impl ProvisioningReport {
         self.extra.push((key.into(), value.into()));
         self
     }
-
-    pub(crate) fn timestamp(&self) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(&self.timestamp)
-            .expect(
-                "report timestamps are constructed or validated as RFC 3339",
-            )
-            .with_timezone(&Utc)
-    }
 }
 
 impl FromStr for ProvisioningReport {

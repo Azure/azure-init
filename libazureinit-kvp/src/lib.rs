@@ -18,8 +18,7 @@
 //! The reader preserves first-seen pool order. Unknown or invalid records
 //! remain [`Entry::Raw`] within a successful snapshot; a failed snapshot,
 //! including invalid physical UTF-8, returns an error without entries.
-//! The CLI's `dump --parse` sorts diagnostics and reports by timestamp,
-//! oldest first, with stable ties and raw entries last.
+//! The CLI's `dump --parse` renders those entries in the same pool order.
 //!
 //! ```no_run
 //! use libazureinit_kvp::{

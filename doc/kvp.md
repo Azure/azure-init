@@ -261,14 +261,15 @@ Neither reading nor emitting diagnostics clears stale pool data implicitly.
 | Command | Output |
 |---------|--------|
 | `libazureinit-kvp dump` | JSON array of physical key/value records in pool order, including duplicates |
-| `libazureinit-kvp dump --parse` | JSON array of diagnostics and reports in timestamp order, then raw entries |
+| `libazureinit-kvp dump --parse` | JSON array of decoded diagnostics, reports, and raw entries in pool order |
 | `libazureinit-kvp dump --text` | Physical records as `KEY=VALUE` lines |
-| `libazureinit-kvp dump --parse --text` | The same timestamp ordering, with binary payloads under `payload_b64` |
+| `libazureinit-kvp dump --parse --text` | One line per entry in pool order; binary payloads render as `payload_b64=<base64>` |
 | `libazureinit-kvp dump --parse --name ssh` | Filter diagnostic names by substring; retain reports and raw entries |
+| `libazureinit-kvp dump --parse --kind finish` | Filter diagnostics by kind (`start`/`finish`/`event`); adding `--name` keeps only diagnostics that match both filters |
 
-Parsed CLI output is oldest-first. Equal timestamps keep first-seen order;
-raw entries retain their relative pool order at the end. This presentation
-does not change `DiagnosticReader::entries()` or the pool file.
+Parsed CLI output preserves the pool order returned by
+`DiagnosticReader::entries()`: a complete chunk group appears at its first
+record's position, and every other record stays where it sits in the pool.
 
 `--json` and `--text` are mutually exclusive. Only `dump` defaults to JSON;
 other commands retain their text defaults. Global `--dir` and `--pool`
