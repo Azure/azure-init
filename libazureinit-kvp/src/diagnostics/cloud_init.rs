@@ -316,12 +316,13 @@ mod tests {
         entries
     }
 
-    fn only_diagnostic(entries: Vec<Entry>) -> Diagnostic {
+    fn only_diagnostic(mut entries: Vec<Entry>) -> Diagnostic {
         assert_eq!(entries.len(), 1);
-        match entries.into_iter().next().unwrap() {
-            Entry::Diagnostic(diagnostic) => diagnostic,
-            other => panic!("expected a diagnostic, got {other:?}"),
+        let mut diagnostic = None;
+        if let Some(Entry::Diagnostic(value)) = entries.pop() {
+            diagnostic = Some(value);
         }
+        diagnostic.expect("expected a diagnostic")
     }
 
     fn assert_raw(records: &[(String, String)], error: DecodeError) {
@@ -353,6 +354,14 @@ mod tests {
         assert_eq!(parsed_index, index);
         assert_eq!(parsed.vm_id, current.then_some(VM_ID));
         assert_eq!(parsed.event_id, EVENT_ID);
+    }
+
+    #[test]
+    fn malformed_base_key_layout_is_rejected() {
+        assert!(matches!(
+            parse_key("CLOUD_INIT|100|event|test"),
+            Err(DecodeError::Malformed)
+        ));
     }
 
     #[rstest]
@@ -417,14 +426,13 @@ mod tests {
             ),
             (key("finish", true, None), finish.to_string()),
         ]);
-        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
-            entries.as_slice()
-        else {
-            panic!("expected a start and finish");
-        };
-        assert_eq!(start.key.event_id, finish.key.event_id);
-        assert_eq!(finish.result, Outcome::Failure);
-        assert_eq!(finish.duration_ms, 123);
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))]
+                if start.key.event_id == finish.key.event_id
+                    && finish.result == Outcome::Failure
+                    && finish.duration_ms == 123
+        ));
     }
 
     #[test]
@@ -433,13 +441,11 @@ mod tests {
             "CLOUD_INIT|1785187982|finish|modules-final/config-scripts_user|0e5e179d-5341-478b-8456-fbb90621bdf8|e5f01809-a7a3-4279-aa64-1f18e21eda6e".into(),
             r#"{"name":"modules-final/config-scripts_user","type":"finish","ts":"2026-07-27T21:33:24.339006+00:00","result":"SUCCESS","duration":0.0006448590000012189,"msg":"config-scripts_user ran successfully and took 0.001 seconds"}"#.into(),
         )];
-        let Diagnostic::Finish(finish) = only_diagnostic(entries(&records))
-        else {
-            panic!("expected a finish");
-        };
-        assert_eq!(finish.result, Outcome::Success);
-        assert_eq!(finish.duration_ms, 0);
-        assert_eq!(finish.key.name, "modules-final/config-scripts_user");
+        let diagnostic = only_diagnostic(entries(&records));
+        assert!(matches!(&diagnostic, Diagnostic::Finish(finish)
+                if finish.result == Outcome::Success
+                    && finish.duration_ms == 0
+                    && finish.key.name == "modules-final/config-scripts_user"));
     }
 
     #[test]
@@ -481,15 +487,25 @@ mod tests {
     }
 
     #[rstest]
-    #[case::invalid_json("not json".into())]
-    #[case::timestamp(value("event", "message").to_string().replace(TIMESTAMP, "bad"))]
-    #[case::name(value("event", "message").to_string().replace("\"test\"", "\"other\""))]
-    #[case::message(json!({"name":"test", "type":"event", "ts":TIMESTAMP, "msg":7}).to_string())]
-    fn malformed_source_values_remain_raw(#[case] value: String) {
-        assert_raw(
-            &[(key("event", true, None), value)],
-            DecodeError::Malformed,
-        );
+    #[case::invalid_json("event", "not json".into())]
+    #[case::timestamp("event", value("event", "message").to_string().replace(TIMESTAMP, "bad"))]
+    #[case::name("event", value("event", "message").to_string().replace("\"test\"", "\"other\""))]
+    #[case::message("event", json!({"name":"test", "type":"event", "ts":TIMESTAMP, "msg":7}).to_string())]
+    #[case::start_result("start", {
+        let mut metadata = value("start", "message");
+        metadata["result"] = json!("SUCCESS");
+        metadata.to_string()
+    })]
+    #[case::start_duration("start", {
+        let mut metadata = value("start", "message");
+        metadata["duration"] = json!(1);
+        metadata.to_string()
+    })]
+    fn malformed_source_values_remain_raw(
+        #[case] kind: &str,
+        #[case] value: String,
+    ) {
+        assert_raw(&[(key(kind, true, None), value)], DecodeError::Malformed);
     }
 
     #[test]
@@ -568,14 +584,13 @@ mod tests {
             ),
         ];
         let entries = entries(&records);
-        let [Entry::Diagnostic(first), Entry::Diagnostic(second)] =
-            entries.as_slice()
-        else {
-            panic!("expected two separate groups");
-        };
-        assert_eq!(first.key(), second.key());
-        assert_eq!(first.payload(), &DiagnosticPayload::Text("ab".into()));
-        assert_eq!(second.payload(), &DiagnosticPayload::Text("xy".into()));
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(first), Entry::Diagnostic(second)]
+                if first.key() == second.key()
+                    && first.payload() == &DiagnosticPayload::Text("ab".into())
+                    && second.payload() == &DiagnosticPayload::Text("xy".into())
+        ));
     }
 
     #[test]
@@ -660,9 +675,8 @@ mod tests {
         let compressed = STANDARD.decode(ZLIB_DATA).unwrap();
         for end in 0..compressed.len() {
             assert_eq!(
-                decode_compressed(&STANDARD.encode(&compressed[..end])),
-                Err(DecodeError::Undecodable),
-                "prefix {end}"
+                (end, decode_compressed(&STANDARD.encode(&compressed[..end]))),
+                (end, Err(DecodeError::Undecodable))
             );
         }
     }

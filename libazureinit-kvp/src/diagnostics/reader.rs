@@ -312,12 +312,13 @@ mod tests {
             .collect()
     }
 
-    fn only_diagnostic(entries: Vec<Entry>) -> Diagnostic {
+    fn only_diagnostic(mut entries: Vec<Entry>) -> Diagnostic {
         assert_eq!(entries.len(), 1);
-        match entries.into_iter().next().unwrap() {
-            Entry::Diagnostic(diagnostic) => diagnostic,
-            other => panic!("expected a diagnostic, got {other:?}"),
+        let mut diagnostic = None;
+        if let Some(Entry::Diagnostic(value)) = entries.pop() {
+            diagnostic = Some(value);
         }
+        diagnostic.expect("expected a diagnostic")
     }
 
     fn store(dir: &TempDir) -> KvpPoolStore {
@@ -326,15 +327,15 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct ReadOnlyOps {
+    struct ReaderOps {
         os: OsSysOps,
-        reads: AtomicUsize,
+        calls: AtomicUsize,
         open_error: Option<io::ErrorKind>,
     }
 
-    impl SysOps for ReadOnlyOps {
+    impl SysOps for ReaderOps {
         fn open_read(&self, path: &Path) -> io::Result<Box<dyn Handle>> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(error) = self.open_error {
                 return Err(error.into());
             }
@@ -342,27 +343,31 @@ mod tests {
         }
 
         fn open_read_write(&self, _: &Path) -> io::Result<Box<dyn Handle>> {
-            panic!("reader must not write the pool")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn open_read_write_create(
             &self,
             _: &Path,
         ) -> io::Result<Box<dyn Handle>> {
-            panic!("reader must not create the pool")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn path_metadata(&self, _: &Path) -> io::Result<StatInfo> {
-            panic!("reader must not inspect pool staleness")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn boot_time(&self) -> io::Result<i64> {
-            panic!("reader must not read boot state")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
     }
 
-    fn observed_reader(dir: &TempDir) -> (DiagnosticReader, Arc<ReadOnlyOps>) {
-        let ops = Arc::new(ReadOnlyOps::default());
+    fn observed_reader(dir: &TempDir) -> (DiagnosticReader, Arc<ReaderOps>) {
+        let ops = Arc::new(ReaderOps::default());
         let observed = KvpPoolStore::with_ops(
             KvpPool::Guest,
             dir.path(),
@@ -374,10 +379,28 @@ mod tests {
     }
 
     #[test]
+    fn reader_ops_rejects_non_read_operations() {
+        let dir = TempDir::new().unwrap();
+        let pool = store(&dir);
+        let ops = ReaderOps::default();
+        assert_eq!(
+            [
+                ops.open_read_write(pool.path()).unwrap_err().kind(),
+                ops.open_read_write_create(pool.path()).unwrap_err().kind(),
+                ops.path_metadata(pool.path()).unwrap_err().kind(),
+                ops.boot_time().unwrap_err().kind(),
+            ],
+            [io::ErrorKind::Unsupported; 4]
+        );
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 4);
+        assert!(!pool.path().exists());
+    }
+
+    #[test]
     fn constructor_does_no_io() {
         let dir = TempDir::new().unwrap();
         let (reader, ops) = observed_reader(&dir);
-        assert_eq!(ops.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert!(!reader.store.path().exists());
     }
 
@@ -386,8 +409,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir);
         let (reader, ops) = observed_reader(&dir);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert!(reader.entries().unwrap().is_empty());
-        assert_eq!(ops.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
         assert!(!pool.path().exists());
 
         pool.append("unrelated", "unchanged").unwrap();
@@ -396,16 +420,16 @@ mod tests {
             reader.entries().unwrap(),
             raw_entries(&[("unrelated".into(), "unchanged".into())], None)
         );
-        assert_eq!(ops.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 2);
         assert_eq!(fs::read(pool.path()).unwrap(), before);
     }
 
     #[test]
     fn snapshot_open_errors_propagate() {
         let dir = TempDir::new().unwrap();
-        let ops = Arc::new(ReadOnlyOps {
+        let ops = Arc::new(ReaderOps {
             open_error: Some(io::ErrorKind::PermissionDenied),
-            ..ReadOnlyOps::default()
+            ..ReaderOps::default()
         });
         let pool = KvpPoolStore::with_ops(
             KvpPool::Guest,
@@ -415,13 +439,13 @@ mod tests {
         )
         .unwrap();
         let reader = DiagnosticReader::new(pool);
-        assert_eq!(ops.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert!(matches!(
             reader.entries(),
             Err(KvpError::Io(error))
                 if error.kind() == io::ErrorKind::PermissionDenied
         ));
-        assert_eq!(ops.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -619,17 +643,16 @@ mod tests {
             (start, "starting".into()),
             (finish, "failed".into()),
         ]);
-        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
-            entries.as_slice()
-        else {
-            panic!("expected separate start and finish entries");
-        };
-        assert_eq!(start.key.event_id, EVENT_ID);
-        assert_eq!(finish.key.event_id, EVENT_ID);
-        assert_eq!(start.payload, DiagnosticPayload::Text("starting".into()));
-        assert_eq!(finish.payload, DiagnosticPayload::Text("failed".into()));
-        assert_eq!(finish.result, Outcome::Failure);
-        assert_eq!(finish.duration_ms, 312);
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))]
+                if start.key.event_id == EVENT_ID
+                    && finish.key.event_id == EVENT_ID
+                    && start.payload == DiagnosticPayload::Text("starting".into())
+                    && finish.payload == DiagnosticPayload::Text("failed".into())
+                    && finish.result == Outcome::Failure
+                    && finish.duration_ms == 312
+        ));
     }
 
     #[rstest]
@@ -648,11 +671,8 @@ mod tests {
         let key = with_field(&key, 9, &duration_token);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
-        let Diagnostic::Event(event) = diagnostic else {
-            panic!("expected an event");
-        };
-        assert_eq!(event.result, result);
-        assert_eq!(event.duration_ms, duration);
+        assert!(matches!(&diagnostic, Diagnostic::Event(event)
+                if event.result == result && event.duration_ms == duration));
     }
 
     #[rstest]
@@ -758,16 +778,13 @@ mod tests {
             (later, "a".into()),
         ];
         let entries = decode_entries(records);
-        assert_eq!(entries.len(), 3);
-        let Entry::Diagnostic(first) = &entries[0] else {
-            panic!("expected first-seen group");
-        };
-        assert_eq!(first.payload(), &DiagnosticPayload::Text("ab".into()));
-        assert!(matches!(&entries[1], Entry::Raw(raw) if raw.key == "raw"));
-        let Entry::Diagnostic(last) = &entries[2] else {
-            panic!("expected earlier-timestamp group");
-        };
-        assert!(first.key().timestamp > last.key().timestamp);
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(first), Entry::Raw(raw), Entry::Diagnostic(last)]
+                if first.payload() == &DiagnosticPayload::Text("ab".into())
+                    && raw.key == "raw"
+                    && first.key().timestamp > last.key().timestamp
+        ));
     }
 
     #[rstest]
@@ -889,15 +906,12 @@ mod tests {
             (with_field(&key(1), field, second), "d".into()),
         ];
         let entries = decode_entries(records);
-        assert_eq!(entries.len(), 2);
-        let Entry::Diagnostic(first) = &entries[0] else {
-            panic!("expected first group");
-        };
-        let Entry::Diagnostic(second) = &entries[1] else {
-            panic!("expected second group");
-        };
-        assert_eq!(first.payload(), &DiagnosticPayload::Text("ac".into()));
-        assert_eq!(second.payload(), &DiagnosticPayload::Text("bd".into()));
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(first), Entry::Diagnostic(second)]
+                if first.payload() == &DiagnosticPayload::Text("ac".into())
+                    && second.payload() == &DiagnosticPayload::Text("bd".into())
+        ));
     }
 
     #[test]
@@ -1012,10 +1026,8 @@ mod tests {
         let key = with_field(&key(0), 9, &u64::MAX.to_string());
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "payload".into())]));
-        let Diagnostic::Event(event) = diagnostic else {
-            panic!("expected an event");
-        };
-        assert_eq!(event.duration_ms, Some(u64::MAX));
+        assert!(matches!(&diagnostic, Diagnostic::Event(event)
+                if event.duration_ms == Some(u64::MAX)));
     }
 
     #[test]

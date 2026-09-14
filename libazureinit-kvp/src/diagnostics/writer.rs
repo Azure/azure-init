@@ -280,39 +280,43 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct WriteOnlyOps {
+    struct WriterOps {
         os: OsSysOps,
-        opens: AtomicUsize,
+        calls: AtomicUsize,
     }
 
-    impl SysOps for WriteOnlyOps {
+    impl SysOps for WriterOps {
         fn open_read(&self, _: &Path) -> io::Result<Box<dyn Handle>> {
-            panic!("writer must not read the pool")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn open_read_write(&self, _: &Path) -> io::Result<Box<dyn Handle>> {
-            panic!("writer must only append")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn open_read_write_create(
             &self,
             path: &Path,
         ) -> io::Result<Box<dyn Handle>> {
-            self.opens.fetch_add(1, Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.os.open_read_write_create(path)
         }
 
         fn path_metadata(&self, _: &Path) -> io::Result<StatInfo> {
-            panic!("writer must not inspect pool staleness")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
 
         fn boot_time(&self) -> io::Result<i64> {
-            panic!("writer must not read boot state")
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::Unsupported.into())
         }
     }
 
-    fn observed_writer(dir: &TempDir) -> (DiagnosticWriter, Arc<WriteOnlyOps>) {
-        let ops = Arc::new(WriteOnlyOps::default());
+    fn observed_writer(dir: &TempDir) -> (DiagnosticWriter, Arc<WriterOps>) {
+        let ops = Arc::new(WriterOps::default());
         let store = KvpPoolStore::with_ops(
             KvpPool::Guest,
             dir.path(),
@@ -321,6 +325,24 @@ mod tests {
         )
         .unwrap();
         (DiagnosticWriter::new(store, AGENT, VM_ID).unwrap(), ops)
+    }
+
+    #[test]
+    fn writer_ops_rejects_non_append_operations() {
+        let dir = TempDir::new().unwrap();
+        let pool = store(&dir, PoolMode::Safe);
+        let ops = WriterOps::default();
+        assert_eq!(
+            [
+                ops.open_read(pool.path()).unwrap_err().kind(),
+                ops.open_read_write(pool.path()).unwrap_err().kind(),
+                ops.path_metadata(pool.path()).unwrap_err().kind(),
+                ops.boot_time().unwrap_err().kind(),
+            ],
+            [io::ErrorKind::Unsupported; 4]
+        );
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 4);
+        assert!(!pool.path().exists());
     }
 
     fn assert_rejected_without_writes(
@@ -332,7 +354,7 @@ mod tests {
         let before = fs::read(pool.path()).unwrap();
         let (writer, ops) = observed_writer(&dir);
         let error = operation(&writer).unwrap_err();
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert_eq!(fs::read(pool.path()).unwrap(), before);
         error
     }
@@ -342,14 +364,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir, PoolMode::Safe);
         let (writer, ops) = observed_writer(&dir);
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert!(!pool.path().exists());
 
         let payload = "x".repeat(MAX_CHUNK_BYTES * 3 + 1);
         writer
             .emit_event("test", payload, None, None, None)
             .unwrap();
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 1);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
         assert_eq!(pool.dump().unwrap().len(), 4);
     }
 
@@ -361,7 +383,7 @@ mod tests {
             DiagnosticWriter::new(writer.store, "", VM_ID),
             Err(KvpError::EmptyEventField { field: "agent" })
         ));
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -372,7 +394,7 @@ mod tests {
             DiagnosticWriter::new(writer.store, AGENT, "vm-abc"),
             Err(KvpError::InvalidUuid { field: "vm_id" })
         ));
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
     }
 
     #[rstest]
@@ -729,7 +751,7 @@ mod tests {
             writer.emit_event("test", payload, None, None, None),
             Err(KvpError::TooManyChunks { max: MAX_CHUNKS })
         ));
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert_eq!(fs::read(pool.path()).unwrap(), before);
     }
 
@@ -892,7 +914,7 @@ mod tests {
             Err(KvpError::DurationTooLarge { max_ms: MAX_DURATION_MS, actual_ms })
                 if actual_ms == duration_ms
         ));
-        assert_eq!(ops.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

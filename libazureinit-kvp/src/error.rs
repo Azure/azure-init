@@ -135,6 +135,10 @@ mod tests {
         "event key field 'name' must not be empty"
     )]
     #[case(
+        KvpError::EventFieldContainsDelimiter { field: "name" },
+        "event key field 'name' must not contain '|'"
+    )]
+    #[case(
         KvpError::EventFieldTooLong { field: "name", max: 48, actual: 49 },
         "event key field 'name' length (49) exceeds maximum (48)"
     )]
