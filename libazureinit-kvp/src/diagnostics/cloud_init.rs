@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::io::Read;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -182,28 +183,31 @@ fn diagnostic(
                 key,
                 payload,
                 result,
-                duration_ms: duration_ms(duration)?,
+                duration: duration_us(duration)?,
             }))
         }
         _ => Ok(Diagnostic::Event(DiagnosticEvent {
             key,
             payload,
             result: None,
-            duration_ms: None,
+            duration: None,
         })),
     }
 }
 
-fn duration_ms(seconds: &Number) -> Result<u64, DecodeError> {
+fn duration_us(seconds: &Number) -> Result<Duration, DecodeError> {
     if let Some(seconds) = seconds.as_u64() {
-        return seconds.checked_mul(1000).ok_or(DecodeError::Malformed);
+        let micros = seconds
+            .checked_mul(1_000_000)
+            .ok_or(DecodeError::Malformed)?;
+        return Ok(Duration::from_micros(micros));
     }
-    let millis = seconds.as_f64().ok_or(DecodeError::Malformed)? * 1000.0;
+    let micros = seconds.as_f64().ok_or(DecodeError::Malformed)? * 1_000_000.0;
     // The exclusive upper bound avoids a saturating float-to-integer cast.
-    if !(0.0..u64::MAX as f64).contains(&millis) {
+    if !(0.0..u64::MAX as f64).contains(&micros) {
         return Err(DecodeError::Malformed);
     }
-    Ok(millis as u64)
+    Ok(Duration::from_micros(micros.round() as u64))
 }
 
 fn decode_message(
@@ -389,7 +393,7 @@ mod tests {
         assert_eq!(diagnostic.key().name, "test");
         assert_eq!(diagnostic.key().event_id, EVENT_ID);
         let rendered = serde_json::to_value(diagnostic).unwrap();
-        assert_eq!(rendered["timestamp"], "2026-07-27T21:33:24.339Z");
+        assert_eq!(rendered["timestamp"], "2026-07-27T21:33:24.339006Z");
         assert!(rendered.get("boot_epoch").is_none());
         assert!(rendered.get("diagnostic_version_id").is_none());
     }
@@ -415,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_closes_its_span_with_mapped_outcome_and_milliseconds() {
+    fn finish_closes_its_span_with_mapped_outcome_and_microseconds() {
         let mut finish = value("finish", "finished with failure");
         finish["result"] = json!("FAIL");
         finish["duration"] = json!(0.1234);
@@ -431,7 +435,7 @@ mod tests {
             [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))]
                 if start.key.event_id == finish.key.event_id
                     && finish.result == Outcome::Failure
-                    && finish.duration_ms == 123
+                    && finish.duration == Duration::from_micros(123_400)
         ));
     }
 
@@ -444,7 +448,7 @@ mod tests {
         let diagnostic = only_diagnostic(entries(&records));
         assert!(matches!(&diagnostic, Diagnostic::Finish(finish)
                 if finish.result == Outcome::Success
-                    && finish.duration_ms == 0
+                    && finish.duration == Duration::from_micros(645)
                     && finish.key.name == "modules-final/config-scripts_user"));
     }
 
@@ -628,17 +632,17 @@ mod tests {
     }
 
     #[rstest]
-    #[case::whole_seconds(json!(2), 2000)]
+    #[case::whole_seconds(json!(2), 2_000_000)]
     #[case::zero(json!(0), 0)]
-    #[case::fraction(json!(0.1234), 123)]
-    #[case::sub_millisecond(json!(0.00064), 0)]
-    fn duration_conversion_truncates_to_milliseconds(
+    #[case::fraction(json!(0.1234), 123_400)]
+    #[case::sub_millisecond(json!(0.00064), 640)]
+    fn duration_conversion_rounds_to_microseconds(
         #[case] seconds: Value,
         #[case] expected: u64,
     ) {
         assert_eq!(
-            duration_ms(seconds.as_number().unwrap()).unwrap(),
-            expected
+            duration_us(seconds.as_number().unwrap()).unwrap(),
+            Duration::from_micros(expected)
         );
     }
 
@@ -648,7 +652,7 @@ mod tests {
     #[case::float_overflow(json!(1e30))]
     fn duration_conversion_rejects_invalid_ranges(#[case] seconds: Value) {
         assert_eq!(
-            duration_ms(seconds.as_number().unwrap()),
+            duration_us(seconds.as_number().unwrap()),
             Err(DecodeError::Malformed)
         );
     }

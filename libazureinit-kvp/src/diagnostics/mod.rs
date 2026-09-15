@@ -19,7 +19,7 @@ pub use diagnostic::{
     RawKeyValue, DIAGNOSTIC_VERSION_ID,
 };
 pub use reader::DiagnosticReader;
-pub use writer::DiagnosticWriter;
+pub use writer::{DiagnosticWriter, TimestampPrecision};
 
 /// Maximum number of UTF-8 value bytes stored in one diagnostic record.
 ///

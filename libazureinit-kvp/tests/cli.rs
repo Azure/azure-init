@@ -4,6 +4,7 @@
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 use libazureinit_kvp::{
     DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome, PoolMode,
@@ -451,8 +452,8 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
             "type": "diagnostic", "kind": "finish", "agent": "CLOUD_INIT",
             "name": "modules-final/config-scripts_user", "vm_id": VM_ID,
             "event_id": "e5f01809-a7a3-4279-aa64-1f18e21eda6e",
-            "timestamp": "2026-07-27T21:33:24.339Z", "encoding": "none",
-            "result": "success", "duration": 500, "payload": "scripts ran",
+            "timestamp": "2026-07-27T21:33:24.339006Z", "encoding": "none",
+            "result": "success", "duration": 500000, "payload": "scripts ran",
         })
     );
     assert_eq!(entries[1]["kind"], "start");
@@ -467,8 +468,8 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
     assert!(out.contains("name=modules-final/config-scripts_user"));
     assert!(out.contains("vm_id=0e5e179d-5341-478b-8456-fbb90621bdf8"));
     assert!(out.contains("result=success"));
-    assert!(out.contains("timestamp=2026-07-27T21:33:24.339Z"));
-    assert!(out.contains("duration=500ms"));
+    assert!(out.contains("timestamp=2026-07-27T21:33:24.339006Z"));
+    assert!(out.contains("duration=500000us"));
     assert!(out.contains("payload=scripts ran"));
     let start = out.lines().nth(1).unwrap();
     assert!(start.contains("diagnostic kind=start"));
@@ -487,7 +488,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
             vec![0, 255],
             Some(Encoding::GzB64),
             Some(Outcome::Failure),
-            Some(7),
+            Some(Duration::from_micros(7)),
         )
         .unwrap();
     store.append("note", "raw value").unwrap();
@@ -501,7 +502,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 4);
     assert!(lines[0]
-        .contains("encoding=gz+b64 result=fail duration=7ms payload_b64=AP8="));
+        .contains("encoding=gz+b64 result=fail duration=7us payload_b64=AP8="));
     assert_eq!(lines[1], "raw key=note value=raw value");
     assert_eq!(lines[2], "raw key=DIAG_V1|bad value=junk error=malformed diagnostic or provisioning report");
     assert_eq!(

@@ -6,6 +6,7 @@
 
 use std::io::Read;
 use std::thread;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use flate2::read::ZlibDecoder;
@@ -84,7 +85,7 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
         include_vm_id.then_some(CLOUD_INIT_VM_ID)
     );
     assert_eq!(finish.result, Outcome::Success);
-    assert_eq!(finish.duration_ms, 0);
+    assert_eq!(finish.duration, Duration::from_micros(645));
     assert_eq!(
         finish.payload,
         DiagnosticPayload::from(
@@ -93,7 +94,8 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
     );
     assert!(matches!(diagnostic(&entries[1]), Diagnostic::Start(_)));
     assert!(matches!(diagnostic(&entries[2]), Diagnostic::Finish(finish)
-        if finish.result == Outcome::Success && finish.duration_ms == 340));
+        if finish.result == Outcome::Success
+            && finish.duration == Duration::from_micros(340712)));
 }
 
 #[test]
@@ -109,7 +111,13 @@ fn span_and_point_events_round_trip_with_a_report() {
         .emit_start(EVENT_ID, "provision:run", "starting", None)
         .unwrap();
     writer
-        .emit_event("imds", "ok", None, Some(Outcome::Success), Some(17))
+        .emit_event(
+            "imds",
+            "ok",
+            None,
+            Some(Outcome::Success),
+            Some(Duration::from_micros(17)),
+        )
         .unwrap();
     writer
         .emit_finish(
@@ -118,7 +126,7 @@ fn span_and_point_events_round_trip_with_a_report() {
             "finished",
             None,
             Outcome::Success,
-            120,
+            Duration::from_micros(120),
         )
         .unwrap();
     let report = ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None)
@@ -140,7 +148,7 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_eq!(event.key.name, "imds");
     assert_eq!(event.payload, DiagnosticPayload::from("ok"));
     assert_eq!(event.result, Some(Outcome::Success));
-    assert_eq!(event.duration_ms, Some(17));
+    assert_eq!(event.duration, Some(Duration::from_micros(17)));
     assert_eq!(
         uuid::Uuid::parse_str(&event.key.event_id)
             .unwrap()
@@ -150,7 +158,7 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_ne!(event.key.event_id, EVENT_ID);
     assert_eq!(finish.payload, DiagnosticPayload::from("finished"));
     assert_eq!(finish.result, Outcome::Success);
-    assert_eq!(finish.duration_ms, 120);
+    assert_eq!(finish.duration, Duration::from_micros(120));
     assert_eq!(decoded_report, &report);
 
     let dumped = store.dump().unwrap();

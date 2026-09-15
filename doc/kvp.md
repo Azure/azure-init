@@ -248,7 +248,11 @@ no truncation.
 `DiagnosticReader` for diagnostics, provisioning reports, and raw records.
 The writer validates the agent identifier and VM UUID at construction.
 `emit_start` and `emit_finish` share a caller-supplied event UUID;
-`emit_event` generates its own. Durations are integer milliseconds.
+`emit_event` generates its own. Durations are `std::time::Duration`
+values stored as integer microseconds. Timestamps are RFC 3339 UTC (`Z`)
+at millisecond precision by default; `DiagnosticWriter::with_timestamp_precision`
+selects second, microsecond, or nanosecond precision, and the reader
+accepts any of those canonical precisions.
 Payloads are plain UTF-8 text or gzip plus base64 (`Encoding::GzB64`).
 
 Each reader call takes one fresh snapshot and returns `Entry::Diagnostic`,

@@ -569,25 +569,25 @@ fn diagnostic_text(diagnostic: &Diagnostic) -> String {
         let _ = write!(line, " vm_id={vm_id}");
     }
     let _ = write!(line, " name={} event_id={}", key.name, key.event_id);
-    let timestamp = key.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true);
+    let timestamp = key.timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true);
     let encoding = key
         .encoding
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_else(|| "none".to_owned());
     let _ = write!(line, " timestamp={timestamp} encoding={encoding}");
-    let (result, duration_ms) = match diagnostic {
+    let (result, duration) = match diagnostic {
         Diagnostic::Start(_) => (None, None),
         Diagnostic::Finish(finish) => {
-            (Some(finish.result), Some(finish.duration_ms))
+            (Some(finish.result), Some(finish.duration))
         }
-        Diagnostic::Event(event) => (event.result, event.duration_ms),
+        Diagnostic::Event(event) => (event.result, event.duration),
     };
     if let Some(result) = result {
         let _ = write!(line, " result={result}");
     }
-    if let Some(duration_ms) = duration_ms {
-        let _ = write!(line, " duration={duration_ms}ms");
+    if let Some(duration) = duration {
+        let _ = write!(line, " duration={}us", duration.as_micros());
     }
     match diagnostic.payload() {
         DiagnosticPayload::Text(text) => {
@@ -1824,7 +1824,7 @@ mod tests {
     #[case(KvpError::EmptyEventField { field: "name" })]
     #[case(KvpError::EventFieldTooLong { field: "agent", max: 32, actual: 33 })]
     #[case(KvpError::InvalidUuid { field: "event_id" })]
-    #[case(KvpError::DurationTooLarge { max_ms: 9_999_999_999, actual_ms: u64::MAX })]
+    #[case(KvpError::DurationTooLarge { max_us: 9_999_999_999_999, actual_us: u64::MAX })]
     #[case(KvpError::TooManyChunks { max: 1023 })]
     #[case(KvpError::PayloadNotUtf8)]
     #[case(KvpError::UnsupportedEncoding { token: "zstd+b64".into() })]

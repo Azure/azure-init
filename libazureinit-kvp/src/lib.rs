@@ -54,8 +54,8 @@ pub use cli::run;
 pub use diagnostics::{
     DecodeError, Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticKey,
     DiagnosticPayload, DiagnosticReader, DiagnosticStart, DiagnosticWriter,
-    Encoding, Entry, Kind, Outcome, RawKeyValue, DIAGNOSTIC_VERSION_ID,
-    MAX_CHUNK_BYTES,
+    Encoding, Entry, Kind, Outcome, RawKeyValue, TimestampPrecision,
+    DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES,
 };
 pub use error::KvpError;
 pub use report::{

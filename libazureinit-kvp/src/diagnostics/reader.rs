@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use uuid::Uuid;
@@ -176,10 +177,18 @@ fn decode_v1_group(
     let parsed_timestamp = DateTime::parse_from_rfc3339(timestamp)
         .map_err(|_| DecodeError::Malformed)?
         .with_timezone(&Utc);
-    if timestamp.len() != 24
-        || parsed_timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)
-            != timestamp
-    {
+    // Accept only canonical UTC `Z` timestamps at second/ms/us/ns precision.
+    let canonical = [
+        SecondsFormat::Secs,
+        SecondsFormat::Millis,
+        SecondsFormat::Micros,
+        SecondsFormat::Nanos,
+    ]
+    .into_iter()
+    .any(|precision| {
+        parsed_timestamp.to_rfc3339_opts(precision, true) == timestamp
+    });
+    if !canonical {
         return Err(DecodeError::Malformed);
     }
     let result = match result {
@@ -188,10 +197,10 @@ fn decode_v1_group(
         "fail" => Some(Outcome::Failure),
         _ => return Err(DecodeError::Malformed),
     };
-    let duration_ms = if duration.is_empty() {
+    let duration = if duration.is_empty() {
         None
     } else {
-        Some(parse_unsigned(duration)?)
+        Some(Duration::from_micros(parse_unsigned(duration)?))
     };
     let encoding = match encoding {
         "none" => None,
@@ -207,27 +216,27 @@ fn decode_v1_group(
         encoding,
     };
 
-    match (kind, result, duration_ms) {
+    match (kind, result, duration) {
         ("start", None, None) => {
             let payload = decode_chunks(chunks, key.encoding.as_ref())?;
             Ok(Diagnostic::Start(DiagnosticStart { key, payload }))
         }
-        ("finish", Some(result), Some(duration_ms)) => {
+        ("finish", Some(result), Some(duration)) => {
             let payload = decode_chunks(chunks, key.encoding.as_ref())?;
             Ok(Diagnostic::Finish(DiagnosticFinish {
                 key,
                 payload,
                 result,
-                duration_ms,
+                duration,
             }))
         }
-        ("event", result, duration_ms) => {
+        ("event", result, duration) => {
             let payload = decode_chunks(chunks, key.encoding.as_ref())?;
             Ok(Diagnostic::Event(DiagnosticEvent {
                 key,
                 payload,
                 result,
-                duration_ms,
+                duration,
             }))
         }
         _ => Err(DecodeError::Malformed),
@@ -651,7 +660,7 @@ mod tests {
                     && start.payload == DiagnosticPayload::Text("starting".into())
                     && finish.payload == DiagnosticPayload::Text("failed".into())
                     && finish.result == Outcome::Failure
-                    && finish.duration_ms == 312
+                    && finish.duration == Duration::from_micros(312)
         ));
     }
 
@@ -662,17 +671,18 @@ mod tests {
     #[case::both(Some(Outcome::Failure), Some(52))]
     fn event_result_and_duration_are_independent(
         #[case] result: Option<Outcome>,
-        #[case] duration: Option<u64>,
+        #[case] duration_us: Option<u64>,
     ) {
         let result_token = result.map_or_else(String::new, |v| v.to_string());
         let duration_token =
-            duration.map_or_else(String::new, |v| v.to_string());
+            duration_us.map_or_else(String::new, |v| v.to_string());
         let key = with_field(&key(0), 8, &result_token);
         let key = with_field(&key, 9, &duration_token);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
         assert!(matches!(&diagnostic, Diagnostic::Event(event)
-                if event.result == result && event.duration_ms == duration));
+                if event.result == result
+                    && event.duration == duration_us.map(Duration::from_micros)));
     }
 
     #[rstest]
@@ -737,18 +747,36 @@ mod tests {
     }
 
     #[rstest]
-    #[case("not a timestamp")]
-    #[case("2026-08-31T12:34:56Z")]
-    #[case("2026-08-31T12:34:56.78Z")]
-    #[case("2026-08-31T12:34:56.789000Z")]
-    #[case("2026-08-31T12:34:56.789+00:00")]
-    #[case("2026-08-31t12:34:56.789z")]
-    #[case("2026-13-31T12:34:56.789Z")]
-    fn v1_requires_utc_millisecond_timestamps(#[case] timestamp: &str) {
+    #[case::unparsable("not a timestamp")]
+    #[case::two_fraction_digits("2026-08-31T12:34:56.78Z")]
+    #[case::four_fraction_digits("2026-08-31T12:34:56.7890Z")]
+    #[case::numeric_offset("2026-08-31T12:34:56.789+00:00")]
+    #[case::lowercase("2026-08-31t12:34:56.789z")]
+    #[case::invalid_month("2026-13-31T12:34:56.789Z")]
+    fn v1_rejects_non_canonical_timestamps(#[case] timestamp: &str) {
         let records = vec![(with_field(&key(0), 6, timestamp), "value".into())];
         assert_eq!(
             decode_entries(records.clone()),
             raw_entries(&records, Some(DecodeError::Malformed))
+        );
+    }
+
+    #[rstest]
+    #[case::seconds("2026-08-31T12:34:56Z")]
+    #[case::milliseconds("2026-08-31T12:34:56.789Z")]
+    #[case::millisecond_whole("2026-08-31T12:34:56.000Z")]
+    #[case::microseconds("2026-08-31T12:34:56.789123Z")]
+    #[case::microsecond_trailing_zeros("2026-08-31T12:34:56.789000Z")]
+    #[case::nanoseconds("2026-08-31T12:34:56.789123456Z")]
+    fn v1_accepts_canonical_timestamp_precisions(#[case] timestamp: &str) {
+        let key = with_field(&key(0), 6, timestamp);
+        let diagnostic =
+            only_diagnostic(decode_entries(vec![(key, "value".into())]));
+        assert_eq!(
+            diagnostic.key().timestamp,
+            DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .with_timezone(&Utc)
         );
     }
 
@@ -1027,7 +1055,7 @@ mod tests {
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "payload".into())]));
         assert!(matches!(&diagnostic, Diagnostic::Event(event)
-                if event.duration_ms == Some(u64::MAX)));
+                if event.duration == Some(Duration::from_micros(u64::MAX))));
     }
 
     #[test]

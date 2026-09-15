@@ -29,8 +29,8 @@ pub enum KvpError {
         field: &'static str,
     },
     DurationTooLarge {
-        max_ms: u64,
-        actual_ms: u64,
+        max_us: u64,
+        actual_us: u64,
     },
     TooManyChunks {
         max: usize,
@@ -77,8 +77,8 @@ impl fmt::Display for KvpError {
             Self::InvalidUuid { field } => {
                 write!(f, "event key field '{field}' must be a UUID")
             }
-            Self::DurationTooLarge { max_ms, actual_ms } => {
-                write!(f, "diagnostic duration ({actual_ms}ms) exceeds maximum ({max_ms}ms)")
+            Self::DurationTooLarge { max_us, actual_us } => {
+                write!(f, "diagnostic duration ({actual_us}us) exceeds maximum ({max_us}us)")
             }
             Self::TooManyChunks { max } => {
                 write!(f, "diagnostic chunk count exceeds maximum ({max})")
@@ -147,8 +147,8 @@ mod tests {
         "event key field 'vm_id' must be a UUID"
     )]
     #[case(
-        KvpError::DurationTooLarge { max_ms: 9_999_999_999, actual_ms: 10_000_000_000 },
-        "diagnostic duration (10000000000ms) exceeds maximum (9999999999ms)"
+        KvpError::DurationTooLarge { max_us: 9_999_999_999_999, actual_us: 10_000_000_000_000 },
+        "diagnostic duration (10000000000000us) exceeds maximum (9999999999999us)"
     )]
     #[case(
         KvpError::TooManyChunks { max: 1023 },

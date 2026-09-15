@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::fmt;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -176,8 +177,8 @@ pub struct DiagnosticFinish {
     pub key: DiagnosticKey,
     pub payload: DiagnosticPayload,
     pub result: Outcome,
-    #[serde(rename = "duration")]
-    pub duration_ms: u64,
+    #[serde(rename = "duration", serialize_with = "serialize_duration_us")]
+    pub duration: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -187,8 +188,12 @@ pub struct DiagnosticEvent {
     pub payload: DiagnosticPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Outcome>,
-    #[serde(rename = "duration", skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
+    #[serde(
+        rename = "duration",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_duration_us"
+    )]
+    pub duration: Option<Duration>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -252,7 +257,7 @@ where
     S: Serializer,
 {
     serializer
-        .serialize_str(&timestamp.to_rfc3339_opts(SecondsFormat::Millis, true))
+        .serialize_str(&timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true))
 }
 
 fn serialize_encoding<S>(
@@ -265,6 +270,34 @@ where
     match encoding {
         Some(encoding) => encoding.serialize(serializer),
         None => serializer.serialize_str("none"),
+    }
+}
+
+/// DIAG_V1 stores elapsed time as integer microseconds.
+fn duration_micros(duration: &Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn serialize_duration_us<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(duration_micros(duration))
+}
+
+fn serialize_opt_duration_us<S>(
+    duration: &Option<Duration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match duration {
+        Some(duration) => serializer.serialize_u64(duration_micros(duration)),
+        None => serializer.serialize_none(),
     }
 }
 
@@ -410,20 +443,20 @@ mod tests {
     #[case(Outcome::Success, "success", 312)]
     #[case(Outcome::Failure, "fail", 0)]
     #[case(Outcome::Success, "success", u64::MAX)]
-    fn finish_serializes_result_and_milliseconds(
+    fn finish_serializes_result_and_microseconds(
         #[case] result: Outcome,
         #[case] token: &str,
-        #[case] duration_ms: u64,
+        #[case] duration_us: u64,
     ) {
         let entry = Entry::Diagnostic(Diagnostic::Finish(DiagnosticFinish {
             key: key(),
             payload: "finished".into(),
             result,
-            duration_ms,
+            duration: Duration::from_micros(duration_us),
         }));
         let mut expected = expected_diagnostic("finish", json!("finished"));
         expected["result"] = json!(token);
-        expected["duration"] = json!(duration_ms);
+        expected["duration"] = json!(duration_us);
         assert_eq!(serde_json::to_value(entry).unwrap(), expected);
     }
 
@@ -434,20 +467,20 @@ mod tests {
     #[case::both(Some(Outcome::Failure), Some(52))]
     fn event_serializes_only_measured_fields(
         #[case] result: Option<Outcome>,
-        #[case] duration_ms: Option<u64>,
+        #[case] duration_us: Option<u64>,
     ) {
         let entry = Entry::Diagnostic(Diagnostic::Event(DiagnosticEvent {
             key: key(),
             payload: "observed".into(),
             result,
-            duration_ms,
+            duration: duration_us.map(Duration::from_micros),
         }));
         let mut expected = expected_diagnostic("event", json!("observed"));
         if let Some(result) = result {
             expected["result"] = json!(result.to_string());
         }
-        if let Some(duration_ms) = duration_ms {
-            expected["duration"] = json!(duration_ms);
+        if let Some(duration_us) = duration_us {
+            expected["duration"] = json!(duration_us);
         }
         assert_eq!(serde_json::to_value(entry).unwrap(), expected);
     }
@@ -461,7 +494,7 @@ mod tests {
             },
             payload: b"hello".as_slice().into(),
             result: None,
-            duration_ms: None,
+            duration: None,
         }));
         let mut expected = expected_diagnostic(
             "event",
@@ -504,11 +537,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case("2026-08-31T12:34:56Z", "2026-08-31T12:34:56.000Z")]
+    #[case("2026-08-31T12:34:56Z", "2026-08-31T12:34:56Z")]
     #[case("2026-08-31T12:34:56.3Z", "2026-08-31T12:34:56.300Z")]
-    #[case("2026-08-31T12:34:56.789999Z", TIMESTAMP)]
+    #[case("2026-08-31T12:34:56.789999Z", "2026-08-31T12:34:56.789999Z")]
+    #[case("2026-08-31T12:34:56.789123456Z", "2026-08-31T12:34:56.789123456Z")]
     #[case("2026-08-31T14:34:56.789+02:00", TIMESTAMP)]
-    fn timestamp_serializes_in_utc_milliseconds(
+    fn timestamp_serializes_in_utc_without_padding(
         #[case] timestamp: &str,
         #[case] expected: &str,
     ) {
@@ -536,13 +570,13 @@ mod tests {
                 key: key.clone(),
                 payload: payload.clone(),
                 result: Outcome::Success,
-                duration_ms: 0,
+                duration: Duration::ZERO,
             }),
             Kind::Event => Diagnostic::Event(DiagnosticEvent {
                 key: key.clone(),
                 payload: payload.clone(),
                 result: None,
-                duration_ms: None,
+                duration: None,
             }),
         };
         assert_eq!(diagnostic.key(), &key);

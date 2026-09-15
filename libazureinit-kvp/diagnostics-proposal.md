@@ -101,7 +101,7 @@ DIAG_V1|<agent>|<vm_id>|<kind>|<name>|<event_id>|<timestamp>|<encoding>|<result>
 - `boot_epoch` is removed because timestamps identify occurrences and stale-pool cleanup removes prior-boot records.
 - `type` becomes `kind`, limited to the timeline positions `start`, `finish`, and `event`; `name`, `encoding`, and `result` carry other classifications.
 - `encoding` in the key supports compressed payloads.
-- `result` (`success` or `fail`) and `duration` (milliseconds) are required on finishes, optional on events, and empty on starts. Values otherwise remain plain text or encoded artifacts.
+- `result` (`success` or `fail`) and `duration` (microseconds) are required on finishes, optional on events, and empty on starts. Values otherwise remain plain text or encoded artifacts.
 
 | Field | Meaning |
 |---|---|
@@ -111,10 +111,10 @@ DIAG_V1|<agent>|<vm_id>|<kind>|<name>|<event_id>|<timestamp>|<encoding>|<result>
 | kind | `start` or `finish` for a span, `event` for a point observation |
 | name | Subject, such as `provision:run` or `dmesg` |
 | event_id | Shared by a span's start and finish, and by every chunk of one value |
-| timestamp | RFC 3339 (ISO 8601), UTC with a `Z` suffix, millisecond precision, e.g. `2026-08-31T12:34:56.789Z` |
+| timestamp | RFC 3339 (ISO 8601), UTC with a `Z` suffix, at second/millisecond/microsecond/nanosecond precision (azure-init emits millisecond by default), e.g. `2026-08-31T12:34:56.789Z` |
 | encoding | How the value is encoded: `none` or `gz+b64` |
 | result | `success` or `fail` on a finish, optionally on an event; empty otherwise |
-| duration | Elapsed milliseconds on a finish, optionally on a timed event; empty otherwise |
+| duration | Elapsed microseconds on a finish, optionally on a timed event; empty otherwise |
 | chunk_index | Chunk position, from 0 |
 
 #### Key size
@@ -127,12 +127,12 @@ The host silently truncates keys past 254 UTF-8 bytes; safe-mode `KvpPoolStore` 
 | agent | 32 B | free-form producer id |
 | name | 48 B | free-form subject |
 | vm_id, event_id | 36 B each | GUID / UUID |
-| timestamp | 24 B | fixed format |
-| duration | 10 B | digits |
+| timestamp | 30 B | up to nanosecond precision |
+| duration | 13 B | digits |
 | result, encoding, kind | ≤ 7 B each | enum token |
 | chunk_index | 4 B | at most 1023 records |
 
-With those caps the worst-case key is 226 bytes, leaving 28 bytes inside the limit. cloud-init reads are never capped; the bridge takes names as they are.
+With those caps the worst-case key is 235 bytes, leaving 19 bytes inside the limit. cloud-init reads are never capped; the bridge takes names as they are.
 
 Wire examples with shortened UUIDs or `<ts>` are schematic. Stored `DIAG_V1` records require valid UUIDs and the exact timestamp format above.
 
@@ -360,17 +360,17 @@ struct DiagnosticKey {
     name: String,
     /// One per span (start and finish share it) or standalone event.
     event_id: String,
-    /// RFC 3339, UTC, millisecond precision.
+    /// RFC 3339, UTC; millisecond precision by default, configurable per writer.
     timestamp: DateTime<Utc>,
     encoding: Option<Encoding>,
 }
 
 /// Opens a span.
 struct DiagnosticStart  { key: DiagnosticKey, payload: DiagnosticPayload }
-/// Closes a span; carries its verdict and elapsed milliseconds.
-struct DiagnosticFinish { key: DiagnosticKey, payload: DiagnosticPayload, result: Outcome, duration_ms: u64 }
+/// Closes a span; carries its verdict and elapsed duration (microseconds on the wire).
+struct DiagnosticFinish { key: DiagnosticKey, payload: DiagnosticPayload, result: Outcome, duration: Duration }
 /// A point observation; may carry a verdict or a self-contained timing.
-struct DiagnosticEvent  { key: DiagnosticKey, payload: DiagnosticPayload, result: Option<Outcome>, duration_ms: Option<u64> }
+struct DiagnosticEvent  { key: DiagnosticKey, payload: DiagnosticPayload, result: Option<Outcome>, duration: Option<Duration> }
 
 /// One decoded emission, typed by kind.
 enum Diagnostic {
@@ -421,12 +421,12 @@ impl DiagnosticWriter {
     /// Open a span. `event_id` links this start to the finish that closes it.
     pub fn emit_start(&self, event_id: &str, name: &str, payload: impl Into<DiagnosticPayload>, encoding: Option<Encoding>) -> Result<(), KvpError>;
 
-    /// Close the span opened under `event_id`, recording its `result` and elapsed `duration_ms`.
-    pub fn emit_finish(&self, event_id: &str, name: &str, payload: impl Into<DiagnosticPayload>, encoding: Option<Encoding>, result: Outcome, duration_ms: u64) -> Result<(), KvpError>;
+    /// Close the span opened under `event_id`, recording its `result` and elapsed `duration`.
+    pub fn emit_finish(&self, event_id: &str, name: &str, payload: impl Into<DiagnosticPayload>, encoding: Option<Encoding>, result: Outcome, duration: Duration) -> Result<(), KvpError>;
 
     /// Record a standalone point observation; the writer assigns its `event_id`.
-    /// `result` and `duration_ms` are set only when measured.
-    pub fn emit_event(&self, name: &str, payload: impl Into<DiagnosticPayload>, encoding: Option<Encoding>, result: Option<Outcome>, duration_ms: Option<u64>) -> Result<(), KvpError>;
+    /// `result` and `duration` are set only when measured.
+    pub fn emit_event(&self, name: &str, payload: impl Into<DiagnosticPayload>, encoding: Option<Encoding>, result: Option<Outcome>, duration: Option<Duration>) -> Result<(), KvpError>;
 }
 ```
 
@@ -498,10 +498,10 @@ The bridge maps fields onto the model:
 | event_id | trailing key identifier |
 | timestamp | value `ts`, read by the bridge when it maps the record |
 | result | value field on a finish, mapped to the model's `result` |
-| duration | value field on a finish (seconds; the bridge converts to milliseconds) |
+| duration | value field on a finish (seconds; the bridge converts to microseconds) |
 | encoding | the value `{encoding, data}` envelope, not the key |
 
-Finish results `SUCCESS` and `FAIL` map to `success` and `fail`. An unmappable result such as `WARN` is preserved as `Raw` with `Malformed`; it is not coerced to a verdict or reclassified as an event. Source types other than `start` and `finish`, including standalone warnings, map to `event` without a span outcome. Duration conversion truncates fractional milliseconds and rejects negative or overflowing values.
+Finish results `SUCCESS` and `FAIL` map to `success` and `fail`. An unmappable result such as `WARN` is preserved as `Raw` with `Malformed`; it is not coerced to a verdict or reclassified as an event. Source types other than `start` and `finish`, including standalone warnings, map to `event` without a span outcome. Duration conversion rounds to whole microseconds and rejects negative or overflowing values.
 
 The bridge uses cloud-init's `incarnation` to keep chunk groups separate, then discards it; `DiagnosticKey` does not expose it.
 
