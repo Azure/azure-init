@@ -1967,6 +1967,23 @@ mod tests {
             entries[1],
             json!({"type": "raw", "key": "note", "value": "raw"})
         );
+
+        let (_, output) = run_dispatch(cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: None,
+                kind: Some(KindArg::Event),
+            },
+        ));
+        let entries = parse_json(&output);
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["kind"], "event");
+        assert_eq!(
+            entries[1],
+            json!({"type": "raw", "key": "note", "value": "raw"})
+        );
     }
 
     #[test]
