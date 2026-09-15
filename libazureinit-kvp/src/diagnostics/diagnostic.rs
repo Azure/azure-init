@@ -295,10 +295,7 @@ fn serialize_opt_duration_us<S>(
 where
     S: Serializer,
 {
-    match duration {
-        Some(duration) => serializer.serialize_u64(duration_micros(duration)),
-        None => serializer.serialize_none(),
-    }
+    duration.as_ref().map(duration_micros).serialize(serializer)
 }
 
 #[cfg(test)]
