@@ -1,22 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Self-contained VM ID lookup used to auto-populate provisioning reports.
+//! Current VM ID lookup for command-line defaults.
 //!
-//! The VM ID is read from `/sys/class/dmi/id/product_uuid` and, on Gen1 VMs,
-//! the first three UUID fields are byte-swapped from big-endian to native endianness.
+//! Reads `/sys/class/dmi/id/product_uuid` and adjusts Gen1 UUID byte order.
 
 use std::fs;
 use std::path::Path;
 
 use uuid::Uuid;
 
-/// Retrieves the current VM ID by reading `/sys/class/dmi/id/product_uuid`
-/// and byte-swapping the result if the VM is Gen1.
+/// Returns the current VM ID, adjusting UUID byte order on Gen1 VMs.
 ///
-/// # Returns
-/// - `Some(String)` containing the VM ID if retrieval is successful.
-/// - `None` if the file is missing, empty, or cannot be read.
+/// Returns `None` if the DMI file is missing, unreadable or empty.
 pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
@@ -58,8 +54,7 @@ fn private_get_vm_id(
     }
 }
 
-/// Determines whether the VM is Gen1 (i.e. not UEFI/Gen2) based on EFI
-/// detection. Returns `true` when neither EFI path exists.
+/// Returns `true` when neither EFI path exists, identifying a Gen1 VM.
 fn is_vm_gen1(
     sysfs_efi_path: Option<&str>,
     dev_efi_path: Option<&str>,

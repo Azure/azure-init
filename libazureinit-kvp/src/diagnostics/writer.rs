@@ -20,10 +20,9 @@ const MAX_NAME_BYTES: usize = 48;
 const MAX_UUID_BYTES: usize = 36;
 const MAX_TIMESTAMP_BYTES: usize = 30;
 const MAX_KEY_BYTES: usize = 254;
-const MAX_DURATION_US: u64 = 9_999_999_999_999;
 const MAX_CHUNKS: usize = 1023;
 
-/// Fractional-second precision for emitted DIAG_V1 timestamps.
+/// Fractional-second precision for emitted diagnostic timestamps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TimestampPrecision {
     /// Whole seconds, no fractional digits.
@@ -48,17 +47,93 @@ impl TimestampPrecision {
     }
 }
 
-/// Validation precedes I/O; a storage failure can leave a partial batch.
+/// Fractional-second precision for emitted durations.
+///
+/// Digits below the selected precision are discarded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DurationPrecision {
+    /// Whole seconds, no fractional digits.
+    Seconds,
+    /// Milliseconds (three fractional digits).
+    Millis,
+    /// Microseconds (six fractional digits). The default.
+    #[default]
+    Micros,
+    /// Nanoseconds (nine fractional digits).
+    Nanos,
+}
+
+impl DurationPrecision {
+    pub(crate) fn format(self, duration: Duration) -> String {
+        let digits = match self {
+            Self::Seconds => return duration.as_secs().to_string(),
+            Self::Millis => 3,
+            Self::Micros => 6,
+            Self::Nanos => 9,
+        };
+        let fraction = duration.subsec_nanos() / 10u32.pow(9 - digits);
+        let width = digits as usize;
+        format!("{}.{fraction:0width$}", duration.as_secs())
+    }
+}
+
+/// Emits diagnostics for one reporting agent and VM.
+///
+/// Use [`emit_event`](Self::emit_event) for a standalone observation. To record
+/// an operation, call [`emit_start`](Self::emit_start) and
+/// [`emit_finish`](Self::emit_finish) with the same event UUID.
+///
+/// Timestamps and event UUIDs for standalone observations are generated
+/// automatically. The caller supplies operation IDs, outcomes and durations.
+/// Pass `None` for plain text or an [`Encoding`] for compressed text or bytes.
+///
+/// Emission appends to the pool and splits large payloads automatically; it
+/// never clears existing records. Invalid input writes nothing, while an I/O
+/// error may leave part of a payload in the pool. See the
+/// [diagnostics contract] for format details and limits.
+///
+/// [diagnostics contract]: https://github.com/Azure/azure-init/blob/main/doc/diagnostics.md
+///
+/// # Example
+/// ```no_run
+/// use std::time::Instant;
+/// use libazureinit_kvp::{
+///     DiagnosticWriter, KvpPool, KvpPoolStore, Outcome, PoolMode,
+/// };
+/// use uuid::Uuid;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let store = KvpPoolStore::new(KvpPool::Guest, PoolMode::Safe)?;
+/// let writer = DiagnosticWriter::new(
+///     store, "azure-init/0.1.1", "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+/// )?;
+/// let event_id = Uuid::new_v4().to_string();
+/// writer.emit_start(&event_id, "read:os-release", "reading OS information", None)?;
+/// let started = Instant::now();
+/// let contents = std::fs::read_to_string("/etc/os-release")?;
+/// writer.emit_finish(
+///     &event_id, "read:os-release", format!("read {} bytes", contents.len()),
+///     None, Outcome::Success, started.elapsed(),
+/// )?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct DiagnosticWriter {
     store: KvpPoolStore,
     agent: String,
     vm_id: String,
     timestamp_precision: TimestampPrecision,
+    duration_precision: DurationPrecision,
 }
 
 impl DiagnosticWriter {
-    /// Validates producer identity without reading the pool or boot state.
+    /// Creates a writer with a fixed reporting agent and VM UUID.
+    ///
+    /// Versioned agents conventionally use `name/VERSION`. Invalid agent or
+    /// VM identifiers return [`KvpError`]; construction does not access the pool.
+    /// Timestamp precision defaults to milliseconds and duration precision to
+    /// microseconds.
     pub fn new(
         store: KvpPoolStore,
         agent: impl Into<String>,
@@ -73,6 +148,7 @@ impl DiagnosticWriter {
             agent,
             vm_id,
             timestamp_precision: TimestampPrecision::default(),
+            duration_precision: DurationPrecision::default(),
         })
     }
 
@@ -85,7 +161,19 @@ impl DiagnosticWriter {
         self
     }
 
-    /// The caller retains `event_id` to correlate the corresponding finish.
+    /// Sets duration precision independently of timestamp precision.
+    pub fn with_duration_precision(
+        mut self,
+        precision: DurationPrecision,
+    ) -> Self {
+        self.duration_precision = precision;
+        self
+    }
+
+    /// Records the beginning of an operation.
+    ///
+    /// Pass the same event UUID and name to
+    /// [`emit_finish`](Self::emit_finish).
     pub fn emit_start(
         &self,
         event_id: &str,
@@ -99,7 +187,10 @@ impl DiagnosticWriter {
         }))
     }
 
-    /// Duration is caller-measured, not inferred from the pool.
+    /// Records an operation's outcome and caller-measured elapsed time.
+    ///
+    /// Use the event UUID and name passed to [`emit_start`](Self::emit_start).
+    /// The writer does not verify that a start exists or calculate the duration.
     pub fn emit_finish(
         &self,
         event_id: &str,
@@ -117,7 +208,9 @@ impl DiagnosticWriter {
         }))
     }
 
-    /// Each standalone event receives a fresh UUID.
+    /// Records a standalone observation with a generated event UUID.
+    ///
+    /// `result` and `duration` may be supplied independently.
     pub fn emit_event(
         &self,
         name: &str,
@@ -154,13 +247,15 @@ impl DiagnosticWriter {
         self.store.append_multiple(prepare_records(
             diagnostic,
             self.timestamp_precision,
+            self.duration_precision,
         )?)
     }
 }
 
 fn prepare_records(
     diagnostic: Diagnostic,
-    precision: TimestampPrecision,
+    timestamp_precision: TimestampPrecision,
+    duration_precision: DurationPrecision,
 ) -> Result<Vec<(String, String)>, KvpError> {
     let kind = diagnostic.kind();
     let (key, payload, result, duration) = match diagnostic {
@@ -185,23 +280,12 @@ fn prepare_records(
     validate_field("name", &key.name, MAX_NAME_BYTES)?;
     validate_uuid("event_id", &key.event_id)?;
 
-    let duration = match duration {
-        Some(duration) => {
-            let micros =
-                u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
-            if micros > MAX_DURATION_US {
-                return Err(KvpError::DurationTooLarge {
-                    max_us: MAX_DURATION_US,
-                    actual_us: micros,
-                });
-            }
-            micros.to_string()
-        }
-        None => String::new(),
-    };
+    let duration = duration.map_or_else(String::new, |duration| {
+        duration_precision.format(duration)
+    });
     let timestamp = key
         .timestamp
-        .to_rfc3339_opts(precision.seconds_format(), true);
+        .to_rfc3339_opts(timestamp_precision.seconds_format(), true);
     validate_field("timestamp", &timestamp, MAX_TIMESTAMP_BYTES)?;
 
     let value = encode_payload(payload, key.encoding.as_ref())?;
@@ -291,12 +375,11 @@ mod tests {
     use rstest::rstest;
     use tempfile::TempDir;
 
-    use super::super::diagnostic::Kind;
     use super::super::encoding::decode_payload;
     use crate::store::{Handle, OsSysOps, StatInfo, SysOps};
-    use crate::{KvpPool, PoolMode};
+    use crate::{DiagnosticReader, Entry, KvpPool, PoolMode};
 
-    const AGENT: &str = "azure-init-0.1.1";
+    const AGENT: &str = "azure-init/0.1.1";
     const VM_ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
     const EVENT_ID: &str = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
     const TIMESTAMP: &str = "2026-08-31T12:34:56.789Z";
@@ -564,20 +647,21 @@ mod tests {
     }
 
     #[test]
-    fn exact_start_key_matches_v1_layout() {
+    fn exact_start_key_matches_diag_layout() {
         let records = prepare_records(
             Diagnostic::Start(DiagnosticStart {
                 key: key(),
                 payload: "starting".into(),
             }),
             TimestampPrecision::Millis,
+            DurationPrecision::default(),
         )
         .unwrap();
         assert_eq!(
             records,
             vec![(
                 format!(
-                    "DIAG_V1|{AGENT}|{VM_ID}|start|provision:run|{EVENT_ID}|{TIMESTAMP}|none|||0"
+                    "DIAG|{AGENT}|{VM_ID}|start|provision:run|{EVENT_ID}|{TIMESTAMP}|none|||0"
                 ),
                 "starting".to_owned(),
             )]
@@ -585,12 +669,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case::success(Outcome::Success, "success", 312)]
-    #[case::failure(Outcome::Failure, "fail", 0)]
-    fn exact_finish_key_matches_v1_layout(
+    #[case::success(Outcome::Success, "success", 312_000, "0.312000")]
+    #[case::failure(Outcome::Failure, "fail", 0, "0.000000")]
+    fn exact_finish_key_matches_diag_layout(
         #[case] result: Outcome,
         #[case] token: &str,
         #[case] duration_us: u64,
+        #[case] seconds: &str,
     ) {
         let records = prepare_records(
             Diagnostic::Finish(DiagnosticFinish {
@@ -600,24 +685,26 @@ mod tests {
                 duration: Duration::from_micros(duration_us),
             }),
             TimestampPrecision::Millis,
+            DurationPrecision::default(),
         )
         .unwrap();
         assert_eq!(
             records[0].0,
             format!(
-                "DIAG_V1|{AGENT}|{VM_ID}|finish|provision:run|{EVENT_ID}|{TIMESTAMP}|none|{token}|{duration_us}|0"
+                "DIAG|{AGENT}|{VM_ID}|finish|provision:run|{EVENT_ID}|{TIMESTAMP}|none|{token}|{seconds}|0"
             )
         );
     }
 
     #[rstest]
-    #[case::neither(None, None)]
-    #[case::result_only(Some(Outcome::Success), None)]
-    #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Failure), Some(MAX_DURATION_US))]
+    #[case::neither(None, None, "")]
+    #[case::result_only(Some(Outcome::Success), None, "")]
+    #[case::zero_duration(None, Some(0), "0.000000")]
+    #[case::both(Some(Outcome::Failure), Some(52), "0.000052")]
     fn event_optional_fields_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
+        #[case] seconds: &str,
     ) {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir, PoolMode::Safe);
@@ -639,10 +726,7 @@ mod tests {
             fields[8],
             result.map_or_else(String::new, |v| v.to_string())
         );
-        assert_eq!(
-            fields[9],
-            duration_us.map_or_else(String::new, |v| v.to_string())
-        );
+        assert_eq!(fields[9], seconds);
     }
 
     #[test]
@@ -738,6 +822,49 @@ mod tests {
     }
 
     #[rstest]
+    #[case(DurationPrecision::Seconds, "1", Duration::from_secs(1))]
+    #[case(DurationPrecision::Millis, "1.123", Duration::from_millis(1123))]
+    #[case(
+        DurationPrecision::Micros,
+        "1.123456",
+        Duration::from_micros(1_123_456)
+    )]
+    #[case(
+        DurationPrecision::Nanos,
+        "1.123456789",
+        Duration::new(1, 123_456_789)
+    )]
+    fn duration_precision_controls_emitted_seconds(
+        #[case] precision: DurationPrecision,
+        #[case] seconds: &str,
+        #[case] expected: Duration,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let pool = store(&dir, PoolMode::Safe);
+        let writer = DiagnosticWriter::new(pool.clone(), AGENT, VM_ID)
+            .unwrap()
+            .with_duration_precision(precision);
+        writer
+            .emit_event(
+                "timed",
+                "ok",
+                None,
+                None,
+                Some(Duration::new(1, 123_456_789)),
+            )
+            .unwrap();
+        let records = pool.dump().unwrap();
+        let fields: Vec<_> = records[0].0.split('|').collect();
+        assert_eq!(fields[9], seconds);
+        assert_eq!(fields[6].len(), 24);
+        let entries = DiagnosticReader::new(pool).entries().unwrap();
+        assert!(
+            matches!(&entries[0], Entry::Diagnostic(Diagnostic::Event(event))
+            if event.duration == Some(expected))
+        );
+    }
+
+    #[rstest]
     #[case(String::new(), vec![0])]
     #[case("x".repeat(MAX_CHUNK_BYTES), vec![MAX_CHUNK_BYTES])]
     #[case("x".repeat(MAX_CHUNK_BYTES + 1), vec![MAX_CHUNK_BYTES, 1])]
@@ -773,6 +900,7 @@ mod tests {
     #[rstest]
     fn compression_precedes_safe_framing_in_both_modes(
         #[values(PoolMode::Safe, PoolMode::Unsafe)] mode: PoolMode,
+        #[values(Encoding::GzB64, Encoding::ZlibB64)] encoding: Encoding,
     ) {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir, mode);
@@ -782,7 +910,7 @@ mod tests {
             .emit_event(
                 "provision:run",
                 bytes.clone(),
-                Some(Encoding::GzB64),
+                Some(encoding.clone()),
                 None,
                 None,
             )
@@ -794,13 +922,13 @@ mod tests {
             assert_eq!(key, &format!("{base}|{index}"));
             let fields: Vec<_> = key.split('|').collect();
             assert_eq!(fields[3], "event");
-            assert_eq!(fields[7], "gz+b64");
+            assert_eq!(fields[7], encoding.to_string());
             assert!(key.len() <= MAX_KEY_BYTES);
             assert!(value.len() <= MAX_CHUNK_BYTES);
         }
         let value: String = records.iter().map(|(_, v)| v.as_str()).collect();
         assert_eq!(
-            decode_payload(value.as_bytes(), Some(&Encoding::GzB64)).unwrap(),
+            decode_payload(value.as_bytes(), Some(&encoding)).unwrap(),
             DiagnosticPayload::Bytes(bytes)
         );
     }
@@ -881,18 +1009,22 @@ mod tests {
             key: DiagnosticKey {
                 agent: "a".repeat(MAX_AGENT_BYTES),
                 name: "n".repeat(MAX_NAME_BYTES),
-                encoding: Some(Encoding::GzB64),
+                encoding: Some(Encoding::ZlibB64),
                 ..key()
             },
             payload: "test".into(),
             result: Outcome::Success,
-            duration: Duration::from_micros(MAX_DURATION_US),
+            duration: Duration::MAX,
         });
-        let records =
-            prepare_records(diagnostic, TimestampPrecision::Millis).unwrap();
+        let records = prepare_records(
+            diagnostic,
+            TimestampPrecision::Nanos,
+            DurationPrecision::Nanos,
+        )
+        .unwrap();
         let base = records[0].0.rsplit_once('|').unwrap().0;
         let longest = format!("{base}|1022");
-        assert_eq!(longest.len(), 229);
+        assert_eq!(longest.len(), 251);
         assert!(longest.len() <= MAX_KEY_BYTES);
     }
 
@@ -971,33 +1103,6 @@ mod tests {
         ));
     }
 
-    #[rstest]
-    fn excessive_durations_are_rejected_before_io(
-        #[values(MAX_DURATION_US + 1, u64::MAX)] duration_us: u64,
-        #[values(Kind::Finish, Kind::Event)] kind: Kind,
-    ) {
-        let dir = TempDir::new().unwrap();
-        let (writer, ops) = observed_writer(&dir);
-        let duration = Duration::from_micros(duration_us);
-        let result = match kind {
-            Kind::Finish => writer.emit_finish(
-                EVENT_ID,
-                "test",
-                "bad",
-                None,
-                Outcome::Failure,
-                duration,
-            ),
-            _ => writer.emit_event("test", "bad", None, None, Some(duration)),
-        };
-        assert!(matches!(
-            result,
-            Err(KvpError::DurationTooLarge { max_us: MAX_DURATION_US, actual_us })
-                if actual_us == duration_us
-        ));
-        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
-    }
-
     #[test]
     fn writer_rejects_absent_vm_identity() {
         let mut missing_vm = key();
@@ -1005,7 +1110,8 @@ mod tests {
         assert!(matches!(
             prepare_records(
                 event(missing_vm, "bad".into()),
-                TimestampPrecision::Millis
+                TimestampPrecision::Millis,
+                DurationPrecision::default(),
             ),
             Err(KvpError::EmptyEventField { field: "vm_id" })
         ));
@@ -1019,7 +1125,8 @@ mod tests {
         assert!(matches!(
             prepare_records(
                 event(expanded_year, "bad".into()),
-                TimestampPrecision::Nanos
+                TimestampPrecision::Nanos,
+                DurationPrecision::default(),
             ),
             Err(KvpError::EventFieldTooLong {
                 field: "timestamp",

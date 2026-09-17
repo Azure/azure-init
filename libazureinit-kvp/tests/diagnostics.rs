@@ -171,7 +171,8 @@ fn span_and_point_events_round_trip_with_a_report() {
 
 #[rstest]
 #[case::text(None)]
-#[case::compressed(Some(Encoding::GzB64))]
+#[case::gzip(Some(Encoding::GzB64))]
+#[case::zlib(Some(Encoding::ZlibB64))]
 fn long_payload_round_trips_through_host_visible_records(
     #[case] encoding: Option<Encoding>,
 ) {
@@ -219,7 +220,7 @@ fn raw_and_malformed_records_are_preserved_beside_diagnostics() {
     let store = store_at(&dir);
     let records = vec![
         (format!("{AGENT}|100|{VM_ID}|event|legacy|{EVENT_ID}|2026-08-31T00:00:00Z|0"), "legacy", None),
-        ("DIAG_V1|bad".into(), "junk", Some(DecodeError::Malformed)),
+        ("DIAG|bad".into(), "junk", Some(DecodeError::Malformed)),
         (format!("CLOUD_INIT|100|event|broken|{EVENT_ID}"), "not-json", Some(DecodeError::Malformed)),
         ("PROVISIONING_REPORT".into(), "result=success", Some(DecodeError::Malformed)),
         ("DIAG_V2|future".into(), "unknown", Some(DecodeError::UnsupportedVersion)),

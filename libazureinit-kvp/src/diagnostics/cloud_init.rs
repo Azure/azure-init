@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::io::Read;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use flate2::bufread::{GzDecoder, ZlibDecoder};
 use serde_json::{Number, Value};
 use uuid::Uuid;
 
@@ -14,6 +12,7 @@ use super::diagnostic::{
     DecodeError, Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticKey,
     DiagnosticPayload, DiagnosticStart, Encoding, Outcome,
 };
+use super::encoding::decompress;
 
 pub(super) const PREFIX: &str = "CLOUD_INIT";
 
@@ -244,25 +243,13 @@ fn decode_compressed(data: &str) -> Result<DiagnosticPayload, DecodeError> {
     let compressed = STANDARD
         .decode(compact)
         .map_err(|_| DecodeError::Undecodable)?;
-    let mut bytes = Vec::new();
-    // cloud-init labels zlib streams and line-wrapped base64 as `gz+b64`.
-    let remaining = if compressed.starts_with(&[0x1f, 0x8b]) {
-        let mut decoder = GzDecoder::new(compressed.as_slice());
-        decoder
-            .read_to_end(&mut bytes)
-            .map_err(|_| DecodeError::Undecodable)?;
-        decoder.into_inner()
+    // cloud-init's report_compressed_event uses zlib.compress under `gz+b64`.
+    let encoding = if compressed.starts_with(&[0x1f, 0x8b]) {
+        Encoding::GzB64
     } else {
-        let mut decoder = ZlibDecoder::new(compressed.as_slice());
-        decoder
-            .read_to_end(&mut bytes)
-            .map_err(|_| DecodeError::Undecodable)?;
-        decoder.into_inner()
+        Encoding::ZlibB64
     };
-    if !remaining.is_empty() {
-        return Err(DecodeError::Undecodable);
-    }
-    Ok(DiagnosticPayload::Bytes(bytes))
+    decompress(&compressed, &encoding)
 }
 
 #[cfg(test)]
@@ -599,7 +586,7 @@ mod tests {
 
     #[test]
     fn mixed_sources_keep_first_seen_order_and_unrelated_raw_records() {
-        let v1 = format!("DIAG_V1|azure-init|{VM_ID}|event|test|{EVENT_ID}|2026-07-27T21:33:00.000Z|none|||0");
+        let v1 = format!("DIAG|azure-init|{VM_ID}|event|test|{EVENT_ID}|2026-07-27T21:33:00.000Z|none|||0");
         let entries = entries(&[
             (key("event", true, Some(1)), chunk("event", 1, "b")),
             ("unrelated".into(), "value".into()),
@@ -701,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_does_not_relax_v1_gzip_validation() {
+    fn compatibility_does_not_relax_native_gzip_validation() {
         assert_eq!(
             decode_payload(ZLIB_DATA.as_bytes(), Some(&Encoding::GzB64)),
             Err(DecodeError::Undecodable)

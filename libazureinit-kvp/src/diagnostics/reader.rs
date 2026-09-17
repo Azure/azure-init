@@ -19,18 +19,31 @@ use crate::{
     KvpError, KvpPoolStore, ProvisioningReport, PROVISIONING_REPORT_KEY,
 };
 
+/// Reads diagnostics and provisioning reports from a KVP pool.
+///
+/// Native and cloud-init diagnostics are decoded. Other or invalid records are
+/// returned as [`Entry::Raw`]. Agent and VM identities come from the records,
+/// so no local identity is required.
 #[derive(Clone, Debug)]
 pub struct DiagnosticReader {
     store: KvpPoolStore,
 }
 
 impl DiagnosticReader {
-    /// Construction performs no I/O and needs no local producer identity.
+    /// Creates a reader for `store`; the pool is accessed by [`entries`](Self::entries).
     pub fn new(store: KvpPoolStore) -> Self {
         Self { store }
     }
 
-    /// Invalid pool UTF-8 fails the snapshot; entries keep first-seen order.
+    /// Reads the current pool contents without modifying them.
+    ///
+    /// Returns an empty list if the pool file does not exist. Entries retain
+    /// pool order, and unrelated or invalid records remain [`Entry::Raw`].
+    ///
+    /// # Errors
+    /// Returns [`KvpError`] if the pool cannot be read or has invalid storage
+    /// layout or UTF-8; no entries are returned. Per-record decoding failures
+    /// are returned as [`Entry::Raw`] values with a [`DecodeError`].
     pub fn entries(&self) -> Result<Vec<Entry>, KvpError> {
         Ok(decode_entries(self.store.dump()?))
     }
@@ -127,7 +140,7 @@ fn decode_entries(records: Vec<(String, String)>) -> Vec<Entry> {
                 )
             })
         } else {
-            decode_v1_group(&base, &mut group.chunks)
+            decode_diag_group(&base, &mut group.chunks)
         };
         match decoded {
             Ok(diagnostic) => {
@@ -155,7 +168,7 @@ fn split_chunk_key(key: &str) -> Result<(&str, u64), DecodeError> {
     Ok((base, parse_unsigned(index)?))
 }
 
-fn decode_v1_group(
+fn decode_diag_group(
     base: &str,
     chunks: &mut [Chunk],
 ) -> Result<Diagnostic, DecodeError> {
@@ -200,10 +213,11 @@ fn decode_v1_group(
     let duration = if duration.is_empty() {
         None
     } else {
-        Some(Duration::from_micros(parse_unsigned(duration)?))
+        Some(parse_duration(duration)?)
     };
     let encoding = match encoding {
         "none" => None,
+        "zlib+b64" => Some(Encoding::ZlibB64),
         "gz+b64" => Some(Encoding::GzB64),
         other => Some(Encoding::Other(other.to_owned())),
     };
@@ -241,6 +255,31 @@ fn decode_v1_group(
         }
         _ => Err(DecodeError::Malformed),
     }
+}
+
+fn parse_duration(value: &str) -> Result<Duration, DecodeError> {
+    let (seconds, fraction) = value
+        .split_once('.')
+        .map_or((value, None), |(seconds, fraction)| {
+            (seconds, Some(fraction))
+        });
+    let seconds = parse_unsigned(seconds)?;
+    let nanos = match fraction {
+        None => 0,
+        Some(fraction) => {
+            if fraction.is_empty()
+                || fraction.len() > 9
+                || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return Err(DecodeError::Malformed);
+            }
+            fraction
+                .parse::<u32>()
+                .map_err(|_| DecodeError::Malformed)?
+                * 10u32.pow(9 - fraction.len() as u32)
+        }
+    };
+    Ok(Duration::new(seconds, nanos))
 }
 
 fn decode_chunks(
@@ -287,7 +326,7 @@ mod tests {
     use crate::store::{Handle, OsSysOps, StatInfo, SysOps};
     use crate::{write_report, KvpPool, PoolMode, ReportPpsType};
 
-    const AGENT: &str = "azure-init-0.1.1";
+    const AGENT: &str = "azure-init/0.1.1";
     const VM_ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
     const EVENT_ID: &str = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
     const TIMESTAMP: &str = "2026-08-31T12:34:56.789Z";
@@ -295,7 +334,7 @@ mod tests {
 
     fn key(index: u64) -> String {
         format!(
-            "DIAG_V1|{AGENT}|{VM_ID}|event|test|{EVENT_ID}|{TIMESTAMP}|none|||{index}"
+            "DIAG|{AGENT}|{VM_ID}|event|test|{EVENT_ID}|{TIMESTAMP}|none|||{index}"
         )
     }
 
@@ -498,9 +537,8 @@ mod tests {
     #[case("")]
     #[case("unrelated")]
     #[case("other|0")]
-    #[case("DIAG")]
     #[case("DIAG_OTHER|0")]
-    #[case("diag_v1|0")]
+    #[case("diag|0")]
     #[case("prefixDIAG_V2|0")]
     #[case("azure-init-0.1.1|1700000000|vm-abc|event|imds|id|2026-08-31T12:34:56.789Z|0")]
     fn unrelated_and_pre_adoption_records_remain_raw(#[case] key: &str) {
@@ -583,6 +621,7 @@ mod tests {
 
     #[rstest]
     #[case("DIAG_V0")]
+    #[case("DIAG_V1")]
     #[case("DIAG_V2")]
     #[case("DIAG_V999")]
     #[case("DIAG_V1_extra")]
@@ -603,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_event_decodes_without_local_identity() {
+    fn native_event_decodes_without_local_identity() {
         let payload = "héllo\n\"message\" | =";
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key(0), payload.into())]));
@@ -628,7 +667,7 @@ mod tests {
 
     #[rstest]
     #[case::unmatched_start("start", "", "")]
-    #[case::orphan_finish("finish", "fail", "312")]
+    #[case::orphan_finish("finish", "fail", "0.000312")]
     fn isolated_span_endpoint_decodes(
         #[case] kind: &str,
         #[case] result: &str,
@@ -647,7 +686,7 @@ mod tests {
         let start = with_field(&key(0), 3, "start");
         let finish = with_field(&key(0), 3, "finish");
         let finish = with_field(&finish, 8, "fail");
-        let finish = with_field(&finish, 9, "312");
+        let finish = with_field(&finish, 9, "0.000312");
         let entries = decode_entries(vec![
             (start, "starting".into()),
             (finish, "failed".into()),
@@ -671,18 +710,18 @@ mod tests {
     #[case::both(Some(Outcome::Failure), Some(52))]
     fn event_result_and_duration_are_independent(
         #[case] result: Option<Outcome>,
-        #[case] duration_us: Option<u64>,
+        #[case] duration_secs: Option<u64>,
     ) {
         let result_token = result.map_or_else(String::new, |v| v.to_string());
         let duration_token =
-            duration_us.map_or_else(String::new, |v| v.to_string());
+            duration_secs.map_or_else(String::new, |value| value.to_string());
         let key = with_field(&key(0), 8, &result_token);
         let key = with_field(&key, 9, &duration_token);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
         assert!(matches!(&diagnostic, Diagnostic::Event(event)
                 if event.result == result
-                    && event.duration == duration_us.map(Duration::from_micros)));
+                    && event.duration == duration_secs.map(Duration::from_secs)));
     }
 
     #[rstest]
@@ -718,10 +757,18 @@ mod tests {
     #[case::empty_encoding(7, "")]
     #[case::invalid_result(8, "SUCCESS")]
     #[case::signed_duration(9, "+1")]
+    #[case::negative_duration(9, "-0.1")]
+    #[case::non_finite_duration(9, "NaN")]
+    #[case::infinite_duration(9, "inf")]
+    #[case::exponent_duration(9, "1e3")]
+    #[case::missing_seconds(9, ".5")]
+    #[case::missing_fraction(9, "1.")]
+    #[case::signed_fraction(9, "1.+2")]
+    #[case::excess_precision(9, "1.1234567890")]
     #[case::numeric_overflow(9, "18446744073709551616")]
     #[case::missing_chunk_index(10, "")]
     #[case::non_numeric_chunk_index(10, "x")]
-    fn malformed_v1_fields_preserve_the_original_record(
+    fn malformed_native_fields_preserve_the_original_record(
         #[case] field: usize,
         #[case] value: &str,
     ) {
@@ -733,10 +780,10 @@ mod tests {
     }
 
     #[test]
-    fn v1_requires_the_exact_key_layout_and_an_index() {
+    fn native_format_requires_the_exact_key_layout_and_an_index() {
         let complete = key(0);
         let records = vec![
-            ("DIAG_V1".into(), "value".into()),
+            ("DIAG".into(), "value".into()),
             (complete.rsplit_once('|').unwrap().0.into(), "value".into()),
             (format!("{complete}|1"), "value".into()),
         ];
@@ -753,7 +800,7 @@ mod tests {
     #[case::numeric_offset("2026-08-31T12:34:56.789+00:00")]
     #[case::lowercase("2026-08-31t12:34:56.789z")]
     #[case::invalid_month("2026-13-31T12:34:56.789Z")]
-    fn v1_rejects_non_canonical_timestamps(#[case] timestamp: &str) {
+    fn native_format_rejects_non_canonical_timestamps(#[case] timestamp: &str) {
         let records = vec![(with_field(&key(0), 6, timestamp), "value".into())];
         assert_eq!(
             decode_entries(records.clone()),
@@ -768,7 +815,9 @@ mod tests {
     #[case::microseconds("2026-08-31T12:34:56.789123Z")]
     #[case::microsecond_trailing_zeros("2026-08-31T12:34:56.789000Z")]
     #[case::nanoseconds("2026-08-31T12:34:56.789123456Z")]
-    fn v1_accepts_canonical_timestamp_precisions(#[case] timestamp: &str) {
+    fn native_format_accepts_canonical_timestamp_precisions(
+        #[case] timestamp: &str,
+    ) {
         let key = with_field(&key(0), 6, timestamp);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
@@ -1049,13 +1098,20 @@ mod tests {
         assert_eq!(actual, &value);
     }
 
-    #[test]
-    fn reader_accepts_full_u64_duration() {
-        let key = with_field(&key(0), 9, &u64::MAX.to_string());
+    #[rstest]
+    #[case("0", Duration::ZERO)]
+    #[case("1.5", Duration::from_millis(1500))]
+    #[case("1.000000001", Duration::new(1, 1))]
+    #[case("18446744073709551615.999999999", Duration::MAX)]
+    fn reader_accepts_decimal_seconds(
+        #[case] seconds: &str,
+        #[case] expected: Duration,
+    ) {
+        let key = with_field(&key(0), 9, seconds);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "payload".into())]));
         assert!(matches!(&diagnostic, Diagnostic::Event(event)
-                if event.duration == Some(Duration::from_micros(u64::MAX))));
+                if event.duration == Some(expected)));
     }
 
     #[test]

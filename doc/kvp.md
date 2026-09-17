@@ -130,7 +130,7 @@ full details.
 | hv_kvp_daemon | Upsert + full rewrite | `fcntl` | 512 B (field width) | 2,048 B (field width) | N/A | None | Not checked | Yes (shift + rewrite) | Yes (`kvp_update_mem_state`) | 0–3 |
 | cloud-init | Append-only | `flock()` | 512 B (field width) | 1,024 B (1,023 + null-terminator) | Truncates | Truncate if `mtime` < boot | Yes | No | No | Pool 1 only |
 | azure-init (current) | Append-only, batched | `flock()` (via `fs2`) | 512 B (field width) | 1,022 B/chunk | Splits across records | Truncate if `mtime` < boot (no lock) | Zero-padded (implicit) | No | No | Pool 1 only (hardcoded) |
-| libazureinit-kvp (planned) | Upsert | `flock()` + `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Option to truncate if `mtime` < boot (with lock) | Explicit null-terminator | Planned | N/A (direct file I/O) | Any pool (configurable) |
+| libazureinit-kvp | Append / upsert / replace | `flock()` + `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Option to truncate if `mtime` < boot (with lock) | Explicit null-terminator | Yes | N/A (direct file I/O) | Any pool (configurable) |
 
 #### flock vs fcntl
 
@@ -242,52 +242,31 @@ no truncation.
 
 ---
 
-## Diagnostics API and CLI
+## Implementation Notes
 
-`libazureinit-kvp` exports `DiagnosticWriter` for `DIAG_V1` records and
-`DiagnosticReader` for diagnostics, provisioning reports, and raw records.
-The writer validates the agent identifier and VM UUID at construction.
-`emit_start` and `emit_finish` share a caller-supplied event UUID;
-`emit_event` generates its own. Durations are `std::time::Duration`
-values stored as integer microseconds. Timestamps are RFC 3339 UTC (`Z`)
-at millisecond precision by default; `DiagnosticWriter::with_timestamp_precision`
-selects second, microsecond, or nanosecond precision, and the reader
-accepts any of those canonical precisions.
-Payloads are plain UTF-8 text or gzip plus base64 (`Encoding::GzB64`).
+The `libazureinit-kvp` store acquires both `flock` and open-file-description
+`fcntl` locks, in that order. Its safe policy enforces the conservative byte
+budgets above. Its full-width policy allows the physical field sizes, including
+fields without a terminator; the reader accepts a full-width UTF-8 field in
+that case. Full-width writes are not guaranteed to survive host transport.
 
-Each reader call takes one fresh snapshot and returns `Entry::Diagnostic`,
-`Entry::Report`, or `Entry::Raw` in first-seen pool order. Unknown records
-remain raw; recognized but invalid records also carry a `DecodeError`.
-Cloud-init records are supported through a read-only compatibility bridge.
-Invalid physical UTF-8 fails the entire snapshot without partial output.
-Neither reading nor emitting diagnostics clears stale pool data implicitly.
+Appending retains duplicates without a record-count cap. Inserting updates a
+key and collapses its duplicates; inserting new keys and replacing the pool
+enforce a limit of 1,024 distinct keys. That limit is a library policy, not an
+extra field or universal constraint of the KVP format. Map-style reads use the
+last stored value, while physical reads retain every record.
 
-| Command | Output |
-|---------|--------|
-| `libazureinit-kvp dump` | JSON array of physical key/value records in pool order, including duplicates |
-| `libazureinit-kvp dump --parse` | JSON array of decoded diagnostics, reports, and raw entries in pool order |
-| `libazureinit-kvp dump --text` | Physical records as `KEY=VALUE` lines |
-| `libazureinit-kvp dump --parse --text` | One line per entry in pool order; binary payloads render as `payload_b64=<base64>` |
-| `libazureinit-kvp dump --parse --name ssh` | Filter diagnostic names by substring; retain reports and raw entries |
-| `libazureinit-kvp dump --parse --kind finish` | Filter diagnostics by kind (`start`/`finish`/`event`); adding `--name` keeps only diagnostics that match both filters |
+Deletion may swap a record with the file's tail, changing order. Stale-data
+cleanup is explicit and compares modification time with system boot time under
+the write lock. Invalid framing or invalid UTF-8 content fails a read; padding
+after a NUL is ignored rather than interpreted as text.
 
-Parsed CLI output preserves the pool order returned by
-`DiagnosticReader::entries()`: a complete chunk group appears at its first
-record's position, and every other record stays where it sits in the pool.
+The [diagnostics contract](diagnostics.md) defines telemetry carried in KVP records. Rust API usage is covered by the crate's generated documentation.
 
-`--json` and `--text` are mutually exclusive. Only `dump` defaults to JSON;
-other commands retain their text defaults. Global `--dir` and `--pool`
-options select the store.
+## References
 
-```sh
-libazureinit-kvp emit --agent azure-init \
-  --vm-id 3f2504e0-4f89-41d3-9a0c-0305e82c3301 \
-  --name user:create_user --message "created azureuser"
-```
-
-The separate reader and writer replace `DiagnosticsKvp`. `--parse` replaces
-`--parse-diagnostics`, and `emit --agent` replaces `--prefix`. The `--tail`
-and `-n` options are removed.
-
-See the [diagnostics specification](../libazureinit-kvp/diagnostics-proposal.md)
-for the wire format, validation limits, and cloud-init compatibility rules.
+- [Linux kernel UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/hyperv.h)
+- [Linux KVP driver](https://github.com/torvalds/linux/blob/master/drivers/hv/hv_kvp.c)
+- [Linux KVP daemon](https://github.com/torvalds/linux/blob/master/tools/hv/hv_kvp_daemon.c)
+- [Cloud-init KVP reporting](https://github.com/canonical/cloud-init/blob/main/cloudinit/reporting/handlers.py)
+- [Microsoft Data Exchange overview](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/integration-services-data-exchange)

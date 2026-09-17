@@ -1,15 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Structured provisioning report abstraction layered over the raw
-//! [`KvpPoolStore`] key/value API.
-//!
-//! [`ProvisioningReport`] is a strongly-typed representation of a
-//! provisioning health report. Instead of building ad-hoc key/value
-//! strings at the call site, callers construct a report and persist it
-//! with [`write_report`], which serializes it into the single
-//! pipe-delimited `PROVISIONING_REPORT` KVP record that the Azure/Hyper-V
-//! host parses.
+//! Provisioning report creation and storage.
 
 use std::str::FromStr;
 
@@ -17,14 +9,9 @@ use chrono::{DateTime, Utc};
 
 use crate::{DecodeError, KvpError, KvpPoolStore};
 
-/// KVP key under which the encoded provisioning health report is stored.
-///
-/// The Azure/Hyper-V host parses this single key; its value is the
-/// pipe-delimited `key=value|key=value|...` report produced by
-/// [`write_report`].
+/// Key used by [`write_report`] to store the provisioning result.
 pub const PROVISIONING_REPORT_KEY: &str = "PROVISIONING_REPORT";
 
-/// The current time formatted as an RFC 3339 string.
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }
@@ -55,22 +42,19 @@ impl std::fmt::Display for ReportResult {
     }
 }
 
-/// Pre-provisioning (PPS) type reported in the `pps_type` field.
-///
-/// Mirrors the values cloud-init reports for the platform's
-/// `PreprovisionedVMType` / IMDS `ppsType`.
+/// Pre-provisioning state included in a provisioning report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum ReportPpsType {
-    /// Not pre-provisioned (`None`).
+    /// Not pre-provisioned.
     None,
-    /// Pre-provisioned OS disk (`PreprovisionedOSDisk`).
+    /// A pre-provisioned OS disk.
     #[serde(rename = "PreprovisionedOSDisk")]
     OsDisk,
-    /// Running pre-provisioning (`Running`).
+    /// Pre-provisioning is running.
     Running,
-    /// Savable pre-provisioning (`Savable`).
+    /// Pre-provisioning can be saved.
     Savable,
-    /// Unknown pre-provisioning type (`Unknown`).
+    /// The pre-provisioning state is unknown.
     Unknown,
 }
 
@@ -104,11 +88,16 @@ impl std::fmt::Display for ReportPpsType {
     }
 }
 
-/// A strongly-typed provisioning health report.
+/// A provisioning result for host telemetry.
 ///
-/// Construct one with [`ProvisioningReport::success`] or
-/// [`ProvisioningReport::failure`], optionally attach extra context with
-/// the builder methods, then persist it with [`write_report`].
+/// [`success`](Self::success) and [`failure`](Self::failure) capture the current
+/// time. Add optional context with the builder methods, then call
+/// [`write_report`] to persist it. Existing stored reports can be parsed with
+/// [`str::parse`]; parsing preserves their timestamps.
+///
+/// See the [provisioning report contract] for the stored format.
+///
+/// [provisioning report contract]: https://github.com/Azure/azure-init/blob/main/doc/diagnostics.md#provisioning-reports
 ///
 /// # Example
 /// ```no_run
@@ -133,30 +122,29 @@ impl std::fmt::Display for ReportPpsType {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ProvisioningReport {
-    /// Provisioning outcome (`result` field).
+    /// Provisioning outcome.
     result: ReportResult,
-    /// Reporting agent identifier (`agent` field).
+    /// Reporting agent identifier.
     agent: String,
-    /// Virtual machine identifier (`vm_id` field).
+    /// Virtual machine identifier.
     vm_id: String,
-    /// Report timestamp (`timestamp` field), set to the current time
-    /// (RFC 3339) when the report is constructed.
+    /// RFC 3339 timestamp captured when the report is constructed.
     timestamp: String,
-    /// Pre-provisioning type (`pps_type` field).
+    /// Pre-provisioning state.
     pps_type: ReportPpsType,
-    /// Failure reason (`reason` field). Present for error reports.
+    /// Failure reason, present only for error reports.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-    /// Documentation URL (`documentation_url` field), if applicable.
+    /// Help URL, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     documentation_url: Option<String>,
-    /// Additional ordered key/value context (e.g. supporting data).
+    /// Additional ordered key/value context.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     extra: Vec<(String, String)>,
 }
 
 impl ProvisioningReport {
-    /// Create a successful provisioning report.
+    /// Creates a successful provisioning report.
     pub fn success(
         agent: impl Into<String>,
         vm_id: impl Into<String>,
@@ -174,7 +162,7 @@ impl ProvisioningReport {
         }
     }
 
-    /// Create a failed provisioning report with a failure reason.
+    /// Creates a failed provisioning report with a reason.
     pub fn failure(
         agent: impl Into<String>,
         vm_id: impl Into<String>,
@@ -193,14 +181,16 @@ impl ProvisioningReport {
         }
     }
 
-    /// Attach a documentation URL.
+    /// Sets a help URL, included in the stored value for failure reports only.
     pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
         self.documentation_url = Some(url.into());
         self
     }
 
-    /// Append an additional key/value pair. Extras are emitted in the
-    /// order they were added.
+    /// Adds context to the report.
+    ///
+    /// Entries retain insertion order and duplicate keys. Do not use standard
+    /// report field names such as `result` or `timestamp`.
     pub fn with_extra(
         mut self,
         key: impl Into<String>,
@@ -214,7 +204,7 @@ impl ProvisioningReport {
 impl FromStr for ProvisioningReport {
     type Err = DecodeError;
 
-    /// Parses one report without generating a timestamp or accessing storage.
+    /// Parses a stored report without changing its timestamp.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value
             .strip_suffix("\r\n")
@@ -333,13 +323,7 @@ fn validate_report_quoting(value: &str) -> Result<(), DecodeError> {
 }
 
 impl ProvisioningReport {
-    /// Encode the report as a single pipe-delimited `key=value` string.
-    ///
-    /// - Success: `result`, `agent`, `pps_type`, `vm_id`, `timestamp`,
-    ///   then any extras in insertion order.
-    /// - Failure: `result`, `reason`, `agent`, extras in insertion
-    ///   order, `pps_type`, `vm_id`, `timestamp`, then
-    ///   `documentation_url` (if any).
+    /// Encodes the report for storage.
     pub(crate) fn encode(&self) -> String {
         let mut data = Vec::with_capacity(7 + self.extra.len());
 
@@ -388,12 +372,12 @@ impl ProvisioningReport {
     }
 }
 
-/// Persist a report to the KVP store under [`PROVISIONING_REPORT_KEY`].
+/// Stores a provisioning result, replacing any existing report in the pool.
 ///
-/// The report is encoded into a single pipe-delimited value and written
-/// with [`KvpPoolStore::insert`] (upsert / last-write-wins), so it
-/// overrides any existing `PROVISIONING_REPORT` record rather than
-/// accumulating duplicates.
+/// A report must fit in one value under the store's configured size policy.
+///
+/// # Errors
+/// Returns validation and I/O errors from the store.
 pub fn write_report(
     store: &KvpPoolStore,
     report: &ProvisioningReport,

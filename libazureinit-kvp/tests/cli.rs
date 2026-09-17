@@ -317,7 +317,7 @@ fn report_failure_rejects_invalid_supporting_data() {
 fn parsed_dump_reassembles_and_filters_without_dropping_other_entries() {
     let dir = TempDir::new().unwrap();
     let base = format!(
-        "DIAG_V1|agent|{VM_ID}|event|a:b|e5f01809-a7a3-4279-aa64-1f18e21eda6e|2026-08-31T00:00:00.000Z|none||"
+        "DIAG|agent|{VM_ID}|event|a:b|e5f01809-a7a3-4279-aa64-1f18e21eda6e|2026-08-31T00:00:00.000Z|none||"
     );
     for (key, value) in [
         (format!("{base}|1"), "two"),
@@ -385,7 +385,9 @@ fn parsed_dump_preserves_reader_pool_order() {
     let store = store_at(&dir);
     let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
     let key = |name: &str, timestamp: &str| {
-        format!("DIAG_V1|agent|{VM_ID}|event|{name}|{event_id}|{timestamp}|none|||0")
+        format!(
+            "DIAG|agent|{VM_ID}|event|{name}|{event_id}|{timestamp}|none|||0"
+        )
     };
     // Timestamps are deliberately out of order to prove the CLI does not sort.
     let records = [
@@ -453,7 +455,7 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
             "name": "modules-final/config-scripts_user", "vm_id": VM_ID,
             "event_id": "e5f01809-a7a3-4279-aa64-1f18e21eda6e",
             "timestamp": "2026-07-27T21:33:24.339006Z", "encoding": "none",
-            "result": "success", "duration": 500000, "payload": "scripts ran",
+            "result": "success", "duration": 0.5, "payload": "scripts ran",
         })
     );
     assert_eq!(entries[1]["kind"], "start");
@@ -469,7 +471,7 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
     assert!(out.contains("vm_id=0e5e179d-5341-478b-8456-fbb90621bdf8"));
     assert!(out.contains("result=success"));
     assert!(out.contains("timestamp=2026-07-27T21:33:24.339006Z"));
-    assert!(out.contains("duration=500000us"));
+    assert!(out.contains("duration=0.5s"));
     assert!(out.contains("payload=scripts ran"));
     let start = out.lines().nth(1).unwrap();
     assert!(start.contains("diagnostic kind=start"));
@@ -477,8 +479,13 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
     assert!(!start.contains("duration="));
 }
 
-#[test]
-fn parsed_dump_renders_bytes_reports_and_raw_errors() {
+#[rstest]
+#[case(Encoding::GzB64, "gz+b64")]
+#[case(Encoding::ZlibB64, "zlib+b64")]
+fn parsed_dump_renders_bytes_reports_and_raw_errors(
+    #[case] encoding: Encoding,
+    #[case] token: &str,
+) {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     DiagnosticWriter::new(store.clone(), "agent", VM_ID)
@@ -486,13 +493,13 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
         .emit_event(
             "artifact",
             vec![0, 255],
-            Some(Encoding::GzB64),
+            Some(encoding),
             Some(Outcome::Failure),
             Some(Duration::from_micros(7)),
         )
         .unwrap();
     store.append("note", "raw value").unwrap();
-    store.append("DIAG_V1|bad", "junk").unwrap();
+    store.append("DIAG|bad", "junk").unwrap();
     assert_success(kvp(&with_dir(
         &dir,
         &["report-failure", "--vm-id", VM_ID, "--reason", "bad input"],
@@ -501,10 +508,11 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors() {
         assert_success(kvp(&with_dir(&dir, &["dump", "--parse", "--text"])));
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 4);
-    assert!(lines[0]
-        .contains("encoding=gz+b64 result=fail duration=7us payload_b64=AP8="));
+    assert!(lines[0].contains(&format!(
+        "encoding={token} result=fail duration=0.000007s payload_b64=AP8="
+    )));
     assert_eq!(lines[1], "raw key=note value=raw value");
-    assert_eq!(lines[2], "raw key=DIAG_V1|bad value=junk error=malformed diagnostic or provisioning report");
+    assert_eq!(lines[2], "raw key=DIAG|bad value=junk error=malformed diagnostic or provisioning report");
     assert_eq!(
         lines[3],
         format!(
@@ -539,7 +547,7 @@ fn parsed_dump_filters_by_kind() {
     let ts = "2026-08-31T00:00:00.000Z";
     let diag = |kind: &str, name: &str, result: &str, duration: &str| {
         format!(
-            "DIAG_V1|agent|{VM_ID}|{kind}|{name}|{event_id}|{ts}|none|{result}|{duration}|0"
+            "DIAG|agent|{VM_ID}|{kind}|{name}|{event_id}|{ts}|none|{result}|{duration}|0"
         )
     };
     for (key, value) in [
@@ -694,9 +702,7 @@ fn emit_writes_event_readable_by_dump(#[case] agent: Option<&str>) {
 
     let raw = assert_json(kvp(&with_dir(&dir, &["dump"])));
     let key = raw[0]["key"].as_str().unwrap();
-    assert!(
-        key.starts_with(&format!("DIAG_V1|{expected_agent}|{VM_ID}|event|"))
-    );
+    assert!(key.starts_with(&format!("DIAG|{expected_agent}|{VM_ID}|event|")));
     assert!(key.ends_with("|none|||0"));
 }
 

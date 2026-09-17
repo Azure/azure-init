@@ -4,7 +4,11 @@
 use std::io::{Read, Write};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use flate2::{bufread::GzDecoder, write::GzEncoder, Compression};
+use flate2::{
+    bufread::{GzDecoder, ZlibDecoder},
+    write::{GzEncoder, ZlibEncoder},
+    Compression,
+};
 
 use super::diagnostic::{DecodeError, DiagnosticPayload, Encoding};
 use crate::KvpError;
@@ -14,6 +18,10 @@ pub(super) fn encode_payload(
     payload: DiagnosticPayload,
     encoding: Option<&Encoding>,
 ) -> Result<String, KvpError> {
+    let bytes = match &payload {
+        DiagnosticPayload::Text(text) => text.as_bytes(),
+        DiagnosticPayload::Bytes(bytes) => bytes.as_slice(),
+    };
     match encoding {
         None => {
             let text = match payload {
@@ -27,12 +35,14 @@ pub(super) fn encode_payload(
             Ok(text)
         }
         Some(Encoding::GzB64) => {
-            let bytes = match &payload {
-                DiagnosticPayload::Text(text) => text.as_bytes(),
-                DiagnosticPayload::Bytes(bytes) => bytes.as_slice(),
-            };
             let mut encoder =
                 GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(bytes)?;
+            Ok(STANDARD.encode(encoder.finish()?))
+        }
+        Some(Encoding::ZlibB64) => {
+            let mut encoder =
+                ZlibEncoder::new(Vec::new(), Compression::default());
             encoder.write_all(bytes)?;
             Ok(STANDARD.encode(encoder.finish()?))
         }
@@ -51,23 +61,42 @@ pub(super) fn decode_payload(
         None => std::str::from_utf8(value)
             .map(|text| DiagnosticPayload::Text(text.to_owned()))
             .map_err(|_| DecodeError::Undecodable),
-        Some(Encoding::GzB64) => {
+        Some(encoding @ (Encoding::GzB64 | Encoding::ZlibB64)) => {
             let compressed = STANDARD
                 .decode(value)
                 .map_err(|_| DecodeError::Undecodable)?;
-            let mut decoder = GzDecoder::new(compressed.as_slice());
-            let mut bytes = Vec::new();
-            decoder
-                .read_to_end(&mut bytes)
-                .map_err(|_| DecodeError::Undecodable)?;
-            // The buffered decoder leaves any data after the gzip member unread.
-            if !decoder.get_ref().is_empty() {
-                return Err(DecodeError::Undecodable);
-            }
-            Ok(DiagnosticPayload::Bytes(bytes))
+            decompress(&compressed, encoding)
         }
         Some(Encoding::Other(_)) => Err(DecodeError::Undecodable),
     }
+}
+
+pub(super) fn decompress(
+    compressed: &[u8],
+    encoding: &Encoding,
+) -> Result<DiagnosticPayload, DecodeError> {
+    let mut bytes = Vec::new();
+    let remaining = match encoding {
+        Encoding::GzB64 => {
+            let mut decoder = GzDecoder::new(compressed);
+            decoder
+                .read_to_end(&mut bytes)
+                .map_err(|_| DecodeError::Undecodable)?;
+            decoder.into_inner()
+        }
+        Encoding::ZlibB64 => {
+            let mut decoder = ZlibDecoder::new(compressed);
+            decoder
+                .read_to_end(&mut bytes)
+                .map_err(|_| DecodeError::Undecodable)?;
+            decoder.into_inner()
+        }
+        Encoding::Other(_) => return Err(DecodeError::Undecodable),
+    };
+    if !remaining.is_empty() {
+        return Err(DecodeError::Undecodable);
+    }
+    Ok(DiagnosticPayload::Bytes(bytes))
 }
 
 #[cfg(test)]
@@ -82,6 +111,7 @@ mod tests {
         "H4sIAAAAAAAC/0vOyS9N0c3MyyxRSMusKCktSuVi+A8AokCfWhUAAAA=";
     const PYTHON_FILENAME: &str =
         "H4sICAAAAAAC/2RtZXNnAEvOyS9N0c3MyyxRSMusKCktSuVi+A8AokCfWhUAAAA=";
+    const KUSTO_ZLIB: &str = "eJwLSS0uUSguKcrMS1cwNDIGACxqBQ4=";
 
     #[rstest]
     #[case::empty_text("", false)]
@@ -147,13 +177,15 @@ mod tests {
     #[case("")]
     #[case("hello")]
     #[case("héllo\n\0 | 😀")]
-    fn gz_b64_text_decodes_to_bytes(#[case] text: &str) {
-        let encoding = Some(&Encoding::GzB64);
-        let value = encode_payload(text.into(), encoding).unwrap();
+    fn compressed_text_decodes_to_bytes(
+        #[case] text: &str,
+        #[values(Encoding::GzB64, Encoding::ZlibB64)] encoding: Encoding,
+    ) {
+        let value = encode_payload(text.into(), Some(&encoding)).unwrap();
         assert!(value.is_ascii());
         assert!(!value.contains('\0'));
         assert_eq!(
-            decode_payload(value.as_bytes(), encoding).unwrap(),
+            decode_payload(value.as_bytes(), Some(&encoding)).unwrap(),
             DiagnosticPayload::Bytes(text.as_bytes().to_vec())
         );
     }
@@ -163,11 +195,14 @@ mod tests {
     #[case(b"hello".to_vec())]
     #[case(vec![0xff, 0x80, 0, 0])]
     #[case((0u8..=255).collect())]
-    fn gz_b64_preserves_arbitrary_bytes(#[case] bytes: Vec<u8>) {
-        let encoding = Some(&Encoding::GzB64);
-        let value = encode_payload(bytes.clone().into(), encoding).unwrap();
+    fn compression_preserves_arbitrary_bytes(
+        #[case] bytes: Vec<u8>,
+        #[values(Encoding::GzB64, Encoding::ZlibB64)] encoding: Encoding,
+    ) {
+        let value =
+            encode_payload(bytes.clone().into(), Some(&encoding)).unwrap();
         assert_eq!(
-            decode_payload(value.as_bytes(), encoding).unwrap(),
+            decode_payload(value.as_bytes(), Some(&encoding)).unwrap(),
             DiagnosticPayload::Bytes(bytes)
         );
     }
@@ -177,11 +212,49 @@ mod tests {
         let value =
             encode_payload("hello".into(), Some(&Encoding::GzB64)).unwrap();
         let gzip = STANDARD.decode(value).unwrap();
-        assert!(gzip.starts_with(&[0x1f, 0x8b, 8]));
+        assert!(gzip.starts_with(&[0x1f, 0x8b, 8, 0]));
         assert_eq!(
             &gzip[gzip.len() - 8..],
             &[0x86, 0xa6, 0x10, 0x36, 5, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn zlib_b64_matches_kusto_format() {
+        assert_eq!(
+            decode_payload(KUSTO_ZLIB.as_bytes(), Some(&Encoding::ZlibB64))
+                .unwrap(),
+            DiagnosticPayload::Bytes(b"Test string 123".to_vec()),
+        );
+        let value =
+            encode_payload("Test string 123".into(), Some(&Encoding::ZlibB64))
+                .unwrap();
+        let compressed = STANDARD.decode(value).unwrap();
+        assert_eq!(compressed[0], 0x78);
+        assert_eq!(compressed[1] & 0x20, 0);
+    }
+
+    #[test]
+    fn zlib_b64_requires_a_complete_valid_zlib_stream() {
+        let compressed = STANDARD.decode(KUSTO_ZLIB).unwrap();
+        let mut corrupt = compressed.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        for bytes in [
+            STANDARD.decode(PYTHON_HELLO).unwrap(),
+            compressed[..compressed.len() - 1].to_vec(),
+            corrupt,
+            trailing,
+        ] {
+            assert_eq!(
+                decode_payload(
+                    STANDARD.encode(bytes).as_bytes(),
+                    Some(&Encoding::ZlibB64)
+                ),
+                Err(DecodeError::Undecodable),
+            );
+        }
     }
 
     #[rstest]
@@ -339,6 +412,7 @@ mod tests {
     #[case::unknown("zstd+b64")]
     #[case::plain_token("none")]
     #[case::gzip_token("gz+b64")]
+    #[case::zlib_token("zlib+b64")]
     fn other_encoding_is_never_inferred(#[case] token: &str) {
         let encoding = Encoding::Other(token.into());
         assert!(matches!(
@@ -348,6 +422,11 @@ mod tests {
         ));
         assert_eq!(
             decode_payload(PYTHON_HELLO.as_bytes(), Some(&encoding)),
+            Err(DecodeError::Undecodable)
+        );
+        let compressed = STANDARD.decode(PYTHON_HELLO).unwrap();
+        assert_eq!(
+            decompress(&compressed, &encoding),
             Err(DecodeError::Undecodable)
         );
     }

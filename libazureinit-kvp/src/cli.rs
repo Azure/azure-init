@@ -14,8 +14,9 @@ use serde_json::json;
 
 use crate::{
     write_report, Diagnostic, DiagnosticPayload, DiagnosticReader,
-    DiagnosticWriter, Entry, Kind, KvpError, KvpPool, KvpPoolStore, PoolMode,
-    ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
+    DiagnosticWriter, DurationPrecision, Entry, Kind, KvpError, KvpPool,
+    KvpPoolStore, PoolMode, ProvisioningReport, ReportPpsType,
+    PROVISIONING_REPORT_KEY,
 };
 
 const EXIT_OK: u8 = 0;
@@ -23,11 +24,14 @@ const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE_OR_VALIDATION: u8 = 2;
 const EXIT_IO: u8 = 3;
 
-/// Default reporting agent identifier, derived from this crate's version
+/// Default reporting agent identifier, derived from this crate's version.
 const DEFAULT_AGENT: &str =
     concat!("libazureinit-kvp/", env!("CARGO_PKG_VERSION"));
 
-/// Entry point for the `libazureinit-kvp` binary.
+/// Runs the command-line interface using process arguments and standard I/O.
+///
+/// Returns the command's exit status. Library callers should use the store,
+/// diagnostic or report APIs directly.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     let stdout = io::stdout();
@@ -59,7 +63,7 @@ struct Cli {
     #[arg(long, global = true)]
     dir: Option<PathBuf>,
 
-    /// Use full wire-format key/value limits instead of the safe profile.
+    /// Use larger key/value limits that may be truncated in host transport.
     #[arg(long = "unsafe", global = true)]
     unsafe_mode: bool,
 
@@ -123,12 +127,12 @@ enum Command {
         key: String,
         value: String,
     },
-    /// Emit a DIAG_V1 point event with a fresh UUID and current timestamp.
+    /// Emit a standalone diagnostic with a fresh UUID and current timestamp.
     Emit {
         /// Event name, e.g. user:create_user.
         #[arg(long)]
         name: String,
-        /// Event message (stored as the record value).
+        /// Event payload.
         #[arg(long)]
         message: String,
         /// VM UUID (defaults to the current VM's ID).
@@ -587,7 +591,9 @@ fn diagnostic_text(diagnostic: &Diagnostic) -> String {
         let _ = write!(line, " result={result}");
     }
     if let Some(duration) = duration {
-        let _ = write!(line, " duration={}us", duration.as_micros());
+        let seconds = DurationPrecision::Nanos.format(duration);
+        let seconds = seconds.trim_end_matches('0').trim_end_matches('.');
+        let _ = write!(line, " duration={seconds}s");
     }
     match diagnostic.payload() {
         DiagnosticPayload::Text(text) => {
@@ -1824,7 +1830,6 @@ mod tests {
     #[case(KvpError::EmptyEventField { field: "name" })]
     #[case(KvpError::EventFieldTooLong { field: "agent", max: 32, actual: 33 })]
     #[case(KvpError::InvalidUuid { field: "event_id" })]
-    #[case(KvpError::DurationTooLarge { max_us: 9_999_999_999_999, actual_us: u64::MAX })]
     #[case(KvpError::TooManyChunks { max: 1023 })]
     #[case(KvpError::PayloadNotUtf8)]
     #[case(KvpError::UnsupportedEncoding { token: "zstd+b64".into() })]
@@ -1944,7 +1949,7 @@ mod tests {
         let ts = "2026-08-31T12:34:56.789Z";
         let vm = "00000000-0000-0000-0000-000000000abc";
         let diag = |kind: &str| {
-            format!("DIAG_V1|agent|{vm}|{kind}|span|{event_id}|{ts}|none|||0")
+            format!("DIAG|agent|{vm}|{kind}|span|{event_id}|{ts}|none|||0")
         };
         store.append(&diag("start"), "starting").unwrap();
         store.append(&diag("event"), "obs").unwrap();

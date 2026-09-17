@@ -1,11 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Typed diagnostics over the raw [`crate::KvpPoolStore`].
-//!
-//! [`DiagnosticWriter`] emits versioned `DIAG_V1` records. [`DiagnosticReader`]
-//! reads diagnostics, provisioning reports, and raw records from a successful
-//! string snapshot, including cloud-init diagnostics through a read-only bridge.
+//! Diagnostic types and KVP pool access.
 
 mod cloud_init;
 mod diagnostic;
@@ -19,12 +15,11 @@ pub use diagnostic::{
     RawKeyValue, DIAGNOSTIC_VERSION_ID,
 };
 pub use reader::DiagnosticReader;
-pub use writer::{DiagnosticWriter, TimestampPrecision};
+pub use writer::{DiagnosticWriter, DurationPrecision, TimestampPrecision};
 
-/// Maximum number of UTF-8 value bytes stored in one diagnostic record.
+/// Maximum encoded payload bytes stored in one diagnostic record.
 ///
-/// This conservative limit keeps records readable through the Hyper-V host
-/// path. Longer messages are split at UTF-8 character boundaries.
+/// [`DiagnosticWriter`] splits larger payloads automatically.
 pub const MAX_CHUNK_BYTES: usize = 1022;
 
 /// Parse a non-empty run of ASCII digits (a chunk index or duration) as `u64`.

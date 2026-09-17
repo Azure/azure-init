@@ -4,60 +4,71 @@
 use std::fmt;
 use std::io;
 
-/// Errors returned by KVP storage and diagnostic writing.
+/// Errors returned by KVP storage and telemetry writers.
 #[derive(Debug)]
 pub enum KvpError {
     /// The key was empty.
     EmptyKey,
+    /// A required diagnostic field was empty.
     EmptyEventField {
+        /// Name of the rejected field.
         field: &'static str,
     },
-    /// An underlying I/O error.
+    /// An I/O operation failed, or stored pool data was invalid.
     Io(io::Error),
-    /// An event key field (`agent`, `vm_id`, `kind`, `name`, or `event_id`)
-    /// contained the `|` delimiter, which would make the formatted event
-    /// key ambiguous to parse back.
+    /// A diagnostic field contained the reserved `|` delimiter.
     EventFieldContainsDelimiter {
+        /// Name of the rejected field.
         field: &'static str,
     },
+    /// A diagnostic field exceeded its UTF-8 byte limit.
     EventFieldTooLong {
+        /// Name of the rejected field.
         field: &'static str,
+        /// Maximum allowed bytes.
         max: usize,
+        /// Supplied bytes.
         actual: usize,
     },
+    /// A VM or event identifier was not a valid UUID.
     InvalidUuid {
+        /// Name of the rejected field.
         field: &'static str,
     },
-    DurationTooLarge {
-        max_us: u64,
-        actual_us: u64,
-    },
+    /// An encoded payload needed too many records.
     TooManyChunks {
+        /// Maximum allowed records for one payload.
         max: usize,
     },
-    /// The key contains a null byte, which is incompatible with the
-    /// on-disk format (null-padded fixed-width fields).
+    /// A key or diagnostic key field contained a NUL byte.
     KeyContainsNull,
     /// The key exceeds the store's maximum key size.
     KeyTooLarge {
+        /// Maximum allowed UTF-8 bytes.
         max: usize,
+        /// Supplied UTF-8 bytes.
         actual: usize,
     },
-    /// The store already has the maximum allowed number of unique keys.
+    /// An insert or replacement would exceed the unique-key limit.
     MaxUniqueKeysExceeded {
+        /// Maximum allowed distinct keys.
         max: usize,
     },
+    /// A byte payload could not be written as unencoded UTF-8 text.
     PayloadNotUtf8,
+    /// The requested payload encoding is not supported.
     UnsupportedEncoding {
+        /// Requested encoding name.
         token: String,
     },
     /// The value exceeds the store's maximum value size.
     ValueTooLarge {
+        /// Maximum allowed UTF-8 bytes.
         max: usize,
+        /// Supplied UTF-8 bytes.
         actual: usize,
     },
-    /// The value contains a null byte, which is incompatible with the
-    /// null-padded KVP wire format.
+    /// A stored value contained a NUL byte.
     ValueContainsNull,
 }
 
@@ -76,9 +87,6 @@ impl fmt::Display for KvpError {
             }
             Self::InvalidUuid { field } => {
                 write!(f, "event key field '{field}' must be a UUID")
-            }
-            Self::DurationTooLarge { max_us, actual_us } => {
-                write!(f, "diagnostic duration ({actual_us}us) exceeds maximum ({max_us}us)")
             }
             Self::TooManyChunks { max } => {
                 write!(f, "diagnostic chunk count exceeds maximum ({max})")
@@ -145,10 +153,6 @@ mod tests {
     #[case(
         KvpError::InvalidUuid { field: "vm_id" },
         "event key field 'vm_id' must be a UUID"
-    )]
-    #[case(
-        KvpError::DurationTooLarge { max_us: 9_999_999_999_999, actual_us: 10_000_000_000_000 },
-        "diagnostic duration (10000000000000us) exceeds maximum (9999999999999us)"
     )]
     #[case(
         KvpError::TooManyChunks { max: 1023 },
