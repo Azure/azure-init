@@ -23,7 +23,7 @@ using this layout. Agent versions identify the producer, not the schema.
 | `vm_id` | VM identity | UUID |
 | `kind` | Operation endpoint or standalone observation | `start`, `finish`, or `event` |
 | `name` | Operation or observation, such as `provision:run` or `dmesg` | UTF-8 text |
-| `event_id` | Shared by an operation's start and finish; unique to a standalone event | Opaque UTF-8 identifier |
+| `event_id` | Shared by an operation's start and finish; unique to a standalone event | UTF-8 identifier, typically UUID |
 | `timestamp` | Emission time | RFC 3339 timestamp |
 | `encoding` | Stored value representation | `none`, `zlib+b64`, or `gz+b64` |
 | `result` | Reported outcome, when applicable | `success`, `fail`, or empty |
@@ -32,8 +32,6 @@ using this layout. Agent versions identify the producer, not the schema.
 
 All fields except `result` and `duration` are required and nonempty. Key fields
 cannot contain `|` or NUL; there is no key-field escaping.
-
-Preserve event IDs as text: `0000000001` and `1` are distinct identifiers.
 
 ## Timing and Correlation
 
@@ -110,7 +108,7 @@ chunk index. The table accounts for this writer's output with the default name
 limit. Example widths use the finish record above, with default precision and
 a single chunk; they are illustrative, not measured production averages.
 
-| Field | Example bytes | Field bound (bytes) | Basis |
+| Field | Example bytes | Maximum emitted bytes | Basis |
 |---|---:|---:|---|
 | `DIAG` | 4 | 4 | Fixed token |
 | `agent` | 16 | 32 | `azure-init/0.1.1`; producer text limit |
