@@ -23,7 +23,7 @@ using this layout. Agent versions identify the producer, not the schema.
 | `vm_id` | VM identity | UUID |
 | `kind` | Operation endpoint or standalone observation | `start`, `finish`, or `event` |
 | `name` | Operation or observation, such as `provision:run` or `dmesg` | UTF-8 text |
-| `event_id` | Shared by an operation's start and finish; unique to a standalone event | UUID |
+| `event_id` | Shared by an operation's start and finish; unique to a standalone event | Opaque UTF-8 identifier |
 | `timestamp` | Emission time | RFC 3339 timestamp |
 | `encoding` | Stored value representation | `none`, `zlib+b64`, or `gz+b64` |
 | `result` | Reported outcome, when applicable | `success`, `fail`, or empty |
@@ -32,6 +32,8 @@ using this layout. Agent versions identify the producer, not the schema.
 
 All fields except `result` and `duration` are required and nonempty. Key fields
 cannot contain `|` or NUL; there is no key-field escaping.
+
+Preserve event IDs as text: `0000000001` and `1` are distinct identifiers.
 
 ## Timing and Correlation
 
@@ -53,10 +55,8 @@ second, millisecond (default), microsecond or nanosecond precision.
 
 Durations are finite, nonnegative IEEE 754 double-precision seconds, in
 decimal or exponent notation. Empty means absent; zero is a measured duration.
-
-The writer emits fixed-point durations with 0, 3, 6 (default) or 9 fractional
-digits, independently of timestamp precision, discarding finer digits. See
-[Implementation Notes](#implementation-notes) for reader limits and rounding.
+See [Implementation Notes](#implementation-notes) for reader limits and
+rounding.
 
 ### Examples
 
@@ -106,17 +106,17 @@ not aliases. Compression does not imply that the decoded content is text.
 ## Limits
 
 The complete key must fit in 254 UTF-8 bytes, including separators and the
-chunk index. The table accounts for this writer's output. Example widths use
-the finish record above, with default precision and a single chunk; they are
-illustrative, not measured production averages.
+chunk index. The table accounts for this writer's output with the default name
+limit. Example widths use the finish record above, with default precision and
+a single chunk; they are illustrative, not measured production averages.
 
-| Field | Example bytes | Maximum emitted bytes | Basis |
+| Field | Example bytes | Field bound (bytes) | Basis |
 |---|---:|---:|---|
 | `DIAG` | 4 | 4 | Fixed token |
 | `agent` | 16 | 32 | `azure-init/0.1.1`; producer text limit |
 | `vm_id` | 36 | 36 | Hyphenated UUID in the example; writer UUID limit |
 | `kind` | 6 | 6 | `start`/`event`: 5; `finish`: 6 |
-| `name` | 13 | 48 | `provision:run`; producer text limit |
+| `name` | 13 | 64 | `provision:run`; configurable producer limit, default 64 |
 | `event_id` | 36 | 36 | Hyphenated UUID in the example; writer UUID limit |
 | `timestamp` | 24 | 30 | UTC `Z` output: 20/24/27/30 for seconds/ms/us/ns |
 | `encoding` | 4 | 8 | `none`: 4; `gz+b64`: 6; `zlib+b64`: 8 |
@@ -124,13 +124,14 @@ illustrative, not measured production averages.
 | `duration` | 8 | 30 | `0.312000`; up to 20 whole-second digits, a point and 9 fractional digits |
 | `chunk_index` | 1 | 4 | `0` through `1022` |
 | Ten pipe separators | 10 | 10 | One byte each |
-| **Total** | **165** | **251** | |
-| **Space remaining** | **89** | **3** | Within 254 bytes |
+| **Total** | **165** | **267** | Sum of field widths |
+| **Space remaining** | **89** | **13 over limit** | Against the 254-byte limit |
 
 The start and compressed-event examples use 149 and 147 key bytes respectively.
-With both default precisions, the maximum emitted key is 242 bytes. Widths
-count text bytes, not the in-memory size of a double. These are writer budgets,
-not universal widths for every RFC 3339 timestamp or numeric spelling.
+The field bounds total 258 bytes with both default precisions, so not every
+combination fits; oversized keys are rejected before writing. Widths count text
+bytes, not the in-memory size of a double. These are writer budgets, not
+universal widths for every RFC 3339 timestamp or numeric spelling.
 
 Encoded values are limited to 1,022 bytes per chunk, with at most 1,023 chunks
 per payload. Producer budgets do not impose equivalent read limits on other
@@ -256,10 +257,15 @@ Cloud-init durations round to microseconds; source encoding labels are preserved
 
 ### Writer Choices
 
+The writer requires UUID event IDs. The name limit defaults to 64 UTF-8 bytes
+and is configurable with `DiagnosticWriter::with_max_name_bytes`; oversized
+names are rejected, not truncated. Durations use fixed-point seconds with
+microsecond precision by default, independently of timestamp precision;
+finer digits are discarded.
+
 Validation precedes writing, but I/O failure may leave a partial batch. Pool
-cleanup is explicit. Free-form agent and name limits leave room for the other
-key fields; the full key length is checked for every chunk. Timestamp and
-duration formatting choices keep emitted keys within the [budget](#limits).
+cleanup is explicit. The complete key, including each chunk index, must fit
+the [budget](#limits) regardless of the configured name limit.
 
 Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,

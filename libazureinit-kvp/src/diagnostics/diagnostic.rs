@@ -192,7 +192,8 @@ pub struct DiagnosticKey {
     pub vm_id: Option<String>,
     /// Operation or observation name, such as `provision:run` or `dmesg`.
     pub name: String,
-    /// UUID shared by an operation's start and finish; unique for a standalone event.
+    /// Opaque identifier shared by an operation's start and finish;
+    /// unique for a standalone event.
     pub event_id: String,
     /// When this diagnostic was emitted, in UTC.
     #[serde(serialize_with = "serialize_timestamp")]

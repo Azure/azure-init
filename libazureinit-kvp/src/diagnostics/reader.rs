@@ -186,7 +186,6 @@ fn decode_diag_group(
         return Err(DecodeError::Malformed);
     }
     Uuid::parse_str(vm_id).map_err(|_| DecodeError::Malformed)?;
-    Uuid::parse_str(event_id).map_err(|_| DecodeError::Malformed)?;
     let parsed_timestamp = DateTime::parse_from_rfc3339(timestamp)
         .map_err(|_| DecodeError::Malformed)?
         .with_timezone(&Utc);
@@ -636,16 +635,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_event_decodes_without_local_identity() {
+    #[rstest]
+    #[case::uuid(EVENT_ID)]
+    #[case::ten_digits("0000000001")]
+    #[case::opaque("bad-uuid")]
+    fn native_event_decodes_without_local_identity(#[case] event_id: &str) {
         let payload = "héllo\n\"message\" | =";
-        let diagnostic =
-            only_diagnostic(decode_entries(vec![(key(0), payload.into())]));
+        let diagnostic = only_diagnostic(decode_entries(vec![(
+            with_field(&key(0), 5, event_id),
+            payload.into(),
+        )]));
         assert_eq!(diagnostic.kind(), Kind::Event);
         assert_eq!(diagnostic.key().agent, AGENT);
         assert_eq!(diagnostic.key().vm_id.as_deref(), Some(VM_ID));
         assert_eq!(diagnostic.key().name, "test");
-        assert_eq!(diagnostic.key().event_id, EVENT_ID);
+        assert_eq!(diagnostic.key().event_id, event_id);
         assert_eq!(diagnostic.key().encoding, None);
         assert_eq!(
             diagnostic
@@ -748,7 +752,7 @@ mod tests {
     #[case::invalid_kind(3, "compressed")]
     #[case::empty_name(4, "")]
     #[case::null_in_name(4, "bad\0name")]
-    #[case::invalid_event_id(5, "bad-uuid")]
+    #[case::empty_event_id(5, "")]
     #[case::empty_encoding(7, "")]
     #[case::invalid_result(8, "SUCCESS")]
     #[case::negative_duration(9, "-0.1")]

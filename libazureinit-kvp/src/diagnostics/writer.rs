@@ -16,7 +16,7 @@ use super::MAX_CHUNK_BYTES;
 use crate::{KvpError, KvpPoolStore};
 
 const MAX_AGENT_BYTES: usize = 32;
-const MAX_NAME_BYTES: usize = 48;
+const DEFAULT_MAX_NAME_BYTES: usize = 64;
 const MAX_UUID_BYTES: usize = 36;
 const MAX_TIMESTAMP_BYTES: usize = 30;
 const MAX_KEY_BYTES: usize = 254;
@@ -123,6 +123,7 @@ pub struct DiagnosticWriter {
     store: KvpPoolStore,
     agent: String,
     vm_id: String,
+    max_name_bytes: usize,
     timestamp_precision: TimestampPrecision,
     duration_precision: DurationPrecision,
 }
@@ -147,9 +148,19 @@ impl DiagnosticWriter {
             store,
             agent,
             vm_id,
+            max_name_bytes: DEFAULT_MAX_NAME_BYTES,
             timestamp_precision: TimestampPrecision::default(),
             duration_precision: DurationPrecision::default(),
         })
+    }
+
+    /// Sets the maximum name length in UTF-8 bytes (default: 64).
+    ///
+    /// Names over the limit are rejected, never truncated. The complete key
+    /// must still fit within 254 bytes, including its chunk index.
+    pub fn with_max_name_bytes(mut self, max: usize) -> Self {
+        self.max_name_bytes = max;
+        self
     }
 
     /// Overrides the default millisecond precision for emitted timestamps.
@@ -248,6 +259,7 @@ impl DiagnosticWriter {
             diagnostic,
             self.timestamp_precision,
             self.duration_precision,
+            self.max_name_bytes,
         )?)
     }
 }
@@ -256,6 +268,7 @@ fn prepare_records(
     diagnostic: Diagnostic,
     timestamp_precision: TimestampPrecision,
     duration_precision: DurationPrecision,
+    max_name_bytes: usize,
 ) -> Result<Vec<(String, String)>, KvpError> {
     let kind = diagnostic.kind();
     let (key, payload, result, duration) = match diagnostic {
@@ -277,7 +290,7 @@ fn prepare_records(
         .as_deref()
         .ok_or(KvpError::EmptyEventField { field: "vm_id" })?;
     validate_uuid("vm_id", vm_id)?;
-    validate_field("name", &key.name, MAX_NAME_BYTES)?;
+    validate_field("name", &key.name, max_name_bytes)?;
     validate_uuid("event_id", &key.event_id)?;
 
     let duration = duration.map_or_else(String::new, |duration| {
@@ -583,13 +596,17 @@ mod tests {
     }
 
     #[rstest]
-    #[case("agent", "a".repeat(32), 32)]
-    #[case("agent", "é".repeat(16), 32)]
-    #[case("name", "n".repeat(48), 48)]
+    #[case("agent", "a".repeat(32), 32, None)]
+    #[case("agent", "é".repeat(16), 32, None)]
+    #[case("name", "n".repeat(64), 64, None)]
+    #[case("name", "é".repeat(32), 64, None)]
+    #[case("name", "n".repeat(32), 32, Some(32))]
+    #[case("name", "n".repeat(96), 96, Some(96))]
     fn freeform_caps_count_bytes_without_truncation(
         #[case] field: &'static str,
         #[case] value: String,
         #[case] max: usize,
+        #[case] max_name_bytes: Option<usize>,
         #[values(PoolMode::Safe, PoolMode::Unsafe)] mode: PoolMode,
     ) {
         let dir = TempDir::new().unwrap();
@@ -599,6 +616,10 @@ mod tests {
             _ => (AGENT, value.as_str()),
         };
         let writer = DiagnosticWriter::new(pool.clone(), agent, VM_ID).unwrap();
+        let writer = match max_name_bytes {
+            Some(max) => writer.with_max_name_bytes(max),
+            None => writer,
+        };
         writer.emit_event(name, "ok", None, None, None).unwrap();
         let records = pool.dump().unwrap();
         let fields: Vec<_> = records[0].0.split('|').collect();
@@ -630,7 +651,8 @@ mod tests {
         #[case] value: &str,
         #[case] reason: &str,
     ) {
-        let error = validate_field("name", value, MAX_NAME_BYTES).unwrap_err();
+        let error =
+            validate_field("name", value, DEFAULT_MAX_NAME_BYTES).unwrap_err();
         match reason {
             "empty" => {
                 assert!(matches!(
@@ -655,6 +677,7 @@ mod tests {
             }),
             TimestampPrecision::Millis,
             DurationPrecision::default(),
+            DEFAULT_MAX_NAME_BYTES,
         )
         .unwrap();
         assert_eq!(
@@ -686,6 +709,7 @@ mod tests {
             }),
             TimestampPrecision::Millis,
             DurationPrecision::default(),
+            DEFAULT_MAX_NAME_BYTES,
         )
         .unwrap();
         assert_eq!(
@@ -1004,28 +1028,57 @@ mod tests {
     }
 
     #[test]
-    fn largest_permitted_fields_fit_with_four_digit_index() {
+    fn default_name_limit_fits_with_four_digit_index() {
         let diagnostic = Diagnostic::Finish(DiagnosticFinish {
             key: DiagnosticKey {
                 agent: "a".repeat(MAX_AGENT_BYTES),
-                name: "n".repeat(MAX_NAME_BYTES),
+                name: "n".repeat(DEFAULT_MAX_NAME_BYTES),
                 encoding: Some(Encoding::ZlibB64),
                 ..key()
             },
             payload: "test".into(),
             result: Outcome::Success,
-            duration: Duration::MAX,
+            duration: Duration::from_millis(312),
         });
         let records = prepare_records(
             diagnostic,
             TimestampPrecision::Nanos,
             DurationPrecision::Nanos,
+            DEFAULT_MAX_NAME_BYTES,
         )
         .unwrap();
         let base = records[0].0.rsplit_once('|').unwrap().0;
         let longest = format!("{base}|1022");
-        assert_eq!(longest.len(), 251);
+        assert_eq!(longest.len(), 248);
         assert!(longest.len() <= MAX_KEY_BYTES);
+    }
+
+    #[test]
+    fn name_allowance_does_not_override_full_key_limit() {
+        let error = assert_rejected_without_writes(|writer| {
+            DiagnosticWriter::new(
+                writer.store.clone(),
+                "a".repeat(MAX_AGENT_BYTES),
+                VM_ID,
+            )?
+            .with_timestamp_precision(TimestampPrecision::Nanos)
+            .with_duration_precision(DurationPrecision::Nanos)
+            .emit_finish(
+                EVENT_ID,
+                &"n".repeat(DEFAULT_MAX_NAME_BYTES),
+                "message",
+                Some(Encoding::ZlibB64),
+                Outcome::Success,
+                Duration::MAX,
+            )
+        });
+        assert!(matches!(
+            error,
+            KvpError::KeyTooLarge {
+                max: MAX_KEY_BYTES,
+                actual: 264
+            }
+        ));
     }
 
     #[test]
@@ -1112,6 +1165,7 @@ mod tests {
                 event(missing_vm, "bad".into()),
                 TimestampPrecision::Millis,
                 DurationPrecision::default(),
+                DEFAULT_MAX_NAME_BYTES,
             ),
             Err(KvpError::EmptyEventField { field: "vm_id" })
         ));
@@ -1127,6 +1181,7 @@ mod tests {
                 event(expanded_year, "bad".into()),
                 TimestampPrecision::Nanos,
                 DurationPrecision::default(),
+                DEFAULT_MAX_NAME_BYTES,
             ),
             Err(KvpError::EventFieldTooLong {
                 field: "timestamp",
