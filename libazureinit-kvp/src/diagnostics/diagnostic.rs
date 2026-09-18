@@ -197,7 +197,7 @@ pub struct DiagnosticKey {
     /// When this diagnostic was emitted, in UTC.
     #[serde(serialize_with = "serialize_timestamp")]
     pub timestamp: DateTime<Utc>,
-    /// Stored payload encoding; `None` means plain text.
+    /// Stored payload encoding; `None` means UTF-8-encoded plain text.
     #[serde(serialize_with = "serialize_encoding")]
     pub encoding: Option<Encoding>,
 }
@@ -298,7 +298,8 @@ pub struct RawKeyValue {
     pub key: String,
     /// Original value, without payload decoding.
     pub value: String,
-    /// Why a recognized record could not be decoded; `None` for unrelated keys.
+    /// Why a recognized record could not be decoded; `None` for unknown or
+    /// non-diagnostic key/value pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<DecodeError>,
 }

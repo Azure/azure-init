@@ -13,9 +13,8 @@ more records. Each key has exactly eleven pipe-delimited fields:
 DIAG|<agent>|<vm_id>|<kind>|<name>|<event_id>|<timestamp>|<encoding>|<result>|<duration>|<chunk_index>
 ```
 
-`DIAG` selects the current format; `DIAG_V*` is reserved for other schemas.
-Do not parse an unsupported schema using this layout. Agent versions identify
-the producer, not the schema.
+`DIAG` selects the current format. Do not parse an unsupported diagnostic schema
+using this layout. Agent versions identify the producer, not the schema.
 
 | Field | Meaning |
 |---|---|
@@ -228,7 +227,7 @@ timestamp. Decoding errors are attached to preserved records:
 
 | Condition | Error token |
 |---|---|
-| Unsupported `DIAG_V*` schema | `unsupported_version` |
+| Unsupported `DIAG` schema | `unsupported_version` |
 | Missing index zero or an index gap | `incomplete_group` |
 | Repeated index | `duplicate_chunk` |
 | Unsupported encoding or invalid payload | `undecodable` |
