@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::cloud_init;
@@ -190,20 +190,6 @@ fn decode_diag_group(
     let parsed_timestamp = DateTime::parse_from_rfc3339(timestamp)
         .map_err(|_| DecodeError::Malformed)?
         .with_timezone(&Utc);
-    // Accept only canonical UTC `Z` timestamps at second/ms/us/ns precision.
-    let canonical = [
-        SecondsFormat::Secs,
-        SecondsFormat::Millis,
-        SecondsFormat::Micros,
-        SecondsFormat::Nanos,
-    ]
-    .into_iter()
-    .any(|precision| {
-        parsed_timestamp.to_rfc3339_opts(precision, true) == timestamp
-    });
-    if !canonical {
-        return Err(DecodeError::Malformed);
-    }
     let result = match result {
         "" => None,
         "success" => Some(Outcome::Success),
@@ -258,6 +244,14 @@ fn decode_diag_group(
 }
 
 fn parse_duration(value: &str) -> Result<Duration, DecodeError> {
+    parse_decimal_duration(value).or_else(|_| {
+        let seconds =
+            value.parse::<f64>().map_err(|_| DecodeError::Malformed)?;
+        Duration::try_from_secs_f64(seconds).map_err(|_| DecodeError::Malformed)
+    })
+}
+
+fn parse_decimal_duration(value: &str) -> Result<Duration, DecodeError> {
     let (seconds, fraction) = value
         .split_once('.')
         .map_or((value, None), |(seconds, fraction)| {
@@ -319,6 +313,7 @@ mod tests {
     use std::sync::Arc;
 
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use chrono::SecondsFormat;
     use rstest::rstest;
     use tempfile::TempDir;
 
@@ -756,15 +751,12 @@ mod tests {
     #[case::invalid_event_id(5, "bad-uuid")]
     #[case::empty_encoding(7, "")]
     #[case::invalid_result(8, "SUCCESS")]
-    #[case::signed_duration(9, "+1")]
     #[case::negative_duration(9, "-0.1")]
     #[case::non_finite_duration(9, "NaN")]
     #[case::infinite_duration(9, "inf")]
-    #[case::exponent_duration(9, "1e3")]
-    #[case::missing_seconds(9, ".5")]
-    #[case::missing_fraction(9, "1.")]
+    #[case::duration_whitespace(9, " 1")]
+    #[case::float_overflow(9, "1e100")]
     #[case::signed_fraction(9, "1.+2")]
-    #[case::excess_precision(9, "1.1234567890")]
     #[case::numeric_overflow(9, "18446744073709551616")]
     #[case::missing_chunk_index(10, "")]
     #[case::non_numeric_chunk_index(10, "x")]
@@ -795,12 +787,9 @@ mod tests {
 
     #[rstest]
     #[case::unparsable("not a timestamp")]
-    #[case::two_fraction_digits("2026-08-31T12:34:56.78Z")]
-    #[case::four_fraction_digits("2026-08-31T12:34:56.7890Z")]
-    #[case::numeric_offset("2026-08-31T12:34:56.789+00:00")]
-    #[case::lowercase("2026-08-31t12:34:56.789z")]
+    #[case::missing_offset("2026-08-31T12:34:56.789")]
     #[case::invalid_month("2026-13-31T12:34:56.789Z")]
-    fn native_format_rejects_non_canonical_timestamps(#[case] timestamp: &str) {
+    fn native_format_rejects_invalid_timestamps(#[case] timestamp: &str) {
         let records = vec![(with_field(&key(0), 6, timestamp), "value".into())];
         assert_eq!(
             decode_entries(records.clone()),
@@ -809,23 +798,33 @@ mod tests {
     }
 
     #[rstest]
-    #[case::seconds("2026-08-31T12:34:56Z")]
-    #[case::milliseconds("2026-08-31T12:34:56.789Z")]
-    #[case::millisecond_whole("2026-08-31T12:34:56.000Z")]
-    #[case::microseconds("2026-08-31T12:34:56.789123Z")]
-    #[case::microsecond_trailing_zeros("2026-08-31T12:34:56.789000Z")]
-    #[case::nanoseconds("2026-08-31T12:34:56.789123456Z")]
-    fn native_format_accepts_canonical_timestamp_precisions(
+    #[case::seconds("2026-08-31T12:34:56Z", 0)]
+    #[case::milliseconds("2026-08-31T12:34:56.789Z", 789_000_000)]
+    #[case::millisecond_whole("2026-08-31T12:34:56.000Z", 0)]
+    #[case::microseconds("2026-08-31T12:34:56.789123Z", 789_123_000)]
+    #[case::microsecond_trailing_zeros(
+        "2026-08-31T12:34:56.789000Z",
+        789_000_000
+    )]
+    #[case::nanoseconds("2026-08-31T12:34:56.789123456Z", 789_123_456)]
+    #[case::two_fraction_digits("2026-08-31T12:34:56.78Z", 780_000_000)]
+    #[case::four_fraction_digits("2026-08-31T12:34:56.7890Z", 789_000_000)]
+    #[case::numeric_offset("2026-08-31T14:34:56.789+02:00", 789_000_000)]
+    #[case::lowercase("2026-08-31t12:34:56.789z", 789_000_000)]
+    #[case::subnanoseconds("2026-08-31T12:34:56.7891234567Z", 789_123_456)]
+    fn native_format_accepts_rfc3339_timestamps(
         #[case] timestamp: &str,
+        #[case] expected_nanos: u32,
     ) {
         let key = with_field(&key(0), 6, timestamp);
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
         assert_eq!(
-            diagnostic.key().timestamp,
-            DateTime::parse_from_rfc3339(timestamp)
-                .unwrap()
-                .with_timezone(&Utc)
+            diagnostic
+                .key()
+                .timestamp
+                .to_rfc3339_opts(SecondsFormat::Nanos, true),
+            format!("2026-08-31T12:34:56.{expected_nanos:09}Z")
         );
     }
 
@@ -1100,10 +1099,22 @@ mod tests {
 
     #[rstest]
     #[case("0", Duration::ZERO)]
+    #[case("-0.0", Duration::ZERO)]
+    #[case("+1", Duration::from_secs(1))]
+    #[case("1.", Duration::from_secs(1))]
+    #[case(".5", Duration::from_millis(500))]
     #[case("1.5", Duration::from_millis(1500))]
+    #[case("0.312000", Duration::from_millis(312))]
+    #[case("3.12e-1", Duration::from_millis(312))]
     #[case("1.000000001", Duration::new(1, 1))]
+    #[case("0.9999999996", Duration::from_secs(1))]
+    #[case("1e-12", Duration::ZERO)]
+    #[case(
+        "9007199254740993.000000001",
+        Duration::new(9_007_199_254_740_993, 1)
+    )]
     #[case("18446744073709551615.999999999", Duration::MAX)]
-    fn reader_accepts_decimal_seconds(
+    fn reader_accepts_duration_seconds(
         #[case] seconds: &str,
         #[case] expected: Duration,
     ) {

@@ -16,24 +16,22 @@ DIAG|<agent>|<vm_id>|<kind>|<name>|<event_id>|<timestamp>|<encoding>|<result>|<d
 `DIAG` selects the current format. Do not parse an unsupported diagnostic schema
 using this layout. Agent versions identify the producer, not the schema.
 
-| Field | Meaning |
-|---|---|
-| `DIAG` | Native diagnostic format identifier |
-| `agent` | Reporting agent, conventionally `name/VERSION`, such as `azure-init/0.1.1` |
-| `vm_id` | VM UUID |
-| `kind` | `start`, `finish`, or `event` |
-| `name` | Operation or observation, such as `provision:run`, `imds`, or `dmesg` |
-| `event_id` | UUID shared by an operation's start and finish; a standalone event has its own UUID |
-| `timestamp` | Emission time as RFC 3339 UTC with a `Z` suffix |
-| `encoding` | Value representation: `none`, `zlib+b64`, or `gz+b64` |
-| `result` | `success` or `fail`, when applicable |
-| `duration` | Nonnegative elapsed seconds, when measured |
-| `chunk_index` | Decimal chunk index starting at zero, including for a single record |
+| Field | Description | Format |
+|---|---|---|
+| `DIAG` | Native diagnostic format identifier | Literal `DIAG` |
+| `agent` | Reporting agent, such as `azure-init/0.1.1` | UTF-8 text, conventionally `name/VERSION` |
+| `vm_id` | VM identity | UUID |
+| `kind` | Operation endpoint or standalone observation | `start`, `finish`, or `event` |
+| `name` | Operation or observation, such as `provision:run` or `dmesg` | UTF-8 text |
+| `event_id` | Shared by an operation's start and finish; unique to a standalone event | UUID |
+| `timestamp` | Emission time | RFC 3339 timestamp |
+| `encoding` | Stored value representation | `none`, `zlib+b64`, or `gz+b64` |
+| `result` | Reported outcome, when applicable | `success`, `fail`, or empty |
+| `duration` | Elapsed seconds, when measured | Finite nonnegative double-precision numeric text, or empty |
+| `chunk_index` | Chunk position; zero for a single record | Unsigned decimal integer |
 
 All fields except `result` and `duration` are required and nonempty. Key fields
-cannot contain `|` or NUL; there is no key-field escaping. Agent strings remain
-opaque to readers, including unversioned names and older naming conventions.
-UUID spellings are preserved rather than rewritten during reading.
+cannot contain `|` or NUL; there is no key-field escaping.
 
 ## Timing and Correlation
 
@@ -44,23 +42,21 @@ UUID spellings are preserved rather than rewritten during reading.
 | `event` | Optional | Optional | A standalone observation; outcome and timing are independent |
 
 A start and finish share an event ID, agent, VM and operation name. A finish
-carries its own elapsed duration; do not derive it by subtracting wall-clock
-timestamps. Either endpoint remains valid if its counterpart is missing.
+carries its own elapsed duration to allow caller to accurately measure
+the operation of interest without relying on the timestamps of the emitted
+diagnostics.
 
 ### Timestamps and Durations
 
-Timestamps use RFC 3339 UTC `Z` form, with zero, three, six or nine fractional
-digits. The default is milliseconds, for example `2026-08-31T12:34:56.789Z`.
-Numeric offsets and other fractional widths are invalid in native records.
+Timestamps must conform to RFC 3339. The writer emits UTC `Z` form with
+second, millisecond (default), microsecond or nanosecond precision.
 
-Durations are decimal **seconds**: `0.312000` is 312 milliseconds. Emission
-defaults to six fractional digits, independently of timestamp precision.
-Producers can select zero, three, six or nine digits; lower digits are discarded.
+Durations are finite, nonnegative IEEE 754 double-precision seconds, in
+decimal or exponent notation. Empty means absent; zero is a measured duration.
 
-Accept decimal digits with an optional decimal point and one to nine fractional
-digits. The whole-seconds component is at most `18446744073709551615`. Signs,
-exponents, NaN, infinity and empty fractional parts are invalid. An empty field
-means absent; `0` is a measured zero.
+The writer emits fixed-point durations with 0, 3, 6 (default) or 9 fractional
+digits, independently of timestamp precision, discarding finer digits. See
+[Implementation Notes](#implementation-notes) for reader limits and rounding.
 
 ### Examples
 
@@ -107,41 +103,42 @@ no whitespace. Zlib uses DEFLATE with a 32 KiB window (`wbits=15`) and no preset
 dictionary; gzip uses a basic header without optional fields. The tokens are
 not aliases. Compression does not imply that the decoded content is text.
 
-### Kusto Consumption
+## Limits
 
-Use `zlib+b64` for new compressed telemetry targeting Kusto's
-[zlib function](https://learn.microsoft.com/en-us/kusto/query/zlib-base64-decompress-function),
-which requires window size 15. Pass the complete reassembled base64 value:
+The complete key must fit in 254 UTF-8 bytes, including separators and the
+chunk index. The table accounts for this writer's output. Example widths use
+the finish record above, with default precision and a single chunk; they are
+illustrative, not measured production averages.
 
-```kusto
-print message = zlib_decompress_from_base64_string("eJwLSS0uUSguKcrMS1cwNDIGACxqBQ4=")
-```
+| Field | Example bytes | Maximum emitted bytes | Basis |
+|---|---:|---:|---|
+| `DIAG` | 4 | 4 | Fixed token |
+| `agent` | 16 | 32 | `azure-init/0.1.1`; producer text limit |
+| `vm_id` | 36 | 36 | Hyphenated UUID in the example; writer UUID limit |
+| `kind` | 6 | 6 | `start`/`event`: 5; `finish`: 6 |
+| `name` | 13 | 48 | `provision:run`; producer text limit |
+| `event_id` | 36 | 36 | Hyphenated UUID in the example; writer UUID limit |
+| `timestamp` | 24 | 30 | UTC `Z` output: 20/24/27/30 for seconds/ms/us/ns |
+| `encoding` | 4 | 8 | `none`: 4; `gz+b64`: 6; `zlib+b64`: 8 |
+| `result` | 7 | 7 | Empty: 0; `fail`: 4; `success`: 7 |
+| `duration` | 8 | 30 | `0.312000`; up to 20 whole-second digits, a point and 9 fractional digits |
+| `chunk_index` | 1 | 4 | `0` through `1022` |
+| Ten pipe separators | 10 | 10 | One byte each |
+| **Total** | **165** | **251** | |
+| **Space remaining** | **89** | **3** | Within 254 bytes |
 
-The result is `Test string 123`. Actual gzip data requires the separate
-[gzip function](https://learn.microsoft.com/en-us/kusto/query/gzip-base64-decompress),
-which does not support optional gzip header fields. Both return strings, not
-arbitrary binary artifacts. Cloud-init needs the source-specific extraction
-described [below](#cloud-init-compatibility).
+The start and compressed-event examples use 149 and 147 key bytes respectively.
+With both default precisions, the maximum emitted key is 242 bytes. Widths
+count text bytes, not the in-memory size of a double. These are writer budgets,
+not universal widths for every RFC 3339 timestamp or numeric spelling.
 
-## Limits and Invalid Records
+Encoded values are limited to 1,022 bytes per chunk, with at most 1,023 chunks
+per payload. Producer budgets do not impose equivalent read limits on other
+producers' records, and encoded size does not bound decompressed size.
 
-Native producer limits count UTF-8 bytes after encoding:
+## Error Handling
 
-| Item | Limit |
-|---|---|
-| Complete key, including delimiters and index | 254 bytes |
-| Encoded value per chunk | 1,022 bytes |
-| Chunks per payload | 1,023, indexed 0 through 1022 |
-| Agent / name | 32 / 48 bytes |
-| Each UUID | 36 bytes |
-
-These budgets do not impose equivalent read limits on other producers' records.
-Encoded size also does not bound decompressed size.
-
-Invalid metadata, unsupported encodings, duplicate or missing indices, invalid
-base64, corrupt or truncated compressed streams, and trailing bytes after a
-completed stream prevent decoding. Preserve the affected records rather than
-silently dropping or repairing them. Unrelated keys are not diagnostic errors.
+Preserve records that cannot be interpreted, without silently repairing them.
 
 There is no total-chunk-count field. Missing trailing records in a plain-text
 payload cannot be detected if the remaining indices are contiguous from zero.
@@ -155,17 +152,22 @@ Fields containing pipes, quotes or newlines use CSV double-quote escaping;
 split each decoded field on its first `=`. Field order is not significant for
 reading.
 
-Required fields are `result`, `agent`, `vm_id`, `pps_type` and an RFC 3339
-`timestamp`. Report results are `success` or `error`, not the diagnostic
-`success`/`fail` tokens. Error reports also require `reason` and may include
-`documentation_url`. Pre-provisioning types are `None`, `PreprovisionedOSDisk`,
-`Running`, `Savable` and `Unknown`.
+| Field | Description | Format | Required |
+|---|---|---|---|
+| `result` | Provisioning outcome | `success` or `error` (not diagnostic `fail`) | All reports |
+| `agent` | Reporting agent | UTF-8 text | All reports |
+| `vm_id` | VM identity | UTF-8 text, usually a UUID | All reports |
+| `pps_type` | Pre-provisioning type | `None`, `PreprovisionedOSDisk`, `Running`, `Savable`, or `Unknown` | All reports |
+| `timestamp` | Report time | RFC 3339 timestamp | All reports |
+| `reason` | Failure explanation | UTF-8 text | Error reports |
+| `documentation_url` | Help link for a failure | URL text | No; optional for error reports |
+| Other fields | Supporting data | `key=value` text fields | No |
 
 Other fields are ordered supporting data, including duplicate supporting-data
 keys. Required fields cannot be duplicated. On error reports, `reason` and
 `documentation_url` cannot be duplicated either. Empty text values remain
-supported. Report identities and timestamp spellings are preserved; native
-diagnostic UUID and timestamp restrictions are not imposed on reports.
+supported. Report identities and timestamp spellings are preserved; diagnostic
+UUID validation and timestamp output formatting are not imposed on reports.
 
 Reports replace the prior provisioning result, are not chunked, and must fit
 one value.
@@ -206,14 +208,18 @@ Do not turn a finish result such as `WARN` into a success or failure; retain it
 as unparsed data. Other source types become events without a normalized outcome
 or duration. Negative or overflowing finish durations are invalid.
 
-Compressed artifacts put a JSON object with `encoding` and `data` inside `msg`;
-extract `data` after reassembly and unescaping.
 Cloud-init's [Azure producer](https://github.com/canonical/cloud-init/blob/main/cloudinit/sources/helpers/azure.py)
-uses zlib compression and line-wrapped base64 while labeling the envelope
-`gz+b64`. Remove ASCII base64 whitespace and accept zlib or gzip under that
-source label, using the actual stream format to select the decompressor.
-This exception does not apply to native `gz+b64` records. Other envelope
-encodings are unsupported; messages without an encoding envelope are text.
+compresses artifacts with zlib and base64-encodes the result, but labels it
+`gz+b64`. The `msg` string contains a JSON object with `encoding` and `data`
+fields.
+
+Our reader reassembles and unescapes `msg`, then base64-decodes `data`, ignoring
+ASCII whitespace. It selects zlib or gzip from the compressed bytes rather than
+trusting the label, so cloud-init's zlib output can be read correctly. Native
+`gz+b64` records remain gzip-only.
+
+Other envelope encodings are unsupported. Messages without an encoding envelope
+are plain text.
 
 ## Implementation Notes
 
@@ -238,33 +244,22 @@ whole read. Grouping uses memory proportional to input and decoded content;
 there is no decoded-size cap.
 
 Parsed JSON represents decoded binary payloads as base64 objects. Those bytes
-are already decompressed; do not send them to a decompressor again. Durations
-serialize as numeric seconds, with possible floating-point precision loss at
-large values. Stored durations use integer arithmetic to retain the selected
-precision. Cloud-init durations are rounded to microseconds during conversion,
-and the source encoding label is retained.
+are already decompressed; do not send them to a decompressor again.
+
+Timestamps normalize to UTC, discarding digits beyond nanoseconds. Durations
+are limited to unsigned 64-bit whole seconds plus nanoseconds. Unsigned decimals
+with up to nine fractional digits remain exact; other forms round to the nearest
+nanosecond. Out-of-range values fail decoding; large durations may lose precision
+in JSON.
+
+Cloud-init durations round to microseconds; source encoding labels are preserved.
 
 ### Writer Choices
 
 Validation precedes writing, but I/O failure may leave a partial batch. Pool
-cleanup is explicit. The maximum native key is 251 bytes, within the 254-byte
-budget even at nanosecond precision and the largest supported duration:
-
-| Key component | Maximum bytes |
-|---|---:|
-| `DIAG` | 4 |
-| Agent | 32 |
-| VM UUID | 36 |
-| Kind | 6 |
-| Name | 48 |
-| Event UUID | 36 |
-| Timestamp | 30 |
-| Encoding | 8 |
-| Result | 7 |
-| Duration | 30 |
-| Chunk index | 4 |
-| Ten pipe delimiters | 10 |
-| Total | 251 |
+cleanup is explicit. Free-form agent and name limits leave room for the other
+key fields; the full key length is checked for every chunk. Timestamp and
+duration formatting choices keep emitted keys within the [budget](#limits).
 
 Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,

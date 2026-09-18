@@ -244,24 +244,33 @@ no truncation.
 
 ## Implementation Notes
 
-The `libazureinit-kvp` store acquires both `flock` and open-file-description
-`fcntl` locks, in that order. Its safe policy enforces the conservative byte
-budgets above. Its full-width policy allows the physical field sizes, including
-fields without a terminator; the reader accepts a full-width UTF-8 field in
-that case. Full-width writes are not guaranteed to survive host transport.
+### Locking and Size Policy
 
-Appending retains duplicates without a record-count cap. Inserting updates a
-key and collapses its duplicates; inserting new keys and replacing the pool
-enforce a limit of 1,024 distinct keys. That limit is a library policy, not an
-extra field or universal constraint of the KVP format. Map-style reads use the
-last stored value, while physical reads retain every record.
+- The `libazureinit-kvp` store acquires `flock` and open-file-description
+  `fcntl` locks, in that order.
+- Safe writes enforce the conservative byte budgets above.
+- Full-width writes allow the physical field sizes, including fields without
+  a terminator. The reader accepts full-width UTF-8 in that case, but such
+  writes are not guaranteed to survive host transport.
 
-Deletion may swap a record with the file's tail, changing order. Stale-data
-cleanup is explicit and compares modification time with system boot time under
-the write lock. Invalid framing or invalid UTF-8 content fails a read; padding
-after a NUL is ignored rather than interpreted as text.
+### Record Updates
 
-The [diagnostics contract](diagnostics.md) defines telemetry carried in KVP records. Rust API usage is covered by the crate's generated documentation.
+- Appending retains duplicates without a record-count cap.
+- Inserting updates a key and collapses its duplicates.
+- Inserting new keys and replacing the pool enforce a limit of 1,024 distinct
+  keys. This is a library policy, not a universal KVP format constraint.
+- Map-style reads use the last stored value; physical reads retain every record.
+- Deletion may swap a record with the file's tail, changing record order.
+
+### Cleanup and Read Errors
+
+- Stale-data cleanup is explicit and compares modification time with system
+  boot time under the write lock.
+- Invalid framing or invalid UTF-8 content fails a read.
+- Padding after a NUL is ignored rather than interpreted as text.
+
+The [diagnostics contract](diagnostics.md) defines telemetry carried in KVP
+records. Rust API usage is covered by the crate's generated documentation.
 
 ## References
 
