@@ -134,5 +134,6 @@ Both containers will output all logs they have access to in order to better debu
 ## Next Steps
 
 - Review the [Configuration Guide](configuration.md) for detailed configuration options
-- Understand the [Tracing System](libazurekvp.md) for monitoring and debugging
+- Read the [KVP contract](kvp.md) for pool storage and Hyper-V transport behavior
+- Read the [diagnostics contract](diagnostics.md) for telemetry formats and consumer behavior
 - Explore [End-to-End Testing](e2e_testing.md) for comprehensive testing

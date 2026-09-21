@@ -74,7 +74,8 @@ To run the program, you must enter the command `cargo run --bin <binary_name>` a
 |----------|-------------|
 | [Getting Started Guide](doc/getting_started.md) | Step-by-step instructions for new users |
 | [Configuration Guide](doc/configuration.md) | Detailed configuration options and file structure |
-| [Tracing System](doc/libazurekvp.md) | Understanding the telemetry and tracing capabilities |
+| [KVP Data Exchange](doc/kvp.md) | Pool-file format and Hyper-V interfaces |
+| [Diagnostics Contract](doc/diagnostics.md) | Telemetry fields, encodings and consumer behavior |
 | [End-to-End Testing](doc/e2e_testing.md) | How to perform comprehensive system testing |
 | [Library Documentation](libazureinit/README.md) | Documentation for the libazureinit library |
 

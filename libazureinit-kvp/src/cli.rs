@@ -1,17 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chrono::SecondsFormat;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::{
-    write_report, KvpError, KvpPool, KvpPoolStore, PoolMode,
-    ProvisioningReport, ReportPpsType,
+    write_report, Diagnostic, DiagnosticPayload, DiagnosticReader,
+    DiagnosticWriter, DurationPrecision, Entry, Kind, KvpError, KvpPool,
+    KvpPoolStore, PoolMode, ProvisioningReport, ReportPpsType,
+    PROVISIONING_REPORT_KEY,
 };
 
 const EXIT_OK: u8 = 0;
@@ -19,11 +24,14 @@ const EXIT_NOT_FOUND: u8 = 1;
 const EXIT_USAGE_OR_VALIDATION: u8 = 2;
 const EXIT_IO: u8 = 3;
 
-/// Default reporting agent identifier, derived from this crate's version
+/// Default reporting agent identifier, derived from this crate's version.
 const DEFAULT_AGENT: &str =
     concat!("libazureinit-kvp/", env!("CARGO_PKG_VERSION"));
 
-/// Entry point for the `libazureinit-kvp` binary.
+/// Runs the command-line interface using process arguments and standard I/O.
+///
+/// Returns the command's exit status. Library callers should use the store,
+/// diagnostic or report APIs directly.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     let stdout = io::stdout();
@@ -55,13 +63,17 @@ struct Cli {
     #[arg(long, global = true)]
     dir: Option<PathBuf>,
 
-    /// Use full wire-format key/value limits instead of the safe profile.
+    /// Use larger key/value limits that may be truncated in host transport.
     #[arg(long = "unsafe", global = true)]
     unsafe_mode: bool,
 
     /// Emit machine-readable JSON for commands that produce output.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "text")]
     json: bool,
+
+    /// Emit human-readable text for commands that produce output.
+    #[arg(long, global = true, conflicts_with = "json")]
+    text: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -88,8 +100,21 @@ impl OutputMode {
 enum Command {
     /// Print store metadata.
     Info,
-    /// Print every record in insertion order as KEY=VALUE lines.
-    Dump,
+    /// Print every record in pool order (JSON by default; --text for KEY=VALUE).
+    ///
+    /// With --parse, decode diagnostics and reports, preserving other or
+    /// invalid records as raw entries. Entries stay in pool order.
+    Dump {
+        /// Decode diagnostics and provisioning reports (kept in pool order).
+        #[arg(long)]
+        parse: bool,
+        /// Filter diagnostic names by substring; retain reports and raw entries.
+        #[arg(long, requires = "parse")]
+        name: Option<String>,
+        /// Filter diagnostics by kind; retain reports and raw entries.
+        #[arg(long, value_enum, requires = "parse")]
+        kind: Option<KindArg>,
+    },
     /// Print key=last_value entries sorted by key.
     Entries,
     /// Print the last value for KEY (exit 1 if missing).
@@ -101,6 +126,21 @@ enum Command {
         append: bool,
         key: String,
         value: String,
+    },
+    /// Emit a standalone diagnostic with a fresh UUID and current timestamp.
+    Emit {
+        /// Event name, e.g. user:create_user.
+        #[arg(long)]
+        name: String,
+        /// Event payload.
+        #[arg(long)]
+        message: String,
+        /// VM UUID (defaults to the current VM's ID).
+        #[arg(long)]
+        vm_id: Option<String>,
+        /// Reporting agent identifier (at most 32 UTF-8 bytes).
+        #[arg(long, default_value = DEFAULT_AGENT)]
+        agent: String,
     },
     /// Replace the pool from KEY=VALUE lines read from --file or stdin.
     Load {
@@ -205,7 +245,30 @@ impl From<PoolArg> for KvpPool {
     }
 }
 
+/// Diagnostic kind accepted by `dump --parse --kind`.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum KindArg {
+    Start,
+    Finish,
+    Event,
+}
+
+impl From<KindArg> for Kind {
+    fn from(value: KindArg) -> Self {
+        match value {
+            KindArg::Start => Self::Start,
+            KindArg::Finish => Self::Finish,
+            KindArg::Event => Self::Event,
+        }
+    }
+}
+
 fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
+    if cli.json && cli.text {
+        return Err(CliError::Usage(
+            "--json and --text cannot be used together".to_owned(),
+        ));
+    }
     let pool: KvpPool = cli.pool.into();
     let mode = if cli.unsafe_mode {
         PoolMode::Unsafe
@@ -222,7 +285,21 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
 
     match cli.command {
         Command::Info => info(&store, stdout, output),
-        Command::Dump => dump(&store, stdout, output),
+        Command::Dump { parse, name, kind } => {
+            let output = if cli.text {
+                OutputMode::Text
+            } else {
+                OutputMode::Json
+            };
+            dump(
+                &store,
+                stdout,
+                parse,
+                name.as_deref(),
+                kind.map(Kind::from),
+                output,
+            )
+        }
         Command::Entries => entries(&store, stdout, output),
         Command::Read { key } => read(&store, stdout, &key, output),
         Command::Write { append, key, value } => {
@@ -233,6 +310,12 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
             }
             Ok(EXIT_OK)
         }
+        Command::Emit {
+            name,
+            message,
+            vm_id,
+            agent,
+        } => emit(&store, name, message, vm_id, agent),
         Command::Load { file } => load(&store, file),
         Command::AppendMultiple { file } => append_multiple(&store, file),
         Command::Delete { key } => delete(&store, stdout, &key, output),
@@ -315,8 +398,15 @@ fn info<W: Write>(
 fn dump<W: Write>(
     store: &KvpPoolStore,
     stdout: &mut W,
+    parse: bool,
+    name: Option<&str>,
+    kind: Option<Kind>,
     output: OutputMode,
 ) -> Result<u8, CliError> {
+    if parse {
+        return diagnostics_entries(store, stdout, name, kind, output);
+    }
+
     let records = store.dump()?;
     match output {
         OutputMode::Text => {
@@ -425,6 +515,110 @@ fn is_stale<W: Write>(
     Ok(if stale { EXIT_OK } else { EXIT_NOT_FOUND })
 }
 
+fn diagnostics_entries<W: Write>(
+    store: &KvpPoolStore,
+    stdout: &mut W,
+    name: Option<&str>,
+    kind: Option<Kind>,
+    output: OutputMode,
+) -> Result<u8, CliError> {
+    let mut entries = DiagnosticReader::new(store.clone()).entries()?;
+
+    if name.is_some() || kind.is_some() {
+        entries.retain(|entry| match entry {
+            Entry::Diagnostic(diagnostic) => {
+                name.is_none_or(|needle| diagnostic.key().name.contains(needle))
+                    && kind.is_none_or(|wanted| diagnostic.kind() == wanted)
+            }
+            Entry::Report(_) | Entry::Raw(_) => true,
+        });
+    }
+
+    match output {
+        OutputMode::Text => {
+            for entry in &entries {
+                writeln!(stdout, "{}", diagnostic_entry_text(entry))?;
+            }
+        }
+        OutputMode::Json => {
+            let value = serde_json::to_value(&entries)
+                .expect("diagnostic entries always serialize to JSON");
+            writeln_json(stdout, &value)?;
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn diagnostic_entry_text(entry: &Entry) -> String {
+    match entry {
+        Entry::Diagnostic(diagnostic) => diagnostic_text(diagnostic),
+        Entry::Report(report) => {
+            format!("{PROVISIONING_REPORT_KEY}={}", report.encode())
+        }
+        Entry::Raw(raw) => {
+            let mut line = format!("raw key={} value={}", raw.key, raw.value);
+            if let Some(error) = raw.error {
+                let _ = write!(line, " error={error}");
+            }
+            line
+        }
+    }
+}
+
+fn diagnostic_text(diagnostic: &Diagnostic) -> String {
+    let key = diagnostic.key();
+    let mut line =
+        format!("diagnostic kind={} agent={}", diagnostic.kind(), key.agent);
+    if let Some(vm_id) = &key.vm_id {
+        let _ = write!(line, " vm_id={vm_id}");
+    }
+    let _ = write!(line, " name={} event_id={}", key.name, key.event_id);
+    let timestamp = key.timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+    let encoding = key
+        .encoding
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "none".to_owned());
+    let _ = write!(line, " timestamp={timestamp} encoding={encoding}");
+    let (result, duration) = match diagnostic {
+        Diagnostic::Start(_) => (None, None),
+        Diagnostic::Finish(finish) => {
+            (Some(finish.result), Some(finish.duration))
+        }
+        Diagnostic::Event(event) => (event.result, event.duration),
+    };
+    if let Some(result) = result {
+        let _ = write!(line, " result={result}");
+    }
+    if let Some(duration) = duration {
+        let seconds = DurationPrecision::Nanos.format(duration);
+        let seconds = seconds.trim_end_matches('0').trim_end_matches('.');
+        let _ = write!(line, " duration={seconds}s");
+    }
+    match diagnostic.payload() {
+        DiagnosticPayload::Text(text) => {
+            let _ = write!(line, " payload={text}");
+        }
+        DiagnosticPayload::Bytes(bytes) => {
+            let _ = write!(line, " payload_b64={}", STANDARD.encode(bytes));
+        }
+    }
+    line
+}
+
+fn emit(
+    store: &KvpPoolStore,
+    name: String,
+    message: String,
+    vm_id: Option<String>,
+    agent: String,
+) -> Result<u8, CliError> {
+    let vm_id = resolve_vm_id(vm_id)?;
+    let writer = DiagnosticWriter::new(store.clone(), agent, vm_id)?;
+    writer.emit_event(&name, message, None, None, None)?;
+    Ok(EXIT_OK)
+}
+
 fn report_success(
     store: &KvpPoolStore,
     vm_id: Option<String>,
@@ -492,26 +686,15 @@ fn resolve_vm_id_with(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SupportingData(Vec<(String, String)>);
 
-/// Parse a `--supporting-data` argument into its `key=value` pairs.
+/// Parse a `--supporting-data` argument into its comma-separated
+/// `key=value` pairs. A value wrapped in matching single/double quotes may
+/// contain literal commas (the quotes must wrap the whole value and are
+/// stripped); empty fields are ignored.
 ///
-/// Fields are comma-separated. A value may be wrapped in matching single or
-/// double quotes so it can contain literal commas; the quotes are honored
-/// only when they wrap the *entire* value (the opening quote immediately
-/// follows `=` and the matching quote ends the field) and are stripped from
-/// the stored value. Empty fields (such as a trailing comma) are ignored.
-///
-/// Supported (input -> parsed pairs):
-/// - `k=v` -> `k`=`v`
-/// - `k1=v1,k2=v2` -> `k1`=`v1`, `k2`=`v2`
-/// - `k='a,b'` or `k="a,b"` -> `k`=`a,b` (quotes protect the comma)
-/// - `k=a'b` -> `k`=`a'b` (a quote not at the value start is literal)
-/// - `k=v,` -> `k`=`v` (trailing/empty field ignored)
-///
-/// Rejected:
-/// - `novalue` -> missing `=`
-/// - `=v` -> empty key
-/// - `k='a,b` -> unterminated quote
-/// - `k='a,b'x` -> characters after a quoted value
+/// Supported: `k=v`; `k1=v1,k2=v2`; `k='a,b'` or `k="a,b"` -> `k`=`a,b`;
+/// `k=a'b` -> literal quote; `k=v,` -> trailing field ignored.
+/// Rejected: `novalue` (no `=`), `=v` (empty key), `k='a,b`
+/// (unterminated quote), `k='a,b'x` (chars after a quoted value).
 fn parse_supporting_data(raw: &str) -> Result<SupportingData, String> {
     let mut pairs = Vec::new();
     for field in split_supporting_data_fields(raw)? {
@@ -746,6 +929,7 @@ mod tests {
             dir: Some(dir.path().to_path_buf()),
             unsafe_mode: false,
             json: false,
+            text: false,
             command,
         }
     }
@@ -756,6 +940,7 @@ mod tests {
             dir: Some(dir.path().to_path_buf()),
             unsafe_mode: false,
             json: true,
+            text: false,
             command,
         }
     }
@@ -769,6 +954,15 @@ mod tests {
         let mut out = Vec::new();
         let code = dispatch(cli, &mut out).unwrap();
         (code, String::from_utf8(out).unwrap())
+    }
+
+    /// A plain `dump` command with no diagnostics parsing.
+    fn dump_cmd() -> Command {
+        Command::Dump {
+            parse: false,
+            name: None,
+            kind: None,
+        }
     }
 
     fn set_mtime_to_epoch(path: &Path) {
@@ -810,7 +1004,57 @@ mod tests {
         assert_eq!(cli.dir, Some(PathBuf::from("/tmp/kvp")));
         assert!(cli.unsafe_mode);
         assert!(cli.json);
-        assert!(matches!(cli.command, Command::Dump));
+        assert!(matches!(cli.command, Command::Dump { .. }));
+    }
+
+    #[rstest]
+    #[case::default(None, false)]
+    #[case::json(Some("--json"), false)]
+    #[case::text(Some("--text"), true)]
+    fn dump_output_mode(#[case] flag: Option<&str>, #[case] text: bool) {
+        let dir = TempDir::new().unwrap();
+        store_at(&dir).append("key", "value").unwrap();
+        let mut args = vec![
+            "libazureinit-kvp",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "dump",
+        ];
+        args.extend(flag);
+        let (code, output) = run_dispatch(Cli::parse_from(args));
+        assert_eq!(code, EXIT_OK);
+        if text {
+            assert_eq!(output, "key=value\n");
+        } else {
+            assert_eq!(
+                parse_json(&output),
+                json!([{"key":"key","value":"value"}])
+            );
+        }
+    }
+
+    #[rstest]
+    #[case::same_scope(vec!["dump", "--json", "--text"])]
+    #[case::global_json(vec!["--json", "dump", "--text"])]
+    #[case::global_text(vec!["--text", "dump", "--json"])]
+    fn json_and_text_are_mutually_exclusive(#[case] args: Vec<&str>) {
+        match Cli::try_parse_from(
+            std::iter::once("libazureinit-kvp").chain(args),
+        ) {
+            Err(error) => {
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ArgumentConflict
+                );
+            }
+            Ok(cli) => {
+                let mut output = Vec::new();
+                let error = dispatch(cli, &mut output).unwrap_err();
+                assert!(matches!(error, CliError::Usage(_)));
+                assert_eq!(error.exit_code(), EXIT_USAGE_OR_VALIDATION);
+                assert!(output.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -1259,6 +1503,7 @@ mod tests {
             dir: Some(dir.path().to_path_buf()),
             unsafe_mode: true,
             json: false,
+            text: false,
             command: Command::Info,
         };
         let (code, out) = run_dispatch(invocation);
@@ -1306,8 +1551,14 @@ mod tests {
             },
         ));
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
-        assert_eq!(dumped, "k=1\nk=2\n");
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
+        assert_eq!(
+            parse_json(&dumped),
+            json!([
+                {"key": "k", "value": "1"},
+                {"key": "k", "value": "2"},
+            ])
+        );
     }
 
     #[test]
@@ -1330,12 +1581,16 @@ mod tests {
         store.insert("b", "two").unwrap();
         store.insert("a", "one").unwrap();
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
-        assert!(dumped.contains("a=one"));
-        assert!(dumped.contains("b=two"));
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
+        assert_eq!(
+            parse_json(&dumped),
+            json!([
+                {"key": "b", "value": "two"},
+                {"key": "a", "value": "one"},
+            ])
+        );
 
         let (_, entries) = run_dispatch(cli(&dir, Command::Entries));
-        // entries are sorted by key
         assert_eq!(entries, "a=one\nb=two\n");
     }
 
@@ -1370,8 +1625,15 @@ mod tests {
                 .unwrap();
         assert_eq!(code, EXIT_OK);
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
-        assert_eq!(dumped, "a=1\na=2\nb=3\n");
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
+        assert_eq!(
+            parse_json(&dumped),
+            json!([
+                {"key": "a", "value": "1"},
+                {"key": "a", "value": "2"},
+                {"key": "b", "value": "3"},
+            ])
+        );
     }
 
     #[test]
@@ -1395,8 +1657,8 @@ mod tests {
         assert_eq!(code, EXIT_OK);
         assert_eq!(out, "2\n");
 
-        let (_, dumped) = run_dispatch(cli(&dir, Command::Dump));
-        assert_eq!(dumped, "b=2\n");
+        let (_, dumped) = run_dispatch(cli(&dir, dump_cmd()));
+        assert_eq!(parse_json(&dumped), json!([{"key": "b", "value": "2"}]));
     }
 
     #[rstest]
@@ -1478,6 +1740,7 @@ mod tests {
             dir: Some(blocker),
             unsafe_mode: false,
             json: false,
+            text: false,
             command: Command::Info,
         };
         let mut out = Vec::new();
@@ -1563,6 +1826,17 @@ mod tests {
         assert_eq!(io_err.exit_code(), EXIT_IO);
     }
 
+    #[rstest]
+    #[case(KvpError::EmptyEventField { field: "name" })]
+    #[case(KvpError::EventFieldTooLong { field: "agent", max: 32, actual: 33 })]
+    #[case(KvpError::InvalidUuid { field: "event_id" })]
+    #[case(KvpError::TooManyChunks { max: 1023 })]
+    #[case(KvpError::PayloadNotUtf8)]
+    #[case(KvpError::UnsupportedEncoding { token: "zstd+b64".into() })]
+    fn diagnostic_errors_use_validation_exit_code(#[case] error: KvpError) {
+        assert_eq!(CliError::from(error).exit_code(), EXIT_USAGE_OR_VALIDATION);
+    }
+
     #[test]
     fn cli_error_from_conversions() {
         let from_kvp: CliError = KvpError::EmptyKey.into();
@@ -1602,7 +1876,7 @@ mod tests {
         store.append("b", "two-prime").unwrap();
         store.insert("a", "one").unwrap();
 
-        let (_, out) = run_dispatch(cli_json(&dir, Command::Dump));
+        let (_, out) = run_dispatch(cli_json(&dir, dump_cmd()));
         let json = parse_json(&out);
         let array = json.as_array().expect("dump --json returns array");
         assert_eq!(array.len(), 3);
@@ -1612,6 +1886,109 @@ mod tests {
         assert_eq!(array[1]["value"], "two-prime");
         assert_eq!(array[2]["key"], "a");
         assert_eq!(array[2]["value"], "one");
+    }
+
+    #[test]
+    fn dispatch_parsed_dump_filters_only_diagnostics() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store.append("note", "raw value").unwrap();
+        let writer = DiagnosticWriter::new(
+            store.clone(),
+            "agent",
+            "00000000-0000-0000-0000-000000000abc",
+        )
+        .unwrap();
+        writer
+            .emit_event("skip", "hidden", None, None, None)
+            .unwrap();
+        writer
+            .emit_event("keep", "visible", None, None, None)
+            .unwrap();
+        let report =
+            ProvisioningReport::success("agent", "vm-id", ReportPpsType::None);
+        write_report(&store, &report).unwrap();
+        store.append("DIAG_V2|future", "preserved").unwrap();
+
+        let (_, output) = run_dispatch(cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: Some("keep".into()),
+                kind: None,
+            },
+        ));
+        let entries = parse_json(&output);
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries[0],
+            json!({"type": "raw", "key": "note", "value": "raw value"})
+        );
+        assert_eq!(entries[1]["type"], "diagnostic");
+        assert_eq!(entries[1]["name"], "keep");
+        assert_eq!(entries[1]["payload"], "visible");
+        assert_eq!(
+            entries[2],
+            serde_json::to_value(Entry::Report(report)).unwrap()
+        );
+        assert_eq!(
+            entries[3],
+            json!({
+                "type": "raw", "key": "DIAG_V2|future", "value": "preserved",
+                "error": "unsupported_version",
+            })
+        );
+    }
+
+    #[test]
+    fn dispatch_parsed_dump_filters_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let event_id = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
+        let ts = "2026-08-31T12:34:56.789Z";
+        let vm = "00000000-0000-0000-0000-000000000abc";
+        let diag = |kind: &str| {
+            format!("DIAG|agent|{vm}|{kind}|span|{event_id}|{ts}|none|||0")
+        };
+        store.append(&diag("start"), "starting").unwrap();
+        store.append(&diag("event"), "obs").unwrap();
+        store.append("note", "raw").unwrap();
+
+        let (_, output) = run_dispatch(cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: None,
+                kind: Some(KindArg::Start),
+            },
+        ));
+        let entries = parse_json(&output);
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["kind"], "start");
+        assert_eq!(entries[0]["name"], "span");
+        assert_eq!(
+            entries[1],
+            json!({"type": "raw", "key": "note", "value": "raw"})
+        );
+
+        let (_, output) = run_dispatch(cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: None,
+                kind: Some(KindArg::Event),
+            },
+        ));
+        let entries = parse_json(&output);
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["kind"], "event");
+        assert_eq!(
+            entries[1],
+            json!({"type": "raw", "key": "note", "value": "raw"})
+        );
     }
 
     #[test]

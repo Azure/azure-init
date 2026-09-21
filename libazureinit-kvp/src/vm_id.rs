@@ -1,22 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Self-contained VM ID lookup used to auto-populate provisioning reports.
+//! Current VM ID lookup for command-line defaults.
 //!
-//! The VM ID is read from `/sys/class/dmi/id/product_uuid` and, on Gen1 VMs,
-//! the first three UUID fields are byte-swapped from big-endian to native endianness.
+//! Reads `/sys/class/dmi/id/product_uuid` and adjusts Gen1 UUID byte order.
 
 use std::fs;
 use std::path::Path;
 
 use uuid::Uuid;
 
-/// Retrieves the current VM ID by reading `/sys/class/dmi/id/product_uuid`
-/// and byte-swapping the result if the VM is Gen1.
+/// Returns the current VM ID, adjusting UUID byte order on Gen1 VMs.
 ///
-/// # Returns
-/// - `Some(String)` containing the VM ID if retrieval is successful.
-/// - `None` if the file is missing, empty, or cannot be read.
+/// Returns `None` if the DMI file is missing, unreadable or empty.
 pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
@@ -58,8 +54,7 @@ fn private_get_vm_id(
     }
 }
 
-/// Determines whether the VM is Gen1 (i.e. not UEFI/Gen2) based on EFI
-/// detection. Returns `true` when neither EFI path exists.
+/// Returns `true` when neither EFI path exists, identifying a Gen1 VM.
 fn is_vm_gen1(
     sysfs_efi_path: Option<&str>,
     dev_efi_path: Option<&str>,
@@ -67,7 +62,7 @@ fn is_vm_gen1(
     let sysfs_efi = sysfs_efi_path.unwrap_or("/sys/firmware/efi");
     let dev_efi = dev_efi_path.unwrap_or("/dev/efi");
 
-    // If *either* efi path exists, this is Gen2; if *neither* exist, Gen1.
+    // If either efi path exists, this is Gen2; if neither exist, Gen1.
     !Path::new(sysfs_efi).exists() && !Path::new(dev_efi).exists()
 }
 
@@ -176,8 +171,6 @@ mod tests {
         let path = dir.path().join("product_uuid");
         fs::write(&path, "not-a-uuid").unwrap();
 
-        // Gen1 (no EFI paths) but the content cannot be parsed as a UUID,
-        // so the raw lowercased value is returned unchanged.
         let actual = private_get_vm_id(
             Some(path.to_str().unwrap()),
             Some("/nonexistent_sysfs_efi"),
@@ -190,9 +183,6 @@ mod tests {
 
     #[test]
     fn get_vm_id_public_wrapper_is_callable() {
-        // Exercises the public entry point. It reads the host's
-        // product_uuid if present, so the result is environment dependent;
-        // we only assert that invoking it does not panic.
         let _ = get_vm_id();
     }
 

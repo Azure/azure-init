@@ -130,7 +130,7 @@ full details.
 | hv_kvp_daemon | Upsert + full rewrite | `fcntl` | 512 B (field width) | 2,048 B (field width) | N/A | None | Not checked | Yes (shift + rewrite) | Yes (`kvp_update_mem_state`) | 0–3 |
 | cloud-init | Append-only | `flock()` | 512 B (field width) | 1,024 B (1,023 + null-terminator) | Truncates | Truncate if `mtime` < boot | Yes | No | No | Pool 1 only |
 | azure-init (current) | Append-only, batched | `flock()` (via `fs2`) | 512 B (field width) | 1,022 B/chunk | Splits across records | Truncate if `mtime` < boot (no lock) | Zero-padded (implicit) | No | No | Pool 1 only (hardcoded) |
-| libazureinit-kvp (planned) | Upsert | `flock()` + `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Option to truncate if `mtime` < boot (with lock) | Explicit null-terminator | Planned | N/A (direct file I/O) | Any pool (configurable) |
+| libazureinit-kvp | Append / upsert / replace | `flock()` + `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Option to truncate if `mtime` < boot (with lock) | Explicit null-terminator | Yes | N/A (direct file I/O) | Any pool (configurable) |
 
 #### flock vs fcntl
 
@@ -239,3 +239,43 @@ no truncation.
 | `HV_KVP_EXCHANGE_MAX_RECORDS` | 1,024 | Max records per pool file |
 | `HV_KVP_SAFE_MAX_UTF8_KEY_SIZE` | 255 | 254 UTF-8 bytes + null-terminator; no kernel truncation on write path |
 | `HV_KVP_SAFE_MAX_UTF8_VALUE_SIZE` | 1,023 | 1,022 UTF-8 bytes + null-terminator; no kernel truncation on write path |
+
+---
+
+## Implementation Notes
+
+### Locking and Size Policy
+
+- The `libazureinit-kvp` store acquires `flock` and open-file-description
+  `fcntl` locks, in that order.
+- Safe writes enforce the conservative byte budgets above.
+- Full-width writes allow the physical field sizes, including fields without
+  a terminator. The reader accepts full-width UTF-8 in that case, but such
+  writes are not guaranteed to survive host transport.
+
+### Record Updates
+
+- Appending retains duplicates without a record-count cap.
+- Inserting updates a key and collapses its duplicates.
+- Inserting new keys and replacing the pool enforce a limit of 1,024 distinct
+  keys. This is a library policy, not a universal KVP format constraint.
+- Map-style reads use the last stored value; physical reads retain every record.
+- Deletion may swap a record with the file's tail, changing record order.
+
+### Cleanup and Read Errors
+
+- Stale-data cleanup is explicit and compares modification time with system
+  boot time under the write lock.
+- Invalid framing or invalid UTF-8 content fails a read.
+- Padding after a NUL is ignored rather than interpreted as text.
+
+The [diagnostics contract](diagnostics.md) defines telemetry carried in KVP
+records. Rust API usage is covered by the crate's generated documentation.
+
+## References
+
+- [Linux kernel UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/hyperv.h)
+- [Linux KVP driver](https://github.com/torvalds/linux/blob/master/drivers/hv/hv_kvp.c)
+- [Linux KVP daemon](https://github.com/torvalds/linux/blob/master/tools/hv/hv_kvp_daemon.c)
+- [Cloud-init KVP reporting](https://github.com/canonical/cloud-init/blob/main/cloudinit/reporting/handlers.py)
+- [Microsoft Data Exchange overview](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/integration-services-data-exchange)

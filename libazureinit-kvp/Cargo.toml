@@ -9,13 +9,16 @@ license = "MIT"
 description = "Hyper-V KVP (Key-Value Pair) storage library for azure-init."
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.5.21", features = ["derive"] }
 csv = "1"
+flate2 = "1.0"
 libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.96"
 tracing = "0.1.40"
-uuid = "1.3"
+uuid = { version = "1.3", features = ["v4"] }
 
 [dev-dependencies]
 rstest = { version = "0.26", default-features = false }
