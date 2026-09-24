@@ -5,6 +5,7 @@
 
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::Path;
 
 use libazureinit::config::Config;
 use libazureinit_kvp::{
@@ -73,6 +74,16 @@ fn kvp_filter(config_filter: Option<&str>) -> EnvFilter {
 }
 
 pub(crate) fn setup_layers(vm_id: &str, config: &Config) -> LoggingSetup {
+    setup_layers_in(vm_id, config, KvpPool::default_dir())
+}
+
+/// Like [`setup_layers`], but reads the KVP pool from `kvp_dir` instead of the
+/// system default, allowing tests to exercise KVP setup against a temp dir.
+fn setup_layers_in(
+    vm_id: &str,
+    config: &Config,
+    kvp_dir: &Path,
+) -> LoggingSetup {
     let stderr_layer = fmt::layer()
         .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_writer(std::io::stderr)
@@ -106,12 +117,11 @@ pub(crate) fn setup_layers(vm_id: &str, config: &Config) -> LoggingSetup {
     // when a non-UUID vm_id prevents the diagnostics writer from initializing.
     let mut report_store = None;
     let kvp_layer = if config.telemetry.kvp_diagnostics {
-        match KvpPoolStore::new(KvpPool::Guest, PoolMode::Safe).and_then(
-            |store| {
+        match KvpPoolStore::new_in(KvpPool::Guest, kvp_dir, PoolMode::Safe)
+            .and_then(|store| {
                 store.clear_if_stale()?;
                 Ok(store)
-            },
-        ) {
+            }) {
             Ok(store) => {
                 report_store = Some(store.clone());
                 match DiagnosticWriter::new(
@@ -248,5 +258,41 @@ mod tests {
                 "[EXPECTED TEST ERROR] Verifying stderr logging when the log file is unavailable"
             );
         });
+    }
+
+    /// A local-only config with KVP diagnostics enabled, targeting `kvp_dir`.
+    fn kvp_config(dir: &TempDir) -> (Config, std::path::PathBuf) {
+        let mut config = local_only_config(dir);
+        config.telemetry.kvp_diagnostics = true;
+        let kvp_dir = dir.path().join("kvp");
+        std::fs::create_dir(&kvp_dir).unwrap();
+        (config, kvp_dir)
+    }
+
+    #[test]
+    fn kvp_setup_enables_report_store_and_diagnostics() {
+        let dir = TempDir::new().unwrap();
+        let (config, kvp_dir) = kvp_config(&dir);
+        let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
+        assert!(setup.report_store.is_some());
+    }
+
+    #[test]
+    fn kvp_setup_with_invalid_vm_id_keeps_report_store() {
+        let dir = TempDir::new().unwrap();
+        let (config, kvp_dir) = kvp_config(&dir);
+        // The store is captured before the diagnostics writer is built, so
+        // reports still publish even though the writer rejects the non-UUID id.
+        let setup = setup_layers_in("not-a-uuid", &config, &kvp_dir);
+        assert!(setup.report_store.is_some());
+    }
+
+    #[test]
+    fn kvp_setup_with_unusable_pool_disables_reporting() {
+        let dir = TempDir::new().unwrap();
+        let (config, kvp_dir) = kvp_config(&dir);
+        std::fs::create_dir(kvp_dir.join(KvpPool::Guest.file_name())).unwrap();
+        let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
+        assert!(setup.report_store.is_none());
     }
 }

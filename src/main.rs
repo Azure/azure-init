@@ -233,6 +233,42 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Builds a provisioning report from a provisioning error, preferring the
+/// library error's own encoding and falling back to an unhandled error.
+fn failure_report(error: &anyhow::Error, vm_id: &str) -> ProvisioningReport {
+    error
+        .downcast_ref::<LibError>()
+        .map(|lib_error| lib_error.as_provisioning_report(vm_id))
+        .unwrap_or_else(|| {
+            LibError::UnhandledError {
+                details: format!("{error:?}"),
+            }
+            .as_provisioning_report(vm_id)
+        })
+}
+
+/// Maps a provisioning error to a process exit code, reporting configuration
+/// errors distinctly from general failures.
+fn exit_code_for(error: &anyhow::Error) -> ExitCode {
+    if is_config_error(error) {
+        let config: u8 = exitcode::CONFIG
+            .try_into()
+            .expect("Error code must be less than 256");
+        ExitCode::from(config)
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Whether a provisioning error stems from user configuration (a missing user
+/// or a non-empty password) rather than a general runtime failure.
+fn is_config_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.root_cause().downcast_ref::<LibError>(),
+        Some(LibError::UserMissing { .. } | LibError::NonEmptyPassword)
+    )
+}
+
 async fn publish_provisioning_report(
     store: Option<&KvpPoolStore>,
     report: &ProvisioningReport,
@@ -361,15 +397,7 @@ async fn main() -> ExitCode {
             Err(e) => {
                 tracing::error!("Provisioning failed with error: {e:?}");
 
-                let report = e
-                    .downcast_ref::<LibError>()
-                    .map(|lib_error| lib_error.as_provisioning_report(&vm_id))
-                    .unwrap_or_else(|| {
-                        LibError::UnhandledError {
-                            details: format!("{e:?}"),
-                        }
-                        .as_provisioning_report(&vm_id)
-                    });
+                let report = failure_report(&e, &vm_id);
                 publish_provisioning_report(
                     report_store.as_ref(),
                     &report,
@@ -377,16 +405,7 @@ async fn main() -> ExitCode {
                 )
                 .await;
 
-                let config: u8 = exitcode::CONFIG
-                    .try_into()
-                    .expect("Error code must be less than 256");
-                match e.root_cause().downcast_ref::<LibError>() {
-                    Some(LibError::UserMissing { user: _ }) => {
-                        ExitCode::from(config)
-                    }
-                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                    Some(_) | None => ExitCode::FAILURE,
-                }
+                exit_code_for(&e)
             }
         }
     };
@@ -591,5 +610,54 @@ mod report_tests {
             assert!(http_attempted);
         }
         Ok(())
+    }
+
+    #[test]
+    fn failure_report_uses_lib_error_then_falls_back_to_unhandled() {
+        let lib_error = anyhow::Error::from(LibError::Timeout);
+        let encoded = failure_report(&lib_error, VM_ID).encode();
+        assert!(encoded.contains(&format!("vm_id={VM_ID}")));
+        assert!(encoded.contains("result=error|"));
+        assert!(encoded.contains("reason=operation timed out"));
+
+        let other = anyhow::anyhow!("boom");
+        let encoded = failure_report(&other, VM_ID).encode();
+        assert!(encoded.contains(&format!("vm_id={VM_ID}")));
+        assert!(encoded.contains("result=error|"));
+        assert!(encoded.contains("reason=unhandled error"));
+        assert!(encoded.contains("boom"));
+    }
+
+    #[test]
+    fn is_config_error_flags_user_configuration_errors() {
+        assert!(is_config_error(&anyhow::Error::from(
+            LibError::UserMissing {
+                user: "missing".to_owned(),
+            }
+        )));
+        assert!(is_config_error(&anyhow::Error::from(
+            LibError::NonEmptyPassword
+        )));
+        assert!(!is_config_error(&anyhow::Error::from(LibError::Timeout)));
+    }
+
+    #[test]
+    fn exit_code_for_distinguishes_config_errors_from_failures() {
+        let config: u8 = exitcode::CONFIG.try_into().unwrap();
+        // ExitCode has no PartialEq, so compare Debug of equivalently-built codes.
+        assert_eq!(
+            format!(
+                "{:?}",
+                exit_code_for(&anyhow::Error::from(LibError::NonEmptyPassword))
+            ),
+            format!("{:?}", ExitCode::from(config))
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                exit_code_for(&anyhow::Error::from(LibError::Timeout))
+            ),
+            format!("{:?}", ExitCode::FAILURE)
+        );
     }
 }
