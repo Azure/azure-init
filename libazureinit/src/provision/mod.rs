@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::User;
 use tracing::instrument;
 
-/// The interface for applying the desired configuration to the host.
+/// Applies hostname, user, password and SSH configuration to the host.
 ///
 /// By default, all known tools for provisioning a particular resource are tried
 /// until one succeeds. Particular tools can be selected via the
@@ -59,7 +59,7 @@ impl Provision {
     ///
     /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
     /// configured or if all backends fail to create the user.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     pub fn create_user(&self) -> Result<(), Error> {
         self.config
             .user_provisioners
@@ -87,7 +87,7 @@ impl Provision {
     /// Returns `Ok(())` if the hostname was set successfully.
     /// Returns [`Error::NoHostnameProvisioner`] if no hostname provisioner backends are
     /// configured or if all backends fail to set the hostname.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     pub fn set_hostname(&self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
@@ -109,7 +109,7 @@ impl Provision {
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
     /// partial provisioning.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         // Provision core resources (hostname, user, password)
         self.provision_core()?;
@@ -124,7 +124,7 @@ impl Provision {
     }
 
     /// Internal helper to provision core resources.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     fn provision_core(&self) -> Result<(), Error> {
         self.set_hostname()?;
 
@@ -147,7 +147,7 @@ impl Provision {
     }
 
     /// Updates SSH configuration based on the `disable_password_authentication` flag.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     fn update_ssh_config(&self) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
         let ssh_config_update_required =
@@ -159,7 +159,7 @@ impl Provision {
                 sshd_config_path,
                 self.disable_password_authentication,
             ) {
-                tracing::error!(
+                tracing::debug!(
                     ?error,
                     sshd_config_path,
                     "Failed to update sshd configuration for password authentication"
@@ -174,7 +174,7 @@ impl Provision {
     /// Provisions SSH keys for the user.
     ///
     /// Creates the `.ssh` directory and writes the `authorized_keys` file.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
             let user = users::get_user_by_name(&self.user.name).ok_or(

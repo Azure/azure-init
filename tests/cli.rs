@@ -87,6 +87,9 @@ fn setup_clean_test() -> Result<
 
         [azure_init_log_path]
         path = "{}"
+
+        [telemetry]
+        kvp_diagnostics = false
         "#,
         data_dir.display(),
         log_file.display()

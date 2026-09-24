@@ -87,7 +87,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
     request(client, req, retry_interval, retry_for).await
 }
 
-/// Retry an HTTP request until it returns HTTP 200 or the timeout is reached.
+/// Retry an HTTP request until it succeeds or the timeout is reached.
 ///
 /// In the event that the request succeeds, the total remaining timeout is returned with the response.
 /// This can be used to resume retrying in the event that the body is malformed.
@@ -96,7 +96,7 @@ pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
 ///
 /// This function will panic if the request passed cannot be cloned (i.e. the body is a Stream).
 /// Functions wrapping this must ensure to include an additional bound on `Body` (see [`post`]).
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 async fn request(
     client: &Client,
     request: Request,
@@ -105,9 +105,14 @@ async fn request(
 ) -> Result<(reqwest::Response, Duration), Error> {
     timeout(retry_for, async {
         let now = std::time::Instant::now();
-        let mut attempt =  0_u32;
+        let mut attempt = 0_u32;
         loop {
-            let span = tracing::info_span!("request", attempt, http_status = tracing::field::Empty);
+            let span = tracing::info_span!(
+                "request_attempt",
+                attempt,
+                http_status = tracing::field::Empty,
+                diagnostic.result = "fail"
+            );
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
                 .execute(req)
@@ -117,11 +122,12 @@ async fn request(
                         let _enter = span.enter();
                         let statuscode = response.status();
                         span.record("http_status", statuscode.as_u16());
-                        tracing::info!(target: "libazureinit::http::received", url=response.url().as_str(), "HTTP response received");
+                        tracing::info!(url = response.url().as_str(), "HTTP response received");
 
                         match response.error_for_status() {
                             Ok(response) => {
-                                tracing::info!(target: "libazureinit::http::success", "HTTP response succeeded with status {}", statuscode);
+                                span.record("diagnostic.result", "success");
+                                tracing::info!("HTTP response succeeded with status {}", statuscode);
                                 return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                             },
                             Err(error) => {
@@ -138,7 +144,7 @@ async fn request(
                     },
                     Err(error) => {
                         let _enter = span.enter();
-                        tracing::error!(?error, "HTTP request failed to complete");
+                        tracing::warn!(?error, "HTTP request failed to complete");
                     },
                 }
             span.in_scope(||{

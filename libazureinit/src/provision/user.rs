@@ -160,7 +160,7 @@ impl UserProvisioner {
 /// Check if a user exists on the system using `getent passwd`.
 ///
 /// Returns `true` if the user exists, `false` otherwise.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 fn user_exists(username: &str) -> Result<bool, Error> {
     let output = Command::new("getent")
         .arg("passwd")
@@ -174,11 +174,10 @@ fn user_exists(username: &str) -> Result<bool, Error> {
 ///
 /// If the user exists, adds them to the specified groups using `usermod -aG`.
 /// If the user doesn't exist, creates them with the specified groups using `useradd`.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 fn useradd(user: &User) -> Result<(), Error> {
     if user_exists(&user.name)? {
         tracing::info!(
-            target: "libazureinit::user::add",
             "User '{}' already exists. Skipping user creation.",
             user.name
         );
@@ -186,7 +185,6 @@ fn useradd(user: &User) -> Result<(), Error> {
         let group_list = user.groups.join(",");
 
         tracing::info!(
-            target: "libazureinit::user::add",
             "User '{}' is being added to the following groups: {}",
             user.name,
             group_list
@@ -199,11 +197,7 @@ fn useradd(user: &User) -> Result<(), Error> {
 
     let path_useradd = env!("PATH_USERADD");
 
-    tracing::info!(
-        target: "libazureinit::user::add",
-        "Creating user with username: '{}'",
-        user.name,
-    );
+    tracing::info!("Creating user with username: '{}'", user.name,);
 
     let mut command = Command::new(path_useradd);
     command

@@ -91,7 +91,7 @@ impl PasswordProvisioner {
 /// The password is passed securely to `chpasswd` via stdin to avoid
 /// exposing secrets in process arguments or logs. The password is also
 /// securely cleared from memory after use using zeroization.
-#[instrument(skip_all)]
+#[instrument(err, skip_all, fields(username = %username))]
 pub fn set_user_password(username: &str, password: &str) -> Result<(), Error> {
     // Basic input validation
     if username.is_empty() {
@@ -121,13 +121,12 @@ pub fn set_user_password(username: &str, password: &str) -> Result<(), Error> {
 
     let status = child.wait()?;
     if !status.success() {
-        tracing::error!(username = %username, ?status, "chpasswd failed to set password");
         return Err(Error::SubprocessFailed {
             command: "chpasswd".to_string(),
             status,
         });
     }
-    tracing::info!(target: "libazureinit::password::status", username = %username, "Successfully set password via chpasswd");
+    tracing::info!(username = %username, "Successfully set password via chpasswd");
     Ok(())
 }
 
@@ -142,7 +141,7 @@ pub fn set_user_password(username: &str, password: &str) -> Result<(), Error> {
 /// # Returns
 /// * `Ok(())` on success
 /// * `Err(Error)` if the account locking fails
-#[instrument(skip_all)]
+#[instrument(err, skip_all, fields(username = %username))]
 pub fn lock_user(username: &str) -> Result<(), Error> {
     if username.is_empty() {
         return Err(Error::UnhandledError {
@@ -160,11 +159,8 @@ fn handle_lock_result(
     username: &str,
     result: Result<(), Error>,
 ) -> Result<(), Error> {
-    if let Err(ref e) = result {
-        tracing::error!(username = %username, error = ?e, "Failed to lock account via passwd -l");
-    }
     result?;
-    tracing::info!(target: "libazureinit::password::status", username = %username, "Locked account via passwd -l");
+    tracing::info!(username = %username, "Locked account via passwd -l");
     Ok(())
 }
 
@@ -182,7 +178,7 @@ fn handle_lock_result(
 /// (there is no alternate locking path). Library consumers that want a password
 /// must explicitly call `User::with_password`.
 /// See `doc/azure_init_behavior.md` for details.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     if let Some(ref password) = user.password {
         set_user_password(&user.name, password)

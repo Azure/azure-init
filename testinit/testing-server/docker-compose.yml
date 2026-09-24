@@ -10,8 +10,6 @@ services:
       - SYS_MODULE
     ports:
       - "80:80"
-    volumes:
-      - /tmp/testinit:/var/lib/hyperv:rw
     networks:
       imds-network:
         ipv4_address: 169.254.169.254

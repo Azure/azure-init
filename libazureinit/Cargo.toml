@@ -10,6 +10,7 @@ license = "MIT"
 description = "A common library for provisioning Linux VMs on Azure."
 
 [dependencies]
+libazureinit-kvp = { path = "../libazureinit-kvp", version = "0.1.0" }
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json"] }
 serde = {version = "1.0.163", features = ["derive"]}
 thiserror = "2.0.3"
@@ -20,12 +21,6 @@ rustix = { version = "1.1", features = ["fs", "process"] }
 users = "0.11"
 block-utils = "0.11.1"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-tracing-opentelemetry = "0.33"
-tokio-util = "0.7"
-sysinfo = "0.38"
 anyhow = "1"
 fstab = "0.4.0"
 toml = "1.0"
@@ -33,20 +28,16 @@ regex = "1"
 lazy_static = "1.4"
 figment = { version = "0.10", features = ["toml"] }
 uuid = { version = "1.3", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-csv = "1"
 zeroize = "1.8"
-fs2 = "0.4"
 
 [dev-dependencies]
+httparse = "1"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.11"
 whoami = "2"
 anyhow = "1.0.81"
-gag = "1.0.0"
-serial_test = "3.0.0"
 
 [lib]
 name = "libazureinit"
