@@ -86,6 +86,9 @@ This will:
   - IMDS: `http://169.254.169.254/metadata/instance`
   - WireServer: `http://168.63.129.16`
 - **Port**: 80 (mapped to host)
+- **Readiness**: TCP connections to both configured Azure endpoint addresses.
+  The health check sends no HTTP requests, preserving the scripted failures and
+  delays for provisioning retry tests.
 
 ## Monitoring and Debugging
 
