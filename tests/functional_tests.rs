@@ -5,9 +5,9 @@ use libazureinit::config::Config;
 use libazureinit::imds::PublicKeys;
 use libazureinit::User;
 use libazureinit::{
-    health::report_ready,
     imds,
     reqwest::{header, Client},
+    wireserver::report_ready,
     Provision,
 };
 use std::env;
@@ -35,8 +35,7 @@ async fn main() {
     println!();
 
     println!("Reporting VM Health to wireserver");
-    let vm_id = "00000000-0000-0000-0000-000000000000";
-    match report_ready(&config, vm_id, None).await {
+    match report_ready(&config.wireserver).await {
         Ok(()) => println!("VM Health successfully reported"),
         Err(err) => {
             println!("Failed to report health: {err:?}");

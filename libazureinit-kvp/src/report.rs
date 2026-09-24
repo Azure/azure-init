@@ -323,8 +323,11 @@ fn validate_report_quoting(value: &str) -> Result<(), DecodeError> {
 }
 
 impl ProvisioningReport {
-    /// Encodes the report for storage.
-    pub(crate) fn encode(&self) -> String {
+    /// Returns the report's pipe-delimited CSV representation.
+    ///
+    /// Preserves the report's timestamp and performs no I/O. This method does
+    /// not check pool size limits; [`write_report`] applies the store's policy.
+    pub fn encode(&self) -> String {
         let mut data = Vec::with_capacity(7 + self.extra.len());
 
         data.push(format!("result={}", self.result));

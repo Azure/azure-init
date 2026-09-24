@@ -162,11 +162,138 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_eq!(decoded_report, &report);
 
     let dumped = store.dump().unwrap();
+    assert_eq!(dumped[3].1, report.encode());
     for (key, _) in &dumped[..3] {
         assert!(key
             .starts_with(&format!("{DIAGNOSTIC_VERSION_ID}|{AGENT}|{VM_ID}|")));
         assert!(key.ends_with("|0"));
     }
+}
+
+#[cfg(feature = "tracing")]
+#[test]
+fn tracing_layer_emits_standalone_events_through_the_public_api(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use libazureinit_kvp::DiagnosticsKvp;
+    use tracing_subscriber::prelude::*;
+
+    let dir = TempDir::new()?;
+    let store = store_at(&dir);
+    let writer = DiagnosticWriter::new(store.clone(), AGENT, VM_ID)?;
+    let kvp = DiagnosticsKvp::new(writer);
+    let subscriber = tracing_subscriber::registry().with(kvp);
+    assert!(!store.path().exists());
+
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(name: "observation", count = 3_u64, ready = true, "standalone");
+    });
+
+    let entries = DiagnosticReader::new(store).entries()?;
+    let [Entry::Diagnostic(Diagnostic::Event(event))] = entries.as_slice()
+    else {
+        return Err(format!("expected one event, got {entries:?}").into());
+    };
+    assert_eq!(event.key.agent, AGENT);
+    assert_eq!(event.key.vm_id.as_deref(), Some(VM_ID));
+    assert_eq!(event.key.name, "observation");
+    assert_eq!(event.result, None);
+    let DiagnosticPayload::Text(payload) = &event.payload else {
+        return Err("expected a JSON text payload".into());
+    };
+    let payload: serde_json::Value = serde_json::from_str(payload)?;
+    assert_eq!(payload["level"], "INFO");
+    assert_eq!(payload["fields"]["message"], "standalone");
+    assert_eq!(payload["fields"]["count"], 3);
+    assert_eq!(payload["fields"]["ready"], true);
+    Ok(())
+}
+
+#[cfg(feature = "tracing")]
+fn tracing_payload(
+    entry: &Entry,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let Entry::Diagnostic(diagnostic) = entry else {
+        return Err(format!("expected a diagnostic, got {entry:?}").into());
+    };
+    let DiagnosticPayload::Text(payload) = diagnostic.payload() else {
+        return Err("expected a JSON text payload".into());
+    };
+    Ok(serde_json::from_str(payload)?)
+}
+
+#[cfg(feature = "tracing")]
+#[test]
+fn tracing_spans_preserve_lifecycle_updates_and_explicit_recovery(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use libazureinit_kvp::DiagnosticsKvp;
+    use tracing_subscriber::prelude::*;
+
+    let dir = TempDir::new()?;
+    let store = store_at(&dir);
+    let kvp = DiagnosticsKvp::new(DiagnosticWriter::new(
+        store.clone(),
+        AGENT,
+        VM_ID,
+    )?);
+    let subscriber = tracing_subscriber::registry().with(kvp);
+    let message = "\u{20ac}".repeat(MAX_CHUNK_BYTES);
+    let before = chrono::Utc::now().timestamp_millis();
+    let started = std::time::Instant::now();
+    tracing::subscriber::with_default(subscriber, || {
+        let operation = tracing::info_span!(
+            "operation",
+            http_status = tracing::field::Empty,
+            diagnostic.result = tracing::field::Empty
+        );
+        operation.in_scope(|| {
+            let attempt = tracing::info_span!("attempt", attempt = 1_u64);
+            attempt.in_scope(|| tracing::error!("attempt failed"));
+            drop(attempt);
+            operation.record("http_status", 200_u64);
+            tracing::error!("recovered error");
+            operation.record("diagnostic.result", "fail");
+            operation.record("diagnostic.result", "success");
+            tracing::info!(msg = message.as_str());
+        });
+    });
+    let elapsed = started.elapsed();
+    let after = chrono::Utc::now().timestamp_millis();
+
+    let entries = DiagnosticReader::new(store.clone()).entries()?;
+    let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Start(attempt)), Entry::Diagnostic(Diagnostic::Event(failure)), Entry::Diagnostic(Diagnostic::Finish(attempt_finish)), Entry::Diagnostic(Diagnostic::Event(recovered)), Entry::Diagnostic(Diagnostic::Event(message_event)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
+        entries.as_slice()
+    else {
+        return Err(format!("unexpected lifecycle: {entries:?}").into());
+    };
+    assert_eq!(start.key.name, "operation");
+    assert_eq!(start.key.event_id, finish.key.event_id);
+    assert_eq!(attempt.key.event_id, attempt_finish.key.event_id);
+    assert_ne!(start.key.event_id, attempt.key.event_id);
+    // Events are named after their enclosing span.
+    assert_eq!(failure.key.name, "attempt");
+    assert_eq!(recovered.key.name, "operation");
+    assert_eq!(message_event.key.name, "operation");
+    assert_ne!(recovered.key.event_id, message_event.key.event_id);
+    assert_eq!(attempt_finish.result, Outcome::Failure);
+    // An explicit diagnostic.result overrides the observed ERROR event.
+    assert_eq!(finish.result, Outcome::Success);
+    assert!(finish.duration <= elapsed);
+    assert_eq!(failure.result, None);
+    // A late-recorded field appears in the finish, not the start.
+    assert_eq!(tracing_payload(&entries[6])?["fields"]["http_status"], 200);
+    assert!(tracing_payload(&entries[0])?["fields"]
+        .get("http_status")
+        .is_none());
+    // The multi-chunk message round-trips through the reader.
+    assert_eq!(tracing_payload(&entries[5])?["fields"]["msg"], message);
+    for entry in &entries {
+        let key = diagnostic(entry).key();
+        assert_eq!(key.agent, AGENT);
+        assert_eq!(key.vm_id.as_deref(), Some(VM_ID));
+        assert!((before..=after).contains(&key.timestamp.timestamp_millis()));
+    }
+    assert!(store.dump()?.len() > entries.len());
+    Ok(())
 }
 
 #[rstest]

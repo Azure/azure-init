@@ -7,12 +7,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
-pub mod health;
 pub(crate) mod http;
 pub mod imds;
-mod kvp;
-pub mod logging;
 pub mod media;
+pub mod wireserver;
 
 mod provision;
 pub use provision::{
@@ -33,8 +31,7 @@ pub use reqwest;
 
 /// Run a command, capturing its output and logging it if it fails.
 ///
-/// In the event of a failure, the provided `error_message` is logged at
-/// error level.
+/// Launch failures and unsuccessful exit statuses are logged at error level.
 ///
 /// <div class="warning">
 ///
@@ -42,13 +39,15 @@ pub use reqwest;
 /// if the command contains sensitive information.
 ///
 /// </div>
+#[tracing::instrument(
+    name = "subprocess",
+    skip_all,
+    err,
+    fields(program = %command.get_program().to_string_lossy())
+)]
 pub(crate) fn run(
     mut command: std::process::Command,
 ) -> Result<(), error::Error> {
-    let program = command.get_program().to_string_lossy().to_string();
-    let span = tracing::info_span!("subprocess", program = %program);
-    let _entered = span.enter();
-
     tracing::debug!(?command, "About to execute system program");
     let output = command.output()?;
     let status = output.status;
@@ -57,13 +56,12 @@ pub(crate) fn run(
     if !status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        tracing::error!(
+        tracing::debug!(
             ?status,
             ?command,
             ?stdout,
             ?stderr,
-            "Command '{}' failed",
-            program
+            "Failed command output"
         );
         return Err(error::Error::SubprocessFailed {
             command: format!("{command:?}"),

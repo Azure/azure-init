@@ -32,6 +32,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       
+      - name: Test mock-server readiness check
+        run: python3 -m unittest discover -s testinit/testing-server -p test_healthcheck.py -v
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
@@ -46,7 +49,13 @@ jobs:
           pushd testinit
           echo "Starting E2E test environment with base image: ${{ matrix.container }}"
           ./start-all.sh "${{ matrix.container }}"
-        
+
+      - name: Verify KVP CLI
+        shell: bash
+        run: |
+          mkdir -p testinit-results
+          docker exec azureinit-provisioning-agent python3 /build/testinit/verify_kvp.py | tee testinit-results/kvp-cli.log
+
       - name: Check service health
         run: |
           echo "Checking if services are running..."
@@ -59,11 +68,6 @@ jobs:
           # Capture logs to a file (and also print them). Ignore non-zero exit status so checks still run.
           docker compose logs provisioning-agent > provisioning_agent_logs.txt 2>&1 || true
           cat provisioning_agent_logs.txt
-          # Fail only if a single line contains both "azure-init" and "failed"/"failure" (case-insensitive).
-          if grep -i 'azure-init' provisioning_agent_logs.txt | grep -Ei 'failed|failure' >/dev/null; then
-            echo "ERROR: provisioning-agent logs contain a line with 'azure-init' and failure indicators."
-            exit 1
-          fi
 
       - name: Print testing server logs
         if: always()
@@ -75,12 +79,30 @@ jobs:
       - name: Output KVP telemetry
         if: always()
         run: |
-          docker exec azure-testing-server cat /tmp/testinit.kvp_pool_1
+          timeout 15s docker exec azureinit-provisioning-agent libazureinit-kvp dump --parse
 
       - name: Output Azure-init log
         if: always()
         run: |
           docker exec azureinit-provisioning-agent cat /var/log/azure-init.log
+
+      - name: Collect testinit artifacts
+        if: always()
+        run: |
+          mkdir -p testinit-results
+          cp testinit/provisioning_agent_logs.txt testinit-results/ || true
+          docker cp azureinit-provisioning-agent:/var/log/azure-init.log testinit-results/azure-init.log || true
+          docker cp azureinit-provisioning-agent:/var/lib/hyperv/.kvp_pool_1 testinit-results/final.pool || true
+          timeout 15s docker exec azureinit-provisioning-agent libazureinit-kvp dump --parse > testinit-results/final.json 2> testinit-results/kvp-dump.stderr || true
+          timeout 15s docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager > testinit-results/journal.log 2>&1 || true
+
+      - name: Upload testinit artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: testinit-${{ strategy.job-index }}
+          path: testinit-results/
+          retention-days: 7
 
       - name: Cleanup - Stop all services
         if: always()

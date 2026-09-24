@@ -7,6 +7,8 @@ mod cloud_init;
 mod diagnostic;
 mod encoding;
 mod reader;
+#[cfg(feature = "tracing")]
+mod tracing_layer;
 mod writer;
 
 pub use diagnostic::{
@@ -15,6 +17,8 @@ pub use diagnostic::{
     RawKeyValue, DIAGNOSTIC_VERSION_ID,
 };
 pub use reader::DiagnosticReader;
+#[cfg(feature = "tracing")]
+pub use tracing_layer::DiagnosticsKvp;
 pub use writer::{DiagnosticWriter, DurationPrecision, TimestampPrecision};
 
 /// Maximum encoded payload bytes stored in one diagnostic record.

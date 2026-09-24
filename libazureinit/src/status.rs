@@ -40,7 +40,7 @@ fn get_provisioning_dir(config: Option<&Config>) -> PathBuf {
 
 /// This function checks if the azure-init data directory is present, and if not,
 /// it creates it.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 fn check_provision_dir(config: Option<&Config>) -> Result<(), Error> {
     let dir = get_provisioning_dir(config);
     if !dir.exists() {
@@ -132,7 +132,7 @@ pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
 
-#[instrument(skip_all)]
+#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = "fail"))]
 fn private_get_vm_id(
     product_uuid_path: Option<&str>,
     sysfs_efi_path: Option<&str>,
@@ -149,7 +149,7 @@ fn private_get_vm_id(
     };
 
     if system_uuid.is_empty() {
-        tracing::info!(target: "libazureinit::status::retrieved_vm_id", "VM ID file is empty at path: {}", path);
+        tracing::warn!("VM ID file is empty at path: {}", path);
         return None;
     }
 
@@ -159,11 +159,8 @@ fn private_get_vm_id(
                 let swapped_uuid =
                     swap_uuid_to_little_endian(*uuid_parsed.as_bytes());
                 let final_id = swapped_uuid.to_string();
-                tracing::info!(
-                    target: "libazureinit::status::retrieved_vm_id",
-                    "VM ID (Gen1, swapped): {}",
-                    final_id
-                );
+                tracing::Span::current().record("diagnostic.result", "success");
+                tracing::info!("VM ID (Gen1, swapped): {}", final_id);
                 Some(final_id)
             }
             Err(e) => {
@@ -176,11 +173,8 @@ fn private_get_vm_id(
             }
         }
     } else {
-        tracing::info!(
-            target: "libazureinit::status::retrieved_vm_id",
-            "VM ID (Gen2, no swap): {}",
-            system_uuid
-        );
+        tracing::Span::current().record("diagnostic.result", "success");
+        tracing::info!("VM ID (Gen2, no swap): {}", system_uuid);
         Some(system_uuid)
     }
 }
@@ -223,7 +217,7 @@ pub fn is_provisioning_complete(config: Option<&Config>, vm_id: &str) -> bool {
 /// # Returns
 /// - `Ok(())` if the provisioning status file was successfully created.
 /// - `Err(Error)` if an error occurred while creating the provisioning file.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub fn mark_provisioning_complete(
     config: Option<&Config>,
     vm_id: &str,
@@ -241,13 +235,12 @@ pub fn mark_provisioning_complete(
     {
         Ok(_) => {
             tracing::info!(
-                target: "libazureinit::status::success",
                 "Provisioning complete. File created: {}",
                 file_path.display()
             );
         }
         Err(error) => {
-            tracing::error!(
+            tracing::debug!(
                 ?error,
                 file_path=?file_path,
                 "Failed to create provisioning status file"
@@ -408,6 +401,39 @@ mod tests {
         let actual = res.unwrap();
         let expected = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(actual, expected, "Should not byte-swap for Gen2");
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_get_vm_id_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        for contents in ["", " \t\n"] {
+            fs::write(&path, contents).unwrap();
+            assert_eq!(
+                private_get_vm_id(Some(path.to_str().unwrap()), None, None),
+                None
+            );
+        }
+        assert!(logs_contain("VM ID file is empty at path:"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_get_vm_id_gen1_preserves_unparseable_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        let missing_efi = dir.path().join("missing-efi");
+        fs::write(&path, " Not-A-UUID \n").unwrap();
+        assert_eq!(
+            private_get_vm_id(
+                Some(path.to_str().unwrap()),
+                Some(missing_efi.to_str().unwrap()),
+                Some(missing_efi.to_str().unwrap()),
+            ),
+            Some("not-a-uuid".to_owned())
+        );
+        assert!(logs_contain("Failed to parse system UUID 'not-a-uuid'"));
     }
 
     #[test]

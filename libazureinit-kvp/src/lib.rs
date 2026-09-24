@@ -53,6 +53,12 @@
 //! consuming telemetry, and [`ProvisioningReport`] for reporting provisioning
 //! success or failure.
 //!
+//! # Tracing Integration
+//! Enable the `tracing` feature for [`DiagnosticsKvp`], a `tracing_subscriber`
+//! layer that emits spans and events through a configured [`DiagnosticWriter`].
+//! It writes synchronously, requires no async runtime, and does not install a
+//! subscriber, choose filters or clear the pool.
+//!
 //! # Format References
 //! The [KVP contract] describes pool files and Hyper-V interfaces. The
 //! [diagnostics contract] describes record fields and encodings for consumers
@@ -69,6 +75,8 @@ mod store;
 mod vm_id;
 
 pub use cli::run;
+#[cfg(feature = "tracing")]
+pub use diagnostics::DiagnosticsKvp;
 pub use diagnostics::{
     DecodeError, Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticKey,
     DiagnosticPayload, DiagnosticReader, DiagnosticStart, DiagnosticWriter,

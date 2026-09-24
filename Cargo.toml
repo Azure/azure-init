@@ -11,13 +11,13 @@ description = "A reference implementation for provisioning Linux VMs on Azure."
 build = "build.rs"
 
 [dependencies]
+libazureinit-kvp = { path = "libazureinit-kvp", version = "0.1.0", features = ["tracing"] }
 exitcode = "1.1.2"
 anyhow = "1.0.81"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.40"
 clap = { version = "4.5.21", features = ["derive", "cargo", "env"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-tokio-util = "0.7" 
 
 sysinfo = "0.38"
 

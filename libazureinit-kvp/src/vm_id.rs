@@ -33,7 +33,7 @@ fn private_get_vm_id(
     };
 
     if system_uuid.is_empty() {
-        tracing::info!("VM ID file is empty at path: {}", path);
+        tracing::warn!("VM ID file is empty at path: {}", path);
         return None;
     }
 

@@ -269,3 +269,18 @@ Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,
 `pps_type`, `vm_id`, `timestamp`, then the optional documentation URL. Consumers
 must not depend on that order.
+
+### Tracing Producer
+
+The optional `tracing` feature provides `DiagnosticsKvp`, a `tracing_subscriber`
+layer that turns spans and events into diagnostics. Opening a span emits a
+`start`, and closing it emits a `finish` with the same event UUID; each event
+emits its own `event`, named after the span it occurred in, or after itself when
+there is no span. Every payload is JSON text holding the record's `target`,
+`level`, and structured `fields`. The layer writes through `DiagnosticWriter`
+synchronously on the calling thread, so it needs no async runtime.
+
+A span finishes as `success` unless its `diagnostic.result` field is `fail`, a
+directly associated ERROR event occurred, or the thread is unwinding as it
+closes; only that span is marked, not its ancestors. A `diagnostic.result` value
+other than `success` or `fail` drops the record rather than guessing.

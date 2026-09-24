@@ -145,7 +145,7 @@ const MTAB_PATH: &str = "/etc/mtab";
 /// # Returns
 ///
 /// A `Result` containing a vector of device paths as strings, or an `Error`.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub fn get_mount_device(path: Option<&Path>) -> Result<Vec<String>, Error> {
     let fstab = FsTab::new(path.unwrap_or_else(|| Path::new(MTAB_PATH)));
     let entries = fstab.get_entries()?;
@@ -209,7 +209,7 @@ impl Media<Unmounted> {
     /// # Returns
     ///
     /// A `Result` containing the `Media` instance in the `Mounted` state, or an `Error`.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     pub fn mount(self) -> Result<Media<Mounted>, Error> {
         create_dir_all(&self.mount_path)?;
 
@@ -254,7 +254,7 @@ impl Media<Mounted> {
     /// # Returns
     ///
     /// A `Result` indicating success or failure.
-    #[instrument]
+    #[instrument(err, skip_all)]
     pub fn unmount(self) -> Result<(), Error> {
         let mut command = Command::new("umount");
         command.arg(self.mount_path);
@@ -270,7 +270,7 @@ impl Media<Mounted> {
     /// # Returns
     ///
     /// A `Result` containing the OVF environment data as a string, or an `Error`.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     pub fn read_ovf_env_to_string(&self) -> Result<String, Error> {
         let mut file_path = self.mount_path.clone();
         file_path.push("ovf-env.xml");
@@ -328,7 +328,7 @@ impl Media<Mounted> {
 /// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm, false);
 /// assert_eq!(environment.platform_settings_section.platform_settings.preprovisioned_vm_type, "None");
 /// ```
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
     let environment: Environment = from_str(ovf_body)?;
 
@@ -353,7 +353,7 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 /// # Returns
 ///
 /// A `Result` containing the parsed `Environment` struct, or an `Error`.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));
@@ -371,7 +371,7 @@ fn orchestrate_ovf_env(
 ) -> Result<Environment, Error> {
     let mount_result = mount_fn();
     if let Err(ref e) = mount_result {
-        tracing::error!(error = ?e, "Failed to mount media.");
+        tracing::debug!(error = ?e, "Failed to mount media.");
     }
     let mounted = mount_result?;
 
@@ -380,7 +380,7 @@ fn orchestrate_ovf_env(
 
     let unmount_result = unmount_fn(mounted);
     if let Err(ref e) = unmount_result {
-        tracing::error!(error = ?e, "Failed to remove media.");
+        tracing::debug!(error = ?e, "Failed to remove media.");
     }
     unmount_result?;
 

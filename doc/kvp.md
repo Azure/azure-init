@@ -108,20 +108,19 @@ struct kvp_record {
 |-------|-------|----------|
 | Key field | 512 bytes | `HV_KVP_EXCHANGE_MAX_KEY_SIZE` |
 | Value field | 2,048 bytes | `HV_KVP_EXCHANGE_MAX_VALUE_SIZE` |
-| Record size | 2,560 bytes | `HV_KVP_EXCHANGE_MAX_RECORD_SIZE` or  `HV_KVP_EXCHANGE_MAX_KEY_SIZE` + `HV_KVP_EXCHANGE_MAX_VALUE_SIZE` |
-| Max records per file | 1,024 | `HV_KVP_EXCHANGE_MAX_RECORDS` |
+| Record size | 2,560 bytes | `HV_KVP_EXCHANGE_MAX_KEY_SIZE` + `HV_KVP_EXCHANGE_MAX_VALUE_SIZE` |
 
 ---
 
 ## Pool file write behavior
 
-Three writers touch the pool files — see comparison table below for
-full details.
+The daemon, cloud-init, and Azure Init access pool files through different
+write paths. Azure Init uses `libazureinit-kvp` for both diagnostics and reports.
 
 ### Source references
 - `hv_kvp_daemon`: [`kvp_update_file()`](https://github.com/torvalds/linux/blob/master/tools/hv/hv_kvp_daemon.c) (upsert + full rewrite), [`kvp_update_mem_state()`](https://github.com/torvalds/linux/blob/master/tools/hv/hv_kvp_daemon.c) (re-read before every op)
 - cloud-init: [`write_key()`](https://github.com/canonical/cloud-init/blob/main/cloudinit/sources/helpers/azure.py) (append + truncate), [`_break_down()`](https://github.com/canonical/cloud-init/blob/main/cloudinit/sources/helpers/azure.py) (1,016 B diagnostic chunks)
-- azure-init (current): [`encode_kvp_item()`](https://github.com/Azure/azure-init/blob/main/libazureinit/src/kvp.rs) (append + split), [`truncate_guest_pool_file()`](https://github.com/Azure/azure-init/blob/main/libazureinit/src/kvp.rs) (stale-data guard)
+- azure-init: [`DiagnosticWriter`](https://github.com/Azure/azure-init/blob/main/libazureinit-kvp/src/diagnostics/writer.rs) (validate + split + append), [`write_report()`](https://github.com/Azure/azure-init/blob/main/libazureinit-kvp/src/report.rs) (upsert), [`KvpPoolStore::clear_if_stale()`](https://github.com/Azure/azure-init/blob/main/libazureinit-kvp/src/store.rs) (explicit locked cleanup)
 
 ### Comparison
 
@@ -129,8 +128,8 @@ full details.
 |--------|-----------|---------|-----------|-------------|----------|-------------|-----------------|--------|---------|------------|
 | hv_kvp_daemon | Upsert + full rewrite | `fcntl` | 512 B (field width) | 2,048 B (field width) | N/A | None | Not checked | Yes (shift + rewrite) | Yes (`kvp_update_mem_state`) | 0–3 |
 | cloud-init | Append-only | `flock()` | 512 B (field width) | 1,024 B (1,023 + null-terminator) | Truncates | Truncate if `mtime` < boot | Yes | No | No | Pool 1 only |
-| azure-init (current) | Append-only, batched | `flock()` (via `fs2`) | 512 B (field width) | 1,022 B/chunk | Splits across records | Truncate if `mtime` < boot (no lock) | Zero-padded (implicit) | No | No | Pool 1 only (hardcoded) |
-| libazureinit-kvp | Append / upsert / replace | `flock()` + `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Option to truncate if `mtime` < boot (with lock) | Explicit null-terminator | Yes | N/A (direct file I/O) | Any pool (configurable) |
+| azure-init | Append diagnostics / upsert reports | `flock()` + OFD `fcntl` | Error if > 254 B | 1,022 B/chunk | Diagnostics split; oversized reports rejected | Explicit truncate if `mtime` <= boot (with lock) | Explicit null-terminator | No | Reports scan the pool | Pool 1 |
+| libazureinit-kvp store (safe mode) | Append / upsert / replace | `flock()` + OFD `fcntl` | Error if > 254 B | Error if > 1,022 B | Error | Explicit truncate if `mtime` <= boot (with lock) | Explicit null-terminator | Yes | Direct file I/O per operation | Any pool (configurable) |
 
 #### flock vs fcntl
 
@@ -233,12 +232,12 @@ no truncation.
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `HV_KVP_EXCHANGE_MAX_KEY_SIZE` | 512 | UAPI key field width in bytes |
-| `HV_KVP_EXCHANGE_MAX_VALUE_SIZE` | 2,048 | UAPI value field width in bytes |
-| `HV_KVP_EXCHANGE_MAX_RECORD_SIZE` | 2,560 | Single record size (key + value) |
-| `HV_KVP_EXCHANGE_MAX_RECORDS` | 1,024 | Max records per pool file |
-| `HV_KVP_SAFE_MAX_UTF8_KEY_SIZE` | 255 | 254 UTF-8 bytes + null-terminator; no kernel truncation on write path |
-| `HV_KVP_SAFE_MAX_UTF8_VALUE_SIZE` | 1,023 | 1,022 UTF-8 bytes + null-terminator; no kernel truncation on write path |
+| `WIRE_MAX_KEY_BYTES` | 512 | Full UTF-8 key field width in bytes |
+| `WIRE_MAX_VALUE_BYTES` | 2,048 | Full UTF-8 value field width in bytes |
+| `RECORD_SIZE` | 2,560 | Single record size (key + value) |
+| `MAX_UNIQUE_KEYS` | 1,024 | Distinct-key policy for insert/load, not an append limit |
+| `SAFE_MAX_KEY_BYTES` | 254 | Safe UTF-8 key bytes, excluding the null-terminator |
+| `SAFE_MAX_VALUE_BYTES` | 1,022 | Safe UTF-8 value bytes, excluding the null-terminator |
 
 ---
 
