@@ -404,6 +404,39 @@ mod tests {
     }
 
     #[test]
+    #[tracing_test::traced_test]
+    fn test_get_vm_id_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        for contents in ["", " \t\n"] {
+            fs::write(&path, contents).unwrap();
+            assert_eq!(
+                private_get_vm_id(Some(path.to_str().unwrap()), None, None),
+                None
+            );
+        }
+        assert!(logs_contain("VM ID file is empty at path:"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_get_vm_id_gen1_preserves_unparseable_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        let missing_efi = dir.path().join("missing-efi");
+        fs::write(&path, " Not-A-UUID \n").unwrap();
+        assert_eq!(
+            private_get_vm_id(
+                Some(path.to_str().unwrap()),
+                Some(missing_efi.to_str().unwrap()),
+                Some(missing_efi.to_str().unwrap()),
+            ),
+            Some("not-a-uuid".to_owned())
+        );
+        assert!(logs_contain("Failed to parse system UUID 'not-a-uuid'"));
+    }
+
+    #[test]
     fn test_get_vm_id_public() {
         // Exercises the public get_vm_id() wrapper.
         // On most dev/CI machines /sys/class/dmi/id/product_uuid is unreadable,

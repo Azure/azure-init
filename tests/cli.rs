@@ -5,7 +5,133 @@ use predicates::prelude::*;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::time::Duration;
 use tempfile::tempdir;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+
+async fn capture_failure_report(
+    listener: TcpListener,
+    response_status: &str,
+) -> std::io::Result<String> {
+    let (stream, _) = listener.accept().await?;
+    let mut stream = BufReader::new(stream);
+    let mut headers = String::new();
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        if stream.read_line(&mut line).await? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed before report headers",
+            ));
+        }
+        headers.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .expect("report content length should be an integer"),
+                );
+            }
+        }
+    }
+    let mut body =
+        vec![0; content_length.expect("report should have a content length")];
+    stream.read_exact(&mut body).await?;
+    stream
+        .write_all(
+            format!(
+                "HTTP/1.1 {response_status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+
+    assert!(headers.starts_with(
+        "POST http://168.63.129.16/provisioning/health HTTP/1.1\r\n"
+    ));
+    Ok(String::from_utf8(body).expect("report should be UTF-8"))
+}
+
+async fn run_with_invalid_config(
+    response_status: &str,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let config_path = dir.path().join("invalid.toml");
+    fs::write(&config_path, "[imds\n")?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy = format!("http://{}", listener.local_addr()?);
+    let mut command = tokio::process::Command::new(
+        assert_cmd::cargo::cargo_bin!("azure-init"),
+    );
+    command
+        .arg("--config")
+        .arg(&config_path)
+        // Config loading fails before endpoint overrides apply, so redirect
+        // the default WireServer URL through a child-process-only proxy.
+        .env("HTTP_PROXY", &proxy)
+        .env("http_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .env_remove("REQUEST_METHOD")
+        .kill_on_drop(true);
+    let (output, body) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::try_join!(
+            command.output(),
+            capture_failure_report(listener, response_status)
+        )
+    })
+    .await??;
+
+    assert!(body.contains("\"state\":\"NotReady\""), "{body}");
+    assert!(
+        body.contains("\"subStatus\":\"ProvisioningFailed\""),
+        "{body}"
+    );
+    assert!(body.contains("failed to load sshd config"), "{body}");
+    assert!(body.contains("Configuration error"), "{body}");
+    assert!(body.contains("invalid.toml"), "{body}");
+    Ok(output)
+}
+
+#[tokio::test]
+async fn invalid_config_reports_failure(
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_invalid_config("200 OK")
+        .await?
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Failed to load configuration:"))
+        .stderr(predicate::str::contains("Example configuration:"))
+        .stderr(
+            predicate::str::contains(
+                "Failed to send provisioning failure report:",
+            )
+            .not(),
+        );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_config_surfaces_reporting_failure(
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_invalid_config("403 Forbidden")
+        .await?
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Failed to load configuration:"))
+        .stderr(predicate::str::contains("Example configuration:"))
+        .stderr(predicate::str::contains(
+            "Failed to send provisioning failure report:",
+        ));
+    Ok(())
+}
 
 // Assert help text includes the --groups flag
 #[test]

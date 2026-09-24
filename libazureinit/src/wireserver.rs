@@ -191,7 +191,7 @@ mod tests {
     use reqwest::header::HeaderName;
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio_util::sync::CancellationToken;
 
     const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -263,6 +263,58 @@ mod tests {
             headers,
             body,
         })
+    }
+
+    #[tokio::test]
+    async fn capture_request_rejects_truncated_or_invalid_requests() {
+        for (request, expected_error) in [
+            (
+                "POST /health HTTP/1.1\r\n",
+                "connection closed before request headers",
+            ),
+            (
+                "POST /health HTTP/1.1\r\nContent-Length: 4\r\n\r\n{}",
+                "connection closed before request body",
+            ),
+            ("POST /health HTTP/1.1\r\nContent-Length: 4\r\n\r\nnull", ""),
+            (
+                "POST /health HTTP/1.1\r\nContent-Length: 4\r\n\r\nnope",
+                "expected ident",
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let send = async {
+                let mut stream =
+                    TcpStream::connect(listener.local_addr().unwrap())
+                        .await
+                        .unwrap();
+                stream.write_all(request.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).await.unwrap();
+                response
+            };
+            let (response, captured) =
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    tokio::join!(send, capture_request(&listener))
+                })
+                .await
+                .unwrap();
+            if expected_error.is_empty() {
+                assert_eq!(captured.ok().unwrap().body, Value::Null);
+                assert!(response.starts_with(b"HTTP/1.1 201"));
+            } else {
+                assert!(
+                    captured
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains(expected_error),
+                    "request: {request:?}"
+                );
+                assert!(response.is_empty());
+            }
+        }
     }
 
     #[tokio::test]

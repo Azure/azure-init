@@ -477,10 +477,66 @@ async fn provision(
 #[cfg(test)]
 mod report_tests {
     use super::*;
+    use libazureinit::imds::{Compute, OsProfile};
     use libazureinit_kvp::{KvpPool, PoolMode, PROVISIONING_REPORT_KEY};
     use tempfile::TempDir;
+    use tracing::Instrument;
 
     const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    #[test]
+    fn username_prefers_imds_then_ovf_and_reports_missing_sources() {
+        let metadata = InstanceMetadata {
+            compute: Compute {
+                os_profile: OsProfile {
+                    admin_username: "imds-user".to_owned(),
+                    computer_name: "test-host".to_owned(),
+                    disable_password_authentication: true,
+                },
+                public_keys: Vec::new(),
+            },
+        };
+        let mut ovf = Environment::default();
+        ovf.provisioning_section.linux_prov_conf_set.username =
+            "ovf-user".to_owned();
+        assert_eq!(
+            get_username(Some(&metadata), Some(&ovf)).unwrap(),
+            "imds-user"
+        );
+        assert_eq!(get_username(Some(&metadata), None).unwrap(), "imds-user");
+        assert_eq!(get_username(None, Some(&ovf)).unwrap(), "ovf-user");
+        let error = get_username(None, None).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<LibError>(),
+            Some(LibError::UsernameFailure)
+        ));
+    }
+
+    #[tokio::test]
+    async fn successful_reporting_replaces_previous_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)?;
+        write_report(&store, &LibError::Timeout.as_provisioning_report(VM_ID))
+            .expect("initial failure report should be written");
+        let report = ProvisioningReport::success(
+            format!("Azure-Init/{PKG_VERSION}"),
+            VM_ID,
+            ReportPpsType::None,
+        );
+        let mut http_attempted = false;
+        publish_provisioning_report(Some(&store), &report, async {
+            http_attempted = true;
+            Ok(())
+        })
+        .await;
+
+        assert!(http_attempted);
+        assert_eq!(store.read(PROVISIONING_REPORT_KEY)?, Some(report.encode()));
+        assert_eq!(store.len()?, 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn wireserver_failure_does_not_prevent_report_upsert(
@@ -491,16 +547,25 @@ mod report_tests {
         write_report(
             &store,
             &ProvisioningReport::success("test", VM_ID, ReportPpsType::None),
-        )?;
+        )
+        .expect("initial success report should be written");
         let report = LibError::LoadSshdConfig {
             details: "bad | \"quoted\"\nconfig".to_owned(),
         }
         .as_provisioning_report(VM_ID);
         let mut http_attempted = false;
-        publish_provisioning_report(Some(&store), &report, async {
-            http_attempted = true;
-            Err(LibError::Timeout)
-        })
+        async {
+            publish_provisioning_report(Some(&store), &report, async {
+                http_attempted = true;
+                Err(LibError::Timeout)
+            })
+            .instrument(tracing::warn_span!(
+                "expected_test_warning",
+                reason = "simulated wireserver timeout; KVP reporting should still succeed"
+            ))
+            .await;
+        }
+        .with_subscriber(logging::bootstrap())
         .await;
         assert!(http_attempted);
         assert_eq!(store.read(PROVISIONING_REPORT_KEY)?, Some(report.encode()));

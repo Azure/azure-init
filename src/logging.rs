@@ -149,3 +149,104 @@ pub(crate) fn setup_layers(vm_id: &str, config: &Config) -> LoggingSetup {
         report_store,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    fn local_only_config(dir: &TempDir) -> Config {
+        let mut config = Config::default();
+        config.telemetry.kvp_diagnostics = false;
+        config.azure_init_log_path.path = dir.path().join("azure-init.log");
+        config
+    }
+
+    #[test]
+    fn kvp_filter_precedence_and_fallbacks() {
+        const CASE_ENV: &str = "AZURE_INIT_TEST_KVP_FILTER_CASE";
+        let cases = [
+            (None, None, "info"),
+            (Some("trace"), Some("warn"), "trace"),
+            (Some("off"), Some("trace"), "off"),
+            (Some(""), Some("warn"), "warn"),
+            (Some(" \t "), Some("debug"), "debug"),
+            (Some("target=invalid"), Some("error"), "error"),
+            (None, Some(" debug "), "debug"),
+            (None, Some(""), "info"),
+            (None, Some(" \t "), "info"),
+            (None, Some("target=invalid"), "info"),
+            (Some("target=invalid"), None, "info"),
+            (Some("target=invalid"), Some("target=invalid"), "info"),
+            (
+                None,
+                Some("warn,libazureinit=debug"),
+                "libazureinit=debug,warn",
+            ),
+        ];
+        if let Ok(case) = std::env::var(CASE_ENV) {
+            let (_, config, expected) = cases[case.parse::<usize>().unwrap()];
+            assert_eq!(kvp_filter(config).to_string(), expected);
+        } else {
+            // Each case gets its own process environment, leaving parallel tests untouched.
+            for (index, (env, _, _)) in cases.iter().enumerate() {
+                let mut child = Command::new(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "logging::tests::kvp_filter_precedence_and_fallbacks",
+                        "--nocapture",
+                    ])
+                    .env(CASE_ENV, index.to_string())
+                    .env_remove(AZURE_INIT_KVP_FILTER);
+                if let Some(filter) = env {
+                    child.env(AZURE_INIT_KVP_FILTER, filter);
+                }
+                let output = child.output().unwrap();
+                assert!(output.status.success(), "case {index}: {output:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_kvp_setup_preserves_logs_and_enforces_private_permissions() {
+        for existing in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let config = local_only_config(&dir);
+            let path = &config.azure_init_log_path.path;
+            if existing {
+                std::fs::write(path, "existing log\n").unwrap();
+                std::fs::set_permissions(path, Permissions::from_mode(0o644))
+                    .unwrap();
+            }
+            let setup = setup_layers(VM_ID, &config);
+            assert!(setup.report_store.is_none());
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                if existing { "existing log\n" } else { "" }
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_log_file_does_not_fail_local_only_setup() {
+        let dir = TempDir::new().unwrap();
+        let mut config = local_only_config(&dir);
+        config.azure_init_log_path.path = dir.path().to_path_buf();
+        let setup = setup_layers(VM_ID, &config);
+        assert!(setup.report_store.is_none());
+        assert!(dir.path().is_dir());
+        tracing::subscriber::with_default(setup.subscriber, || {
+            tracing::error!(
+                "[EXPECTED TEST ERROR] Verifying stderr logging when the log file is unavailable"
+            );
+        });
+    }
+}

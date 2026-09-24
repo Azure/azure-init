@@ -307,6 +307,7 @@ impl Visit for Fields {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -355,23 +356,22 @@ mod tests {
         });
 
         let entries = entries(&store);
-        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Event(event)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
-            entries.as_slice()
-        else {
-            panic!("unexpected entries: {entries:?}");
-        };
-        assert_eq!(start.key.name, "provision");
-        assert_eq!(finish.key.name, "provision");
-        assert_eq!(start.key.event_id, finish.key.event_id);
-        assert_ne!(start.key.event_id, event.key.event_id);
-        assert_eq!(finish.result, Outcome::Success);
-        assert_eq!(event.key.name, "provision");
-        let DiagnosticPayload::Text(text) = &event.payload else {
-            panic!("expected text payload");
-        };
-        assert!(text.contains("\"records\":3"));
-        assert!(text.contains("applied"));
-        assert!(text.contains("\"level\":\"INFO\""));
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(start)),
+             Entry::Diagnostic(Diagnostic::Event(event)),
+             Entry::Diagnostic(Diagnostic::Finish(finish))]
+                if start.key.name == "provision"
+                    && finish.key.name == "provision"
+                    && start.key.event_id == finish.key.event_id
+                    && start.key.event_id != event.key.event_id
+                    && finish.result == Outcome::Success
+                    && event.key.name == "provision"
+                    && matches!(&event.payload, DiagnosticPayload::Text(text)
+                        if text.contains("\"records\":3")
+                            && text.contains("applied")
+                            && text.contains("\"level\":\"INFO\""))
+        ));
     }
 
     #[test]
@@ -384,12 +384,10 @@ mod tests {
         });
 
         let entries = entries(&store);
-        let [Entry::Diagnostic(Diagnostic::Event(event))] = entries.as_slice()
-        else {
-            panic!("unexpected entries: {entries:?}");
-        };
-        assert!(event.key.name.starts_with("event "));
-        assert_eq!(event.result, None);
+        assert!(
+            matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
+                if event.key.name.starts_with("event ") && event.result.is_none())
+        );
     }
 
     #[test]
@@ -433,6 +431,135 @@ mod tests {
     }
 
     #[test]
+    fn invalid_late_result_drops_only_the_finish() {
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        let subscriber = tracing_subscriber::registry().with(kvp);
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("op", diagnostic.result = "success");
+            span.record("diagnostic.result", "invalid");
+        });
+        assert!(matches!(
+            entries(&store).as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(_))]
+        ));
+    }
+
+    #[test]
+    fn typed_fields_and_explicit_failure_are_preserved() {
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        let subscriber = tracing_subscriber::registry().with(kvp);
+        let error = std::io::Error::other("test I/O failure");
+        let error: &(dyn std::error::Error + 'static) = &error;
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                name: "typed",
+                finite = 1.25_f64,
+                nan = f64::NAN,
+                positive = f64::INFINITY,
+                negative = f64::NEG_INFINITY,
+                error,
+                diagnostic.result = "fail",
+            );
+        });
+        let expected = DiagnosticPayload::Text(
+            serde_json::json!({
+                "target": module_path!(),
+                "level": "INFO",
+                "fields": {
+                    "finite": 1.25,
+                    "nan": "NaN",
+                    "positive": "inf",
+                    "negative": "-inf",
+                    "error": "test I/O failure",
+                    "diagnostic.result": "fail",
+                },
+            })
+            .to_string(),
+        );
+        let entries = entries(&store);
+        assert!(
+            matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
+                if event.result == Some(Outcome::Failure) && event.payload == expected)
+        );
+    }
+
+    #[test]
+    fn callback_write_failure_does_not_panic_or_disable_later_events() {
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        std::fs::create_dir(store.path()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(kvp);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!("unwritable").in_scope(|| {
+                tracing::info!("this write also fails");
+            });
+            assert!(store.path().is_dir());
+            std::fs::remove_dir(store.path()).unwrap();
+            tracing::info!(name: "recovered", "writes work again");
+        });
+        assert!(matches!(
+            entries(&store).as_slice(),
+            [Entry::Diagnostic(Diagnostic::Event(event))]
+                if event.key.name == "recovered"
+        ));
+    }
+
+    struct GuardProbe {
+        kvp: DiagnosticsKvp,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Layer<tracing_subscriber::Registry> for GuardProbe {
+        fn on_new_span(
+            &self,
+            attrs: &Attributes<'_>,
+            id: &Id,
+            ctx: Context<'_, tracing_subscriber::Registry>,
+        ) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let missing = Id::from_u64(u64::MAX);
+            self.kvp.on_new_span(attrs, &missing, ctx.clone());
+            self.kvp.on_close(missing, ctx.clone());
+            // This span belongs to the registry, but was never observed by KVP.
+            self.kvp.on_close(id.clone(), ctx);
+        }
+
+        fn on_record(
+            &self,
+            id: &Id,
+            values: &Record<'_>,
+            ctx: Context<'_, tracing_subscriber::Registry>,
+        ) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.kvp
+                .on_record(&Id::from_u64(u64::MAX), values, ctx.clone());
+            self.kvp.on_record(id, values, ctx);
+        }
+    }
+
+    #[test]
+    fn callbacks_ignore_missing_spans_and_missing_kvp_state() {
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(GuardProbe {
+            kvp,
+            calls: Arc::clone(&calls),
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "unobserved",
+                updated = tracing::field::Empty
+            );
+            span.record("updated", true);
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(!store.path().exists());
+    }
+
+    #[test]
     fn late_recorded_fields_appear_in_finish() {
         let dir = TempDir::new().unwrap();
         let (kvp, store) = bridge(&dir);
@@ -446,10 +573,10 @@ mod tests {
         });
 
         let entries = entries(&store);
-        let DiagnosticPayload::Text(text) = &finish(&entries).payload else {
-            panic!("expected text payload");
-        };
-        assert!(text.contains("\"http_status\":200"));
+        assert!(
+            matches!(&finish(&entries).payload, DiagnosticPayload::Text(text)
+            if text.contains("\"http_status\":200"))
+        );
     }
 
     #[test]
