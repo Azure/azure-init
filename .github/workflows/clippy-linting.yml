@@ -1,7 +1,6 @@
 name: "Run Clippy for Linting"
 permissions:
   contents: read
-  pull-requests: write
 on:
   pull_request:
     branches:
@@ -13,6 +12,7 @@ jobs:
   clippy:
     name: Run clippy on azure-init 
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         rust-toolchain: [stable, "1.88.0"]
@@ -22,9 +22,11 @@ jobs:
           sudo apt update
           sudo apt install -y libudev-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@master
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: ${{matrix.rust-toolchain}}
           components: clippy
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features --verbose -- --deny warnings
+        run: cargo clippy --locked --all-targets --all-features --verbose -- --deny warnings

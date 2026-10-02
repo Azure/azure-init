@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["full"] }
 serde-xml-rs = "0.8.0"
 serde_json = "1.0.96"
 rustix = { version = "1.1", features = ["fs", "process"] }
-users = "0.11"
+uzers = "0.12.2"
 block-utils = "0.11.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
@@ -51,4 +51,3 @@ serial_test = "3.0.0"
 [lib]
 name = "libazureinit"
 path = "src/lib.rs"
-

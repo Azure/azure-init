@@ -28,10 +28,6 @@ predicates-core = "1.0.8"
 predicates-tree = "1.0.11"
 tempfile = "3.3.0"
 
-# Pin idna_adapter to <=1.2.0 for MSRV issues with older Rust versions.
-# With MSRV 1.88, this pin may no longer be necessary.
-idna_adapter = "<=1.2.0"
-
 [dependencies.libazureinit]
 path = "libazureinit"
 version = "0.1.0"

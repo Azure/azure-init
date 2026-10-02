@@ -177,7 +177,7 @@ impl Provision {
     #[instrument(skip_all)]
     fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
-            let user = users::get_user_by_name(&self.user.name).ok_or(
+            let user = uzers::get_user_by_name(&self.user.name).ok_or(
                 Error::UserMissing {
                     user: self.user.name.clone(),
                 },
