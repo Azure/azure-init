@@ -177,7 +177,7 @@ impl Provision {
     #[instrument(skip_all)]
     fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
-            let user = users::get_user_by_name(&self.user.name).ok_or(
+            let user = uzers::get_user_by_name(&self.user.name).ok_or(
                 Error::UserMissing {
                     user: self.user.name.clone(),
                 },
@@ -212,6 +212,7 @@ mod tests {
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
     use crate::error::Error;
+    use crate::imds::PublicKeys;
     use crate::User;
 
     #[test]
@@ -240,6 +241,35 @@ mod tests {
         )
         .provision()
         .unwrap();
+    }
+
+    #[test]
+    fn test_provision_ssh_keys_missing_user() {
+        let username = format!("missing-{}", uuid::Uuid::new_v4().simple());
+        assert!(
+            uzers::get_user_by_name(&username).is_none(),
+            "The test must not provision SSH keys for an existing account"
+        );
+
+        let provision = Provision::new(
+            "test-hostname",
+            User::new(
+                username.clone(),
+                vec![PublicKeys {
+                    key_data: "not-a-real-key".to_string(),
+                    path: "unused".to_string(),
+                }],
+            ),
+            Config::default(),
+            true,
+        );
+
+        let error = provision
+            .provision_ssh_keys()
+            .expect_err("SSH key provisioning must fail for a missing user");
+        assert!(
+            matches!(error, Error::UserMissing { user } if user == username)
+        );
     }
 
     #[test]

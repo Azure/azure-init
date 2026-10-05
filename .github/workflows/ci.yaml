@@ -1,7 +1,6 @@
 name: "Run CI"
 permissions:
   contents: read
-  pull-requests: write
 on:
   push:
     branches:
@@ -14,24 +13,35 @@ jobs:
   build-test:
     name: Build and test azure-init
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
-        rust-toolchain: [stable, "1.88.0"]
+        rust-toolchain: [stable, msrv]
     steps:
       - name: Install libudev
         run: |
           sudo apt update
           sudo apt install -y libudev-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{matrix.rust-toolchain}}
+          persist-credentials: false
+      - name: Read MSRV from Cargo metadata
+        if: matrix.rust-toolchain == 'msrv'
+        id: msrv
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -er '.packages[] | select(.name == "azure-init") | .rust_version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: ${{ steps.msrv.outputs.version || matrix.rust-toolchain }}
           components: clippy, rustfmt
       - name: Rustfmt Check
         run: cargo fmt --all --check
       - name: Build azure-init
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
       - name: Run unit tests
-        run: cargo test --verbose --all-features --workspace
+        run: cargo test --locked --verbose --all-features --workspace
       - name: Run clippy
-        run: cargo clippy --verbose -- --deny warnings
+        run: cargo clippy --locked --verbose -- --deny warnings
