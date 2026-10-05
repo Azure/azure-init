@@ -2,7 +2,7 @@
 name = "azure-init"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version.workspace = true
 repository = "https://github.com/Azure/azure-init/"
 homepage = "https://github.com/Azure/azure-init/"
 license = "MIT"
@@ -48,6 +48,9 @@ members = [
     "libazureinit",
     "libazureinit-kvp",
 ]
+
+[workspace.package]
+rust-version = "1.88"
 
 [features]
 passwd = []

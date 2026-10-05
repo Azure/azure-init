@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        rust-toolchain: [stable, "1.88.0"]
+        rust-toolchain: [stable, msrv]
     steps:
       - name: Install libudev
         run: |
@@ -24,9 +24,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read MSRV from Cargo metadata
+        if: matrix.rust-toolchain == 'msrv'
+        id: msrv
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -er '.packages[] | select(.name == "azure-init") | .rust_version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
-          toolchain: ${{matrix.rust-toolchain}}
+          toolchain: ${{ steps.msrv.outputs.version || matrix.rust-toolchain }}
           components: clippy
       - name: Run clippy
         run: cargo clippy --locked --all-targets --all-features --verbose -- --deny warnings
