@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::config::{Config, DEFAULT_AZURE_INIT_DATA_DIR};
 use crate::error::Error;
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use tracing::instrument;
 
 /// This function determines the effective provisioning directory.
@@ -132,7 +133,7 @@ pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
 
-#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = "fail"))]
+#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn private_get_vm_id(
     product_uuid_path: Option<&str>,
     sysfs_efi_path: Option<&str>,
@@ -159,7 +160,8 @@ fn private_get_vm_id(
                 let swapped_uuid =
                     swap_uuid_to_little_endian(*uuid_parsed.as_bytes());
                 let final_id = swapped_uuid.to_string();
-                tracing::Span::current().record("diagnostic.result", "success");
+                tracing::Span::current()
+                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
                 tracing::info!("VM ID (Gen1, swapped): {}", final_id);
                 Some(final_id)
             }
@@ -173,7 +175,8 @@ fn private_get_vm_id(
             }
         }
     } else {
-        tracing::Span::current().record("diagnostic.result", "success");
+        tracing::Span::current()
+            .record(OUTCOME_FIELD, Outcome::Success.as_str());
         tracing::info!("VM ID (Gen2, no swap): {}", system_uuid);
         Some(system_uuid)
     }
@@ -401,6 +404,47 @@ mod tests {
         let actual = res.unwrap();
         let expected = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(actual, expected, "Should not byte-swap for Gen2");
+    }
+
+    #[test]
+    fn test_get_vm_id_outcome_uses_shared_recording_api() {
+        use crate::unittest::capture_kvp_at_info;
+        use libazureinit_kvp::Diagnostic;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        let missing_efi = dir.path().join("missing-efi");
+        for (contents, has_id, expected) in [
+            (
+                "550e8400-e29b-41d4-a716-446655440000",
+                true,
+                Outcome::Success,
+            ),
+            ("", false, Outcome::Failure),
+            ("not-a-uuid", true, Outcome::Failure),
+        ] {
+            fs::write(&path, contents).unwrap();
+            let (result, diagnostics) = capture_kvp_at_info(|| {
+                private_get_vm_id(
+                    Some(path.to_str().unwrap()),
+                    Some(missing_efi.to_str().unwrap()),
+                    Some(missing_efi.to_str().unwrap()),
+                )
+            });
+            assert_eq!(result.is_some(), has_id);
+            let finish = diagnostics
+                .iter()
+                .find_map(|diagnostic| match diagnostic {
+                    Diagnostic::Finish(finish)
+                        if finish.key.name == "get_vm_id" =>
+                    {
+                        Some(finish)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(finish.result, expected);
+        }
     }
 
     #[test]

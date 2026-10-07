@@ -18,11 +18,10 @@ use uuid::Uuid;
 
 use super::{
     Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticPayload,
-    DiagnosticStart, DiagnosticWriter, Outcome,
+    DiagnosticStart, DiagnosticWriter, Outcome, OUTCOME_FIELD,
 };
 use crate::KvpError;
 
-const OUTCOME_FIELD: &str = "diagnostic.result";
 const INVALID_OUTCOME: &str =
     "diagnostic.result must be a string containing success or fail";
 
@@ -239,10 +238,14 @@ impl Fields {
     fn outcome(&self) -> Result<Option<Outcome>, &'static str> {
         match self.0.get(OUTCOME_FIELD) {
             None => Ok(None),
-            Some(Value::String(value)) if value == "success" => {
+            Some(Value::String(value))
+                if value == Outcome::Success.as_str() =>
+            {
                 Ok(Some(Outcome::Success))
             }
-            Some(Value::String(value)) if value == "fail" => {
+            Some(Value::String(value))
+                if value == Outcome::Failure.as_str() =>
+            {
                 Ok(Some(Outcome::Failure))
             }
             _ => Err(INVALID_OUTCOME),
@@ -410,11 +413,43 @@ mod tests {
         let (kvp, store) = bridge(&dir);
         let subscriber = tracing_subscriber::registry().with(kvp);
         tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!("op", diagnostic.result = "success");
-            span.in_scope(|| tracing::error!("handled, not fatal"));
+            let span = tracing::info_span!(
+                "op",
+                diagnostic.result = Outcome::Failure.as_str()
+            );
+            span.in_scope(|| {
+                tracing::error!("handled, not fatal");
+                span.record(OUTCOME_FIELD, Outcome::Success.as_str());
+            });
         });
 
         assert_eq!(finish(&entries(&store)).result, Outcome::Success);
+    }
+
+    #[test]
+    fn outcome_field_accepts_only_canonical_wire_tokens() {
+        assert_eq!(Fields::default().outcome(), Ok(None));
+        for (token, outcome) in
+            [("success", Outcome::Success), ("fail", Outcome::Failure)]
+        {
+            let fields = Fields(Map::from_iter([(
+                OUTCOME_FIELD.to_owned(),
+                Value::String(token.to_owned()),
+            )]));
+            assert_eq!(fields.outcome(), Ok(Some(outcome)));
+        }
+        for value in [
+            Value::String("failure".to_owned()),
+            Value::String("Success".to_owned()),
+            Value::String("".to_owned()),
+            Value::Bool(true),
+            Value::from(1),
+            Value::Null,
+        ] {
+            let fields =
+                Fields(Map::from_iter([(OUTCOME_FIELD.to_owned(), value)]));
+            assert_eq!(fields.outcome(), Err(INVALID_OUTCOME));
+        }
     }
 
     #[test]

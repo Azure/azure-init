@@ -191,8 +191,8 @@ fn decode_diag_group(
         .with_timezone(&Utc);
     let result = match result {
         "" => None,
-        "success" => Some(Outcome::Success),
-        "fail" => Some(Outcome::Failure),
+        value if value == Outcome::Success.as_str() => Some(Outcome::Success),
+        value if value == Outcome::Failure.as_str() => Some(Outcome::Failure),
         _ => return Err(DecodeError::Malformed),
     };
     let duration = if duration.is_empty() {
@@ -731,6 +731,8 @@ mod tests {
     #[case("finish", "success", "")]
     #[case("finish", "", "0")]
     #[case("finish", "error", "52")]
+    #[case("finish", "failure", "52")]
+    #[case("event", "failure", "")]
     fn invalid_kind_fields_are_malformed(
         #[case] kind: &str,
         #[case] result: &str,

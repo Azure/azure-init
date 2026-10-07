@@ -81,7 +81,7 @@ pub use diagnostics::{
     DecodeError, Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticKey,
     DiagnosticPayload, DiagnosticReader, DiagnosticStart, DiagnosticWriter,
     DurationPrecision, Encoding, Entry, Kind, Outcome, RawKeyValue,
-    TimestampPrecision, DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES,
+    TimestampPrecision, DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES, OUTCOME_FIELD,
 };
 pub use error::KvpError;
 pub use report::{

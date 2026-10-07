@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use reqwest::{header::HeaderMap, Client, Request, StatusCode};
 use tokio::time::timeout;
 use tracing::{instrument, Instrument};
@@ -111,7 +112,7 @@ async fn request(
                 "request_attempt",
                 attempt,
                 http_status = tracing::field::Empty,
-                diagnostic.result = "fail"
+                diagnostic.result = Outcome::Failure.as_str()
             );
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
@@ -126,7 +127,7 @@ async fn request(
 
                         match response.error_for_status() {
                             Ok(response) => {
-                                span.record("diagnostic.result", "success");
+                                span.record(OUTCOME_FIELD, Outcome::Success.as_str());
                                 tracing::info!("HTTP response succeeded with status {}", statuscode);
                                 return Ok((response, retry_for.saturating_sub(now.elapsed() + retry_interval)));
                             },
@@ -165,11 +166,17 @@ async fn request(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use libazureinit_kvp::{Diagnostic, DiagnosticPayload, Outcome};
     use reqwest::{header, Client, StatusCode};
     use std::time::Duration;
-    use tokio::{io::AsyncWriteExt, net::TcpListener};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::TcpListener,
+    };
 
-    use crate::unittest::{get_http_response_payload, serve_requests};
+    use crate::unittest::{
+        capture_kvp_at_info, get_http_response_payload, serve_requests,
+    };
 
     const BODY_CONTENTS: &str = "hello world";
 
@@ -324,6 +331,111 @@ pub(crate) mod tests {
     async fn get_ok() {
         assert!(serve_valid_http_with(&StatusCode::OK, BODY_CONTENTS).await);
         assert!(logs_contain("HTTP response succeeded with status 200 OK"));
+    }
+
+    #[test]
+    fn get_retries_preserve_kvp_outcomes() {
+        let ((), diagnostics) = capture_kvp_at_info(|| {
+            // Keep all future polling inside the scoped tracing subscriber.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let listener =
+                        TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let url =
+                        format!("http://{}", listener.local_addr().unwrap());
+                    let client = Client::builder().no_proxy().build().unwrap();
+                    let server = async {
+                        for status in [
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            StatusCode::OK,
+                        ] {
+                            let (stream, _) = listener.accept().await.unwrap();
+                            let mut stream = BufReader::new(stream);
+                            loop {
+                                let mut line = String::new();
+                                assert_ne!(
+                                    stream.read_line(&mut line).await.unwrap(),
+                                    0,
+                                    "request closed before its headers completed"
+                                );
+                                if line == "\r\n" {
+                                    break;
+                                }
+                            }
+                            stream
+                                .get_mut()
+                                .write_all(
+                                    get_http_response_payload(
+                                        &status,
+                                        BODY_CONTENTS,
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                    };
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        let (result, ()) = tokio::join!(
+                            super::get(
+                                &client,
+                                header::HeaderMap::new(),
+                                Duration::from_secs(1),
+                                Duration::from_millis(5),
+                                Duration::from_secs(5),
+                                &url,
+                            ),
+                            server,
+                        );
+                        let (response, _) = result.unwrap();
+                        assert_eq!(response.status(), StatusCode::OK);
+                        assert_eq!(
+                            response.text().await.unwrap(),
+                            BODY_CONTENTS
+                        );
+                    })
+                    .await
+                    .unwrap();
+                });
+        });
+        let attempts: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                Diagnostic::Finish(finish)
+                    if finish.key.name == "request_attempt" =>
+                {
+                    Some(finish)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(attempts.len(), 2);
+        for (finish, (attempt, status, outcome)) in attempts.iter().zip([
+            (0_u64, StatusCode::SERVICE_UNAVAILABLE, Outcome::Failure),
+            (1_u64, StatusCode::OK, Outcome::Success),
+        ]) {
+            assert_eq!(finish.result, outcome);
+            let DiagnosticPayload::Text(payload) = &finish.payload else {
+                panic!("expected a JSON text payload");
+            };
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).unwrap();
+            assert_eq!(payload["fields"]["attempt"], attempt);
+            assert_eq!(payload["fields"]["http_status"], status.as_u16());
+        }
+        let request = diagnostics
+            .iter()
+            .find_map(|diagnostic| match diagnostic {
+                Diagnostic::Finish(finish) if finish.key.name == "request" => {
+                    Some(finish)
+                }
+                _ => None,
+            })
+            .expect("the enclosing request finished");
+        assert_eq!(request.result, Outcome::Success);
     }
 
     // Assert status codes in the list are retried

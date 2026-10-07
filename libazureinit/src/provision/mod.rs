@@ -115,7 +115,7 @@ impl Provision {
         self.provision_core()?;
 
         // Update SSH configuration (separate from password provisioning)
-        self.update_ssh_config()?;
+        self.update_ssh_config(ssh::get_sshd_config_path())?;
 
         // Provision SSH keys
         self.provision_ssh_keys()?;
@@ -148,18 +148,17 @@ impl Provision {
 
     /// Updates SSH configuration based on the `disable_password_authentication` flag.
     #[instrument(err, skip_all)]
-    fn update_ssh_config(&self) -> Result<(), Error> {
+    fn update_ssh_config(&self, sshd_config_path: &str) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
         let ssh_config_update_required =
             self.config.ssh.configure_sshd_password_authentication;
 
         if ssh_config_update_required {
-            let sshd_config_path = ssh::get_sshd_config_path();
             if let Err(error) = ssh::update_sshd_config(
                 sshd_config_path,
                 self.disable_password_authentication,
             ) {
-                tracing::debug!(
+                tracing::error!(
                     ?error,
                     sshd_config_path,
                     "Failed to update sshd configuration for password authentication"
@@ -212,7 +211,45 @@ mod tests {
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
     use crate::error::Error;
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
     use crate::User;
+
+    #[test]
+    fn test_update_ssh_config_failure_preserves_context_at_info() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+        for enabled in [false, true] {
+            let mut config = Config::default();
+            config.ssh.configure_sshd_password_authentication = enabled;
+            let provision = Provision::new(
+                "test-host",
+                User::new("test-user", vec![]),
+                config,
+                true,
+            );
+            let (result, diagnostics) =
+                capture_kvp_at_info(|| provision.update_ssh_config(path));
+            let errors = kvp_error_fields(&diagnostics);
+            if enabled {
+                assert!(matches!(result, Err(Error::UpdateSshdConfig)));
+                let context = errors
+                    .iter()
+                    .find(|fields| {
+                        fields["message"]
+                            == "Failed to update sshd configuration for password authentication"
+                    })
+                    .expect("contextual SSH failure at ERROR");
+                assert_eq!(context["sshd_config_path"], path);
+                assert!(context["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("directory"));
+            } else {
+                assert!(result.is_ok());
+                assert!(errors.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn test_successful_provision() {

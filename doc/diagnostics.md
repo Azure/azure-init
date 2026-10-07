@@ -280,7 +280,32 @@ there is no span. Every payload is JSON text holding the record's `target`,
 `level`, and structured `fields`. The layer writes through `DiagnosticWriter`
 synchronously on the calling thread, so it needs no async runtime.
 
-A span finishes as `success` unless its `diagnostic.result` field is `fail`, a
-directly associated ERROR event occurred, or the thread is unwinding as it
-closes; only that span is marked, not its ancestors. A `diagnostic.result` value
-other than `success` or `fail` drops the record rather than guessing.
+By default, when a span closes, the KVP layer reports `fail` if it observed an
+ERROR directly associated with that span; otherwise, it reports `success`.
+
+Set `diagnostic.result` when log severity alone would give the wrong answer.
+For example, a failed HTTP attempt may log only a WARN because the request
+will be retried. An explicit outcome lets that attempt finish as `fail`
+without requiring an ERROR event.
+
+Declare the field when creating the span, then record its value:
+
+```rust
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
+
+let span = tracing::info_span!(
+    "request_attempt",
+    diagnostic.result = tracing::field::Empty,
+);
+span.record(OUTCOME_FIELD, Outcome::Failure.as_str());
+```
+
+Recording a field that was not declared when the span was created has no effect.
+
+An explicit `success` or `fail` overrides error-based inference, except that
+closing during unwinding forces failure. Invalid values cause the affected
+event or finish to be dropped.
+
+Contextual ERROR messages and `#[instrument(err)]` produce separate events
+intentionally. The additional context does not create extra span finishes or
+provisioning reports.

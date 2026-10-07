@@ -32,6 +32,8 @@ zeroize = "1.8"
 
 [dev-dependencies]
 httparse = "1"
+libazureinit-kvp = { path = "../libazureinit-kvp", version = "0.1.0", features = ["tracing"] }
+tracing-subscriber = { version = "0.3.18", default-features = false, features = ["registry", "std"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
@@ -42,4 +44,3 @@ anyhow = "1.0.81"
 [lib]
 name = "libazureinit"
 path = "src/lib.rs"
-

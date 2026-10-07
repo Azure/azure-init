@@ -35,8 +35,9 @@ pub use reqwest;
 ///
 /// <div class="warning">
 ///
-/// This logs the command and its arguments, and as such is not appropriate
-/// if the command contains sensitive information.
+/// This logs the command and its arguments, plus stdout and stderr as text on
+/// failure, preserving embedded newlines. It should not be used for commands
+/// whose arguments or output contain sensitive information.
 ///
 /// </div>
 #[tracing::instrument(
@@ -56,11 +57,11 @@ pub(crate) fn run(
     if !status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        tracing::debug!(
+        tracing::error!(
             ?status,
             ?command,
-            ?stdout,
-            ?stderr,
+            %stdout,
+            %stderr,
             "Failed command output"
         );
         return Err(error::Error::SubprocessFailed {
@@ -75,6 +76,8 @@ pub(crate) fn run(
 #[cfg(test)]
 mod lib_tests {
     use super::*;
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
+    use libazureinit_kvp::{Diagnostic, Outcome};
     use std::process::Command;
 
     #[test]
@@ -90,5 +93,38 @@ mod lib_tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, error::Error::SubprocessFailed { .. }));
+    }
+
+    #[test]
+    fn test_run_failure_preserves_context_at_info() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            r#"printf '%s\n' 'stdout "context"' 'second line'; printf '%s\n' 'stderr \ detail' >&2; exit 7"#,
+        ]);
+        let (result, diagnostics) = capture_kvp_at_info(|| run(command));
+        assert!(matches!(
+            result,
+            Err(error::Error::SubprocessFailed { status, .. })
+                if status.code() == Some(7)
+        ));
+        let [Diagnostic::Start(start), Diagnostic::Event(context), Diagnostic::Event(returned), Diagnostic::Finish(finish)] =
+            diagnostics.as_slice()
+        else {
+            panic!("unexpected subprocess lifecycle: {diagnostics:?}");
+        };
+        assert_eq!(start.key.event_id, finish.key.event_id);
+        assert_ne!(context.key.event_id, returned.key.event_id);
+        assert_eq!(finish.result, Outcome::Failure);
+
+        let errors = kvp_error_fields(&diagnostics);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0]["message"], "Failed command output");
+        assert_eq!(errors[0]["stdout"], "stdout \"context\"\nsecond line\n");
+        assert_eq!(errors[0]["stderr"], "stderr \\ detail\n");
+        assert!(errors[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("exit status: 7"));
     }
 }

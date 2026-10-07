@@ -9,6 +9,7 @@
 use crate::error::Error;
 use crate::imds::PublicKeys;
 use lazy_static::lazy_static;
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use regex::Regex;
 use rustix::fs::chown;
 use rustix::process::{Gid, Uid};
@@ -138,7 +139,7 @@ pub(crate) fn provision_ssh(
 ///
 /// This function returns a path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all, fields(diagnostic.result = "fail"))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn get_authorized_keys_path_from_sshd(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<String> {
@@ -150,7 +151,8 @@ fn get_authorized_keys_path_from_sshd(
             "No authorizedkeysfile setting found in sshd configuration"
         );
     } else {
-        tracing::Span::current().record("diagnostic.result", "success");
+        tracing::Span::current()
+            .record(OUTCOME_FIELD, Outcome::Success.as_str());
     }
     path
 }
@@ -164,13 +166,14 @@ fn get_authorized_keys_path_from_sshd(
 /// # Returns
 ///
 /// This function returns an output of the command.
-#[instrument(skip_all, fields(diagnostic.result = "fail"))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn run_sshd_command(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<Output> {
     match sshd_config_command_runner() {
         Ok(output) if output.status.success() => {
-            tracing::Span::current().record("diagnostic.result", "success");
+            tracing::Span::current()
+                .record(OUTCOME_FIELD, Outcome::Success.as_str());
             info!(
                 stdout_length = output.stdout.len(),
                 "Executed sshd -G successfully",
@@ -210,7 +213,7 @@ fn run_sshd_command(
 ///
 /// This function returns an `Option<String>` containing the path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all, fields(diagnostic.result = "fail"))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(stdout);
     for line in output.lines() {
@@ -223,7 +226,8 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
                 s.to_string()
             });
             if keypath.is_some() {
-                tracing::Span::current().record("diagnostic.result", "success");
+                tracing::Span::current()
+                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
                 return keypath;
             }
         }
@@ -364,6 +368,45 @@ mod tests {
             status: ExitStatus::from_raw(status_code),
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn test_sshd_outcomes_use_shared_recording_api() {
+        use crate::unittest::capture_kvp_at_info;
+        use libazureinit_kvp::{Diagnostic, Outcome};
+
+        for (status, stdout, expected) in [
+            (0, "authorizedkeysfile .ssh/test_keys", Outcome::Success),
+            (0, "", Outcome::Failure),
+            (1, "", Outcome::Failure),
+        ] {
+            let (result, diagnostics) = capture_kvp_at_info(|| {
+                get_authorized_keys_path_from_sshd(|| {
+                    Ok(create_output(status, stdout, "test output"))
+                })
+            });
+            assert_eq!(result.is_some(), expected == Outcome::Success);
+            let finishes: Vec<_> = diagnostics
+                .iter()
+                .filter_map(|diagnostic| match diagnostic {
+                    Diagnostic::Finish(finish) => Some(finish),
+                    _ => None,
+                })
+                .collect();
+            let finish = finishes
+                .iter()
+                .find(|finish| {
+                    finish.key.name == "get_authorized_keys_path_from_sshd"
+                })
+                .unwrap();
+            assert_eq!(finish.result, expected);
+            if expected == Outcome::Success {
+                assert_eq!(finishes.len(), 3);
+                assert!(finishes
+                    .iter()
+                    .all(|finish| finish.result == Outcome::Success));
+            }
         }
     }
 

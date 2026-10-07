@@ -371,7 +371,7 @@ fn orchestrate_ovf_env(
 ) -> Result<Environment, Error> {
     let mount_result = mount_fn();
     if let Err(ref e) = mount_result {
-        tracing::debug!(error = ?e, "Failed to mount media.");
+        tracing::error!(error = ?e, "Failed to mount media.");
     }
     let mounted = mount_result?;
 
@@ -380,7 +380,7 @@ fn orchestrate_ovf_env(
 
     let unmount_result = unmount_fn(mounted);
     if let Err(ref e) = unmount_result {
-        tracing::debug!(error = ?e, "Failed to remove media.");
+        tracing::error!(error = ?e, "Failed to unmount or eject media.");
     }
     unmount_result?;
 
@@ -391,6 +391,7 @@ fn orchestrate_ovf_env(
 mod tests {
     use super::*;
     use crate::error::Error;
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -780,38 +781,53 @@ mod tests {
 
     #[test]
     fn test_orchestrate_mount_failure() {
-        // Exercises the mount error log branch in orchestrate_ovf_env.
-        let result = orchestrate_ovf_env(
-            || {
-                Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "mock mount failure",
-                )))
-            },
-            noop_read,
-            noop_unmount,
-        );
+        let (result, diagnostics) = capture_kvp_at_info(|| {
+            orchestrate_ovf_env(
+                || {
+                    Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "mock mount failure",
+                    )))
+                },
+                noop_read,
+                noop_unmount,
+            )
+        });
         assert!(result.is_err());
+        let errors = kvp_error_fields(&diagnostics);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["message"], "Failed to mount media.");
+        assert!(errors[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("mock mount failure"));
     }
 
     #[test]
     fn test_orchestrate_unmount_failure() {
-        // Exercises the unmount error log branch in orchestrate_ovf_env.
         let fake = Media::fake_mounted(
             PathBuf::from("/dev/fake"),
             PathBuf::from("/mnt/fake"),
         );
-        let result = orchestrate_ovf_env(
-            || Ok(fake),
-            |_| Ok(TEST_OVF.to_string()),
-            |_| {
-                Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "mock unmount failure",
-                )))
-            },
-        );
+        let (result, diagnostics) = capture_kvp_at_info(|| {
+            orchestrate_ovf_env(
+                || Ok(fake),
+                |_| Ok(TEST_OVF.to_string()),
+                |_| {
+                    Err(Error::Io(std::io::Error::other(
+                        "mock unmount failure",
+                    )))
+                },
+            )
+        });
         assert!(result.is_err());
+        let errors = kvp_error_fields(&diagnostics);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["message"], "Failed to unmount or eject media.");
+        assert!(errors[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("mock unmount failure"));
     }
 
     #[test]

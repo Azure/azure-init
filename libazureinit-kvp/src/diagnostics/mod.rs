@@ -14,7 +14,7 @@ mod writer;
 pub use diagnostic::{
     DecodeError, Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticKey,
     DiagnosticPayload, DiagnosticStart, Encoding, Entry, Kind, Outcome,
-    RawKeyValue, DIAGNOSTIC_VERSION_ID,
+    RawKeyValue, DIAGNOSTIC_VERSION_ID, OUTCOME_FIELD,
 };
 pub use reader::DiagnosticReader;
 #[cfg(feature = "tracing")]

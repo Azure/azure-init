@@ -84,3 +84,87 @@ async fn main() {
     println!("**********************************");
     println!();
 }
+
+#[test]
+#[ignore = "requires Docker and the azure-init-main-tests:local image"]
+fn agent_provisioning_in_container() {
+    use libazureinit_kvp::{
+        Diagnostic, DiagnosticReader, Entry, KvpPool, KvpPoolStore, Outcome,
+        PoolMode,
+    };
+    use std::path::Path;
+    use std::time::Duration;
+
+    let artifacts = tempfile::TempDir::new().unwrap();
+    let runner = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/support/container_provisioning.py");
+    let agent = match option_env!("CARGO_BIN_EXE_azure-init") {
+        Some(agent) => std::path::PathBuf::from(agent),
+        // Cargo also builds this file as a binary test target under --all-targets.
+        None => std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("azure-init"),
+    };
+    assert!(
+        agent.is_file(),
+        "agent binary is missing: {}",
+        agent.display()
+    );
+    assert_cmd::Command::new("python3")
+        .arg(runner)
+        .arg("--agent")
+        .arg(agent)
+        .arg("--artifacts")
+        .arg(artifacts.path())
+        .timeout(Duration::from_secs(240))
+        .assert()
+        .success();
+
+    for (scenario, expected) in
+        [("success", Outcome::Success), ("failure", Outcome::Failure)]
+    {
+        let directory = artifacts.path().join(scenario);
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, &directory, PoolMode::Safe)
+                .unwrap();
+        let entries = DiagnosticReader::new(store).entries().unwrap();
+        let reports: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Report(report) => Some(report),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reports.len(), 1);
+        let encoded = reports[0].encode();
+        assert!(encoded.contains("vm_id=00000000-0000-0000-0000-000000000000"));
+        if expected == Outcome::Success {
+            assert!(encoded.starts_with("result=success|"));
+        } else {
+            assert!(encoded.starts_with("result=error|"));
+            assert_eq!(
+                encoded,
+                std::fs::read_to_string(directory.join("http-description"))
+                    .unwrap()
+            );
+        }
+        for (name, result) in [
+            ("get_environment", Outcome::Failure),
+            ("provision", expected),
+        ] {
+            assert!(
+                entries.iter().any(|entry| matches!(
+                    entry,
+                    Entry::Diagnostic(Diagnostic::Finish(finish))
+                        if finish.key.name == name && finish.result == result
+                )),
+                "missing {name} finish with {result} in {scenario}"
+            );
+        }
+        assert!(!entries.iter().any(|entry| matches!(entry, Entry::Raw(_))));
+    }
+}

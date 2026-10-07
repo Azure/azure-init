@@ -14,7 +14,7 @@ use libazureinit_kvp::{
     write_report, DecodeError, Diagnostic, DiagnosticPayload, DiagnosticReader,
     DiagnosticWriter, Encoding, Entry, Kind, KvpError, KvpPool, KvpPoolStore,
     Outcome, PoolMode, ProvisioningReport, RawKeyValue, ReportPpsType,
-    DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES,
+    DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES, OUTCOME_FIELD,
 };
 use rstest::rstest;
 use tempfile::TempDir;
@@ -26,6 +26,13 @@ use cloud_init_fixtures::COMPRESSED_LOG_CHUNKS;
 const AGENT: &str = "azure-init-test";
 const VM_ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 const EVENT_ID: &str = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
+
+#[test]
+fn outcome_recording_api_preserves_wire_tokens() {
+    assert_eq!(OUTCOME_FIELD, "diagnostic.result");
+    assert_eq!(Outcome::Success.as_str(), "success");
+    assert_eq!(Outcome::Failure.as_str(), "fail");
+}
 
 fn store_at(dir: &TempDir) -> KvpPoolStore {
     KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe).unwrap()
@@ -251,8 +258,8 @@ fn tracing_spans_preserve_lifecycle_updates_and_explicit_recovery(
             drop(attempt);
             operation.record("http_status", 200_u64);
             tracing::error!("recovered error");
-            operation.record("diagnostic.result", "fail");
-            operation.record("diagnostic.result", "success");
+            operation.record(OUTCOME_FIELD, Outcome::Failure.as_str());
+            operation.record(OUTCOME_FIELD, Outcome::Success.as_str());
             tracing::info!(msg = message.as_str());
         });
     });
