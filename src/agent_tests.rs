@@ -209,6 +209,43 @@ async fn unavailable_kvp_does_not_prevent_wireserver_reporting(
     Ok(())
 }
 
+#[tokio::test]
+async fn reserved_report_survives_diagnostics_at_key_limit(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    let store =
+        KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)?;
+    reserve_provisioning_report(Some(&store), VM_ID).await;
+    let reserved = store
+        .read(PROVISIONING_REPORT_KEY)?
+        .expect("in-progress report should be written");
+    assert!(reserved.starts_with("result=in_progress|"));
+
+    store.append_multiple((0..1024).map(|i| (format!("diag-{i}"), "x")))?;
+    let report = LibError::Timeout.as_provisioning_report(VM_ID);
+    publish_provisioning_report(Some(&store), &report, async { Ok(()) }).await;
+
+    let records = store.dump()?;
+    assert_eq!(
+        records[0],
+        (PROVISIONING_REPORT_KEY.to_owned(), report.encode())
+    );
+    assert_eq!(records.len(), 1025);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reservation_failures_do_not_panic(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    let store =
+        KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)?;
+    std::fs::create_dir(store.path())?;
+    reserve_provisioning_report(Some(&store), VM_ID).await;
+    reserve_provisioning_report(None, VM_ID).await;
+    Ok(())
+}
+
 #[test]
 fn failure_report_uses_lib_error_then_falls_back_to_unhandled() {
     let lib_error = anyhow::Error::from(LibError::Timeout);

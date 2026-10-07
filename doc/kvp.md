@@ -258,6 +258,7 @@ no truncation.
 - Inserting updates a key and collapses its duplicates.
 - Inserting new keys and replacing the pool enforce a limit of 1,024 distinct
   keys. This is a library policy, not a universal KVP format constraint.
+  Updating an existing key is exempt.
 - Map-style reads use the last stored value; physical reads retain every record.
 - Deletion may swap a record with the file's tail, changing record order.
 

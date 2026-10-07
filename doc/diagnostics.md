@@ -153,7 +153,7 @@ reading.
 
 | Field | Description | Format | Required |
 |---|---|---|---|
-| `result` | Provisioning outcome | `success` or `error` (not diagnostic `fail`) | All reports |
+| `result` | Provisioning state | `in_progress`, `success` or `error` (not diagnostic `fail`) | All reports |
 | `agent` | Reporting agent | UTF-8 text | All reports |
 | `vm_id` | VM identity | UTF-8 text, usually a UUID | All reports |
 | `pps_type` | Pre-provisioning type | `None`, `PreprovisionedOSDisk`, `Running`, `Savable`, or `Unknown` | All reports |
@@ -170,6 +170,12 @@ UUID validation and timestamp output formatting are not imposed on reports.
 
 Reports replace the prior provisioning result, are not chunked, and must fit
 one value.
+
+Azure Init writes an `in_progress` report, with the same fields as a success
+report, before provisioning, then overwrites it in place with the final result.
+This reserves the record, since updates are exempt from the
+[distinct-key limit](kvp.md#record-updates). A remaining `in_progress` report
+means provisioning never reported a result.
 
 ## Cloud-init Compatibility
 

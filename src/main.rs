@@ -269,6 +269,36 @@ fn is_config_error(error: &anyhow::Error) -> bool {
     )
 }
 
+/// Writes an in-progress report before provisioning so the final report
+/// replaces this record in place, and diagnostics appended afterward cannot
+/// block it at the pool's distinct-key limit.
+async fn reserve_provisioning_report(
+    store: Option<&KvpPoolStore>,
+    vm_id: &str,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    let store = store.clone();
+    let report = ProvisioningReport::in_progress(
+        format!("Azure-Init/{PKG_VERSION}"),
+        vm_id,
+        ReportPpsType::None,
+    );
+    let result =
+        tokio::task::spawn_blocking(move || write_report(&store, &report))
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result.map_err(anyhow::Error::from));
+
+    // Report a KVP failure to stderr, not tracing, to avoid writing into the pool that just failed.
+    if let Err(error) = result {
+        eprintln!(
+            "Failed to write in-progress provisioning report to KVP: {error:#}"
+        );
+    }
+}
+
 async fn publish_provisioning_report(
     store: Option<&KvpPoolStore>,
     report: &ProvisioningReport,
@@ -376,6 +406,7 @@ async fn main() -> ExitCode {
         );
         ExitCode::SUCCESS
     } else {
+        reserve_provisioning_report(report_store.as_ref(), &vm_id).await;
         let clone_config = config.clone();
         match provision(config, &vm_id, opts).await {
             Ok(_) => {
