@@ -7,7 +7,7 @@ on:
     branches:
       - main
   schedule:
-      - cron: '0 0 * * 0'
+      - cron: '0 0 * * *'
 
 jobs:
   clippy:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust-toolchain: [stable, "1.88.0"]
+        rust-toolchain: [stable, "1.89.0"]
     steps:
       - name: Install libudev
         run: |
