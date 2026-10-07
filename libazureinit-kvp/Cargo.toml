@@ -2,7 +2,7 @@
 name = "libazureinit-kvp"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 repository = "https://github.com/Azure/azure-init/"
 homepage = "https://github.com/Azure/azure-init/"
 license = "MIT"
