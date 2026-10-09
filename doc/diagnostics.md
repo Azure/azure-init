@@ -153,7 +153,7 @@ reading.
 
 | Field | Description | Format | Required |
 |---|---|---|---|
-| `result` | Provisioning outcome | `success` or `error` (not diagnostic `fail`) | All reports |
+| `result` | Provisioning state | `in_progress`, `success` or `error` (not diagnostic `fail`) | All reports |
 | `agent` | Reporting agent | UTF-8 text | All reports |
 | `vm_id` | VM identity | UTF-8 text, usually a UUID | All reports |
 | `pps_type` | Pre-provisioning type | `None`, `PreprovisionedOSDisk`, `Running`, `Savable`, or `Unknown` | All reports |
@@ -170,6 +170,12 @@ UUID validation and timestamp output formatting are not imposed on reports.
 
 Reports replace the prior provisioning result, are not chunked, and must fit
 one value.
+
+Azure Init writes an `in_progress` report, with the same fields as a success
+report, before provisioning, then overwrites it in place with the final result.
+This reserves the record, since updates are exempt from the
+[distinct-key limit](kvp.md#record-updates). A remaining `in_progress` report
+means provisioning never reported a result.
 
 ## Cloud-init Compatibility
 
@@ -269,3 +275,43 @@ Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,
 `pps_type`, `vm_id`, `timestamp`, then the optional documentation URL. Consumers
 must not depend on that order.
+
+### Tracing Producer
+
+The optional `tracing` feature provides `DiagnosticsKvp`, a `tracing_subscriber`
+layer that turns spans and events into diagnostics. Opening a span emits a
+`start`, and closing it emits a `finish` with the same event UUID; each event
+emits its own `event`, named after the span it occurred in, or after itself when
+there is no span. Every payload is JSON text holding the record's `target`,
+`level`, and structured `fields`. The layer writes through `DiagnosticWriter`
+synchronously on the calling thread, so it needs no async runtime.
+
+By default, when a span closes, the KVP layer reports `fail` if it observed an
+ERROR directly associated with that span; otherwise, it reports `success`.
+
+Set `diagnostic.result` when log severity alone would give the wrong answer.
+For example, a failed HTTP attempt may log only a WARN because the request
+will be retried. An explicit outcome lets that attempt finish as `fail`
+without requiring an ERROR event.
+
+Declare the field when creating the span, then record its value:
+
+```rust
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
+
+let span = tracing::info_span!(
+    "request_attempt",
+    diagnostic.result = tracing::field::Empty,
+);
+span.record(OUTCOME_FIELD, Outcome::Failure.as_str());
+```
+
+Recording a field that was not declared when the span was created has no effect.
+
+An explicit `success` or `fail` overrides error-based inference, except that
+closing during unwinding forces failure. Invalid values cause the affected
+event or finish to be dropped.
+
+Contextual ERROR messages and `#[instrument(err)]` produce separate events
+intentionally. The additional context does not create extra span finishes or
+provisioning reports.

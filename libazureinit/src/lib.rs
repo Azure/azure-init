@@ -7,12 +7,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
-pub mod health;
 pub(crate) mod http;
 pub mod imds;
-mod kvp;
-pub mod logging;
 pub mod media;
+pub mod wireserver;
 
 mod provision;
 pub use provision::{
@@ -33,22 +31,24 @@ pub use reqwest;
 
 /// Run a command, capturing its output and logging it if it fails.
 ///
-/// In the event of a failure, the provided `error_message` is logged at
-/// error level.
+/// Launch failures and unsuccessful exit statuses are logged at error level.
 ///
 /// <div class="warning">
 ///
-/// This logs the command and its arguments, and as such is not appropriate
-/// if the command contains sensitive information.
+/// This logs the command and its arguments, plus stdout and stderr as text on
+/// failure, preserving embedded newlines. It should not be used for commands
+/// whose arguments or output contain sensitive information.
 ///
 /// </div>
+#[tracing::instrument(
+    name = "subprocess",
+    skip_all,
+    err,
+    fields(program = %command.get_program().to_string_lossy())
+)]
 pub(crate) fn run(
     mut command: std::process::Command,
 ) -> Result<(), error::Error> {
-    let program = command.get_program().to_string_lossy().to_string();
-    let span = tracing::info_span!("subprocess", program = %program);
-    let _entered = span.enter();
-
     tracing::debug!(?command, "About to execute system program");
     let output = command.output()?;
     let status = output.status;
@@ -60,10 +60,9 @@ pub(crate) fn run(
         tracing::error!(
             ?status,
             ?command,
-            ?stdout,
-            ?stderr,
-            "Command '{}' failed",
-            program
+            %stdout,
+            %stderr,
+            "Failed command output"
         );
         return Err(error::Error::SubprocessFailed {
             command: format!("{command:?}"),
@@ -77,6 +76,8 @@ pub(crate) fn run(
 #[cfg(test)]
 mod lib_tests {
     use super::*;
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
+    use libazureinit_kvp::{Diagnostic, Outcome};
     use std::process::Command;
 
     #[test]
@@ -92,5 +93,38 @@ mod lib_tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, error::Error::SubprocessFailed { .. }));
+    }
+
+    #[test]
+    fn test_run_failure_preserves_context_at_info() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            r#"printf '%s\n' 'stdout "context"' 'second line'; printf '%s\n' 'stderr \ detail' >&2; exit 7"#,
+        ]);
+        let (result, diagnostics) = capture_kvp_at_info(|| run(command));
+        assert!(matches!(
+            result,
+            Err(error::Error::SubprocessFailed { status, .. })
+                if status.code() == Some(7)
+        ));
+        let [Diagnostic::Start(start), Diagnostic::Event(context), Diagnostic::Event(returned), Diagnostic::Finish(finish)] =
+            diagnostics.as_slice()
+        else {
+            panic!("unexpected subprocess lifecycle: {diagnostics:?}");
+        };
+        assert_eq!(start.key.event_id, finish.key.event_id);
+        assert_ne!(context.key.event_id, returned.key.event_id);
+        assert_eq!(finish.result, Outcome::Failure);
+
+        let errors = kvp_error_fields(&diagnostics);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0]["message"], "Failed command output");
+        assert_eq!(errors[0]["stdout"], "stdout \"context\"\nsecond line\n");
+        assert_eq!(errors[0]["stderr"], "stderr \\ detail\n");
+        assert!(errors[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("exit status: 7"));
     }
 }

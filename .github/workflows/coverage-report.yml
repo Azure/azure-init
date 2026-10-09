@@ -33,8 +33,22 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate code coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Check container test runner
+        run: python3 -m unittest discover -s tests/support -p test_container_provisioning.py -v
+
+      - name: Build isolated provisioning test image
+        run: |
+          . /etc/os-release
+          docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" -t azure-init-main-tests:local tests/support
+
+      - name: Collect unit and CLI coverage
+        run: cargo llvm-cov --all-features --workspace --no-report
+
+      - name: Collect isolated provisioning coverage
+        run: cargo llvm-cov --all-features --package azure-init --test functional_tests --no-clean --no-report -- --ignored
+
+      - name: Generate combined code coverage report
+        run: cargo llvm-cov report --all-features --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

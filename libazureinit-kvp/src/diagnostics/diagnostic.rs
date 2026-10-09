@@ -77,19 +77,34 @@ impl Serialize for Encoding {
 pub enum Outcome {
     /// The operation succeeded.
     Success,
-    /// The operation failed, represented as `fail` in serialized output.
+    /// The operation failed; serialized as `fail` in the DIAG format.
     #[serde(rename = "fail")]
     Failure,
 }
 
-impl fmt::Display for Outcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl Outcome {
+    /// Returns the canonical DIAG wire token without allocating.
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Success => "success",
             Self::Failure => "fail",
-        })
+        }
     }
 }
+
+impl fmt::Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Field name for explicitly reporting a span's outcome to the KVP layer.
+///
+/// For example, a failed HTTP attempt may log only a WARN. Record its outcome
+/// using [`Outcome::as_str`] rather than relying on ERROR events to imply failure.
+///
+/// Declare `diagnostic.result` when creating the span before recording updates.
+pub const OUTCOME_FIELD: &str = "diagnostic.result";
 
 /// The text or bytes carried by a diagnostic.
 ///
@@ -432,6 +447,7 @@ mod tests {
     #[case(Outcome::Success, "success")]
     #[case(Outcome::Failure, "fail")]
     fn outcome_uses_wire_token(#[case] result: Outcome, #[case] token: &str) {
+        assert_eq!(result.as_str(), token);
         assert_eq!(result.to_string(), token);
         assert_eq!(serde_json::to_value(result).unwrap(), token);
     }

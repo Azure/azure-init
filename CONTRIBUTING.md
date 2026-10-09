@@ -11,6 +11,20 @@ instructions provided by the bot. You will only need to do this once across all 
 
 For each pull request, CI automatically runs unit tests by running `cargo test`, and also checks for coding styles and lints by running `cargo fmt` and `cargo clippy`. So please make sure that the all steps pass with the changes you made, `test`, `fmt`, and `clippy`, to avoid making CI fail with such issues.
 
+## Provisioning tests
+
+Run agent unit tests with `cargo test -p azure-init --bin azure-init agent_tests::`.
+
+Container tests require Docker and do not provision the host:
+
+```sh
+docker build -t azure-init-main-tests:local tests/support
+cargo test -p azure-init --test functional_tests -- --ignored
+```
+
+The image defaults to Ubuntu 24.04. For binaries built on a newer Ubuntu release,
+add `--build-arg BASE_IMAGE=ubuntu:<release>` to the Docker build command.
+
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
 or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.

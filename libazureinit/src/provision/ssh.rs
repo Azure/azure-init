@@ -9,6 +9,7 @@
 use crate::error::Error;
 use crate::imds::PublicKeys;
 use lazy_static::lazy_static;
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use regex::Regex;
 use rustix::fs::chown;
 use rustix::process::{Gid, Uid};
@@ -21,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-use tracing::{error, info, instrument};
+use tracing::{info, instrument};
 
 /// User information needed for SSH provisioning.
 ///
@@ -74,7 +75,7 @@ lazy_static! {
 ///
 /// This function will return an error if it fails to create the `.ssh` directory, set permissions,
 /// or write to the `authorized_keys` file.
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub(crate) fn provision_ssh(
     user: &SshUser,
     keys: &[PublicKeys],
@@ -112,11 +113,7 @@ pub(crate) fn provision_ssh(
 
     chown(&ssh_dir, Some(uid), Some(gid))?;
 
-    tracing::info!(
-        target: "libazureinit::ssh::authorized_keys",
-        "Using authorized_keys path: {:?}",
-        authorized_keys_path
-    );
+    tracing::info!("Using authorized_keys path: {:?}", authorized_keys_path);
 
     let mut authorized_keys = File::create(&authorized_keys_path)?;
     authorized_keys.set_permissions(Permissions::from_mode(0o600))?;
@@ -142,7 +139,7 @@ pub(crate) fn provision_ssh(
 ///
 /// This function returns a path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn get_authorized_keys_path_from_sshd(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<String> {
@@ -150,7 +147,12 @@ fn get_authorized_keys_path_from_sshd(
 
     let path = extract_authorized_keys_file_path(&output.stdout);
     if path.is_none() {
-        error!("No authorizedkeysfile setting found in sshd configuration");
+        tracing::warn!(
+            "No authorizedkeysfile setting found in sshd configuration"
+        );
+    } else {
+        tracing::Span::current()
+            .record(OUTCOME_FIELD, Outcome::Success.as_str());
     }
     path
 }
@@ -164,14 +166,15 @@ fn get_authorized_keys_path_from_sshd(
 /// # Returns
 ///
 /// This function returns an output of the command.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn run_sshd_command(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<Output> {
     match sshd_config_command_runner() {
         Ok(output) if output.status.success() => {
+            tracing::Span::current()
+                .record(OUTCOME_FIELD, Outcome::Success.as_str());
             info!(
-                target: "libazureinit::ssh::success",
                 stdout_length = output.stdout.len(),
                 "Executed sshd -G successfully",
             );
@@ -180,17 +183,16 @@ fn run_sshd_command(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!(
-                code=output.status.code().unwrap_or(-1),
-                stdout=%stdout,
-                stderr=%stderr,
+            tracing::debug!(stdout = %stdout, stderr = %stderr, "Failed sshd -G output");
+            tracing::warn!(
+                code = output.status.code().unwrap_or(-1),
                 "Failed to execute sshd -G, assuming sshd configuration defaults"
             );
             None
         }
-        Err(e) => {
-            error!(
-                error=%e,
+        Err(error) => {
+            tracing::warn!(
+                %error,
                 "Failed to execute sshd -G, assuming sshd configuration defaults",
             );
             None
@@ -211,20 +213,21 @@ fn run_sshd_command(
 ///
 /// This function returns an `Option<String>` containing the path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
 fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(stdout);
     for line in output.lines() {
         if line.starts_with("authorizedkeysfile") {
             let keypath = line.split_whitespace().nth(1).map(|s| {
                 info!(
-                    target: "libazureinit::ssh::authorized_keys",
                     authorizedkeysfile = %s,
                     "Using sshd's authorizedkeysfile path configuration"
                 );
                 s.to_string()
             });
             if keypath.is_some() {
+                tracing::Span::current()
+                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
                 return keypath;
             }
         }
@@ -252,7 +255,7 @@ fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
 /// # Errors
 ///
 /// This function will return an error if it fails to read, write, or create the `sshd_config` file
-#[instrument(skip_all)]
+#[instrument(err, skip_all)]
 pub(crate) fn update_sshd_config(
     sshd_config_path: &str,
     disable_password_authentication: bool,
@@ -302,7 +305,8 @@ pub(crate) fn update_sshd_config(
 
         tracing::info!(
             ?sshd_config_path,
-            "Updated existing sshd setting to allow password authentication"
+            password_authentication = password_auth_setting,
+            "Updated existing sshd password authentication setting"
         );
     } else {
         let mut file =
@@ -316,7 +320,8 @@ pub(crate) fn update_sshd_config(
 
         tracing::info!(
             ?sshd_config_path,
-            "Added new sshd setting to allow password authentication"
+            password_authentication = password_auth_setting,
+            "Added sshd password authentication setting"
         );
     }
 
@@ -363,6 +368,45 @@ mod tests {
             status: ExitStatus::from_raw(status_code),
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn test_sshd_outcomes_use_shared_recording_api() {
+        use crate::unittest::capture_kvp_at_info;
+        use libazureinit_kvp::{Diagnostic, Outcome};
+
+        for (status, stdout, expected) in [
+            (0, "authorizedkeysfile .ssh/test_keys", Outcome::Success),
+            (0, "", Outcome::Failure),
+            (1, "", Outcome::Failure),
+        ] {
+            let (result, diagnostics) = capture_kvp_at_info(|| {
+                get_authorized_keys_path_from_sshd(|| {
+                    Ok(create_output(status, stdout, "test output"))
+                })
+            });
+            assert_eq!(result.is_some(), expected == Outcome::Success);
+            let finishes: Vec<_> = diagnostics
+                .iter()
+                .filter_map(|diagnostic| match diagnostic {
+                    Diagnostic::Finish(finish) => Some(finish),
+                    _ => None,
+                })
+                .collect();
+            let finish = finishes
+                .iter()
+                .find(|finish| {
+                    finish.key.name == "get_authorized_keys_path_from_sshd"
+                })
+                .unwrap();
+            assert_eq!(finish.result, expected);
+            if expected == Outcome::Success {
+                assert_eq!(finishes.len(), 3);
+                assert!(finishes
+                    .iter()
+                    .all(|finish| finish.result == Outcome::Success));
+            }
         }
     }
 

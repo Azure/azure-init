@@ -204,9 +204,7 @@ pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_WIRESERVER_READ_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_WIRESERVER_HEALTH_ENDPOINT: &str =
     "http://168.63.129.16/provisioning/health";
-/// Wire server configuration struct.
-///
-/// Holds timeout settings for connecting to and reading from the Azure wire server.
+/// Azure wireserver health endpoint and timeouts, in seconds.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Wireserver {
@@ -235,46 +233,19 @@ impl Default for Wireserver {
     }
 }
 
-/// Telemetry configuration struct.
-///
-/// Configures telemetry behavior, including diagnostic settings.
+/// KVP telemetry enablement and filtering.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Telemetry {
-    /// Flag to enable or disable KVP diagnostics. Defaults to `true`.
+    /// Enables KVP diagnostics and final provisioning reports. Defaults to `true`.
+    ///
+    /// Disabling KVP does not disable file/console logs or wireserver HTTP.
     pub kvp_diagnostics: bool,
 
-    /// Optional filter directives for the KVP tracing layer. When set,
-    /// these directives are parsed using `tracing_subscriber::EnvFilter` and
-    /// applied to the KVP layer unless overridden by the `AZURE_INIT_KVP_FILTER`
-    /// environment variable. When not set, defaults tailored for azure-init are used.
+    /// Optional KVP `EnvFilter` directives, such as `warn,libazureinit=debug`.
     ///
-    /// **Precedence**: Environment variable `AZURE_INIT_KVP_FILTER` takes precedence
-    /// over this config value. If neither is set, azure-init-specific defaults are used.
-    ///
-    /// The value must be a string that follows the syntax for
-    /// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
-    /// logging directives. For example: `warn,my_crate=debug`.
-    ///
-    /// ### Examples of acceptable values:
-    ///
-    /// - **Capture `INFO` level and above for all crates:**
-    ///   ```toml
-    ///   kvp_filter = "info"
-    ///   ```
-    ///
-    /// - **Capture `DEBUG` from your crate and `WARN` from others:**
-    ///   ```toml
-    ///   kvp_filter = "warn,my_crate=debug"
-    ///   ```
-    ///
-    /// - **Capture `TRACE` from a specific module:**
-    ///   ```toml
-    ///   kvp_filter = "info,my_crate::api=trace"
-    ///   ```
-    ///
-    /// If an invalid filter string is provided, a warning is logged
-    /// and the default filter is used instead.
+    /// Azure Init tries `AZURE_INIT_KVP_FILTER`, then this value, then `info`,
+    /// skipping empty or invalid values. Does not override `kvp_diagnostics`.
     pub kvp_filter: Option<String>,
 }
 
@@ -287,21 +258,13 @@ impl Default for Telemetry {
     }
 }
 
-/// The default directory for storing azure-init data files, such as the provisioning status file.
-///
-/// This constant is declared outside its related struct so that both the `AzureInitDataDir` struct
-/// and other modules (like `status.rs`) can reference the same path without risking any mismatch.
+/// Default directory for provisioning state and other Azure Init data.
 pub const DEFAULT_AZURE_INIT_DATA_DIR: &str = "/var/lib/azure-init/";
 
-/// Azure-init data directory directory configuration struct.
-///
-/// Configures settings for where azure-init should store data (especially provisioning-related) files.
-/// If no custom path is provided, `AzureInitDataDir::default()` uses
-/// [`DEFAULT_AZURE_INIT_DATA_DIR`], ensuring a single source of truth.
+/// Directory for provisioning state and other Azure Init data.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AzureInitDataDir {
-    /// Specifies the path used for storing azure-init data files.
     /// Defaults to `/var/lib/azure-init/`.
     pub path: PathBuf,
 }
@@ -314,17 +277,13 @@ impl Default for AzureInitDataDir {
     }
 }
 
-/// The default directory for azure-init.log
+/// Default path of the Azure Init log file.
 pub const DEFAULT_AZURE_INIT_LOG_PATH: &str = "/var/log/azure-init.log";
 
-/// Telemetry log (azure-init.log) struct.
-/// Configures settings for where azure-init should channel telemetry logs.
-/// If no custom path is provided, `AzureInitLogPath::default()` uses
-/// [`DEFAULT_AZURE_INIT_LOG_PATH`].
+/// Location of the Azure Init log file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AzureInitLogPath {
-    /// Specifies the path used to capture all telemetry logs.
     /// Defaults to `/var/log/azure-init.log`.
     pub path: PathBuf,
 }
@@ -339,8 +298,7 @@ impl Default for AzureInitLogPath {
 
 /// General configuration struct for azure-init.
 ///
-/// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
-/// and telemetry, supporting loading from file or directory and merging configurations.
+/// Missing fields use their defaults. See [`Config::load`] for source precedence.
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Config {
@@ -357,10 +315,7 @@ pub struct Config {
     pub azure_init_log_path: AzureInitLogPath,
 }
 
-/// Implements `Display` for `Config`, formatting it as a readable TOML string.
-///
-/// Uses `toml::to_string_pretty` to serialize the configuration. If serialization fails,
-/// a fallback message is displayed..
+/// Formats the configuration as pretty-printed TOML.
 impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -372,24 +327,15 @@ impl fmt::Display for Config {
     }
 }
 
-/// Loads the configuration for `azure-init`.
-///
-/// This method uses the `Figment` library to load configuration from the following sources,
-/// in order of priority:
-///
-/// 1. **Defaults**: Base configuration from `Config::default()`.
-/// 2. **Main File**: `azure-init.toml`, if present.
-/// 3. **Directory Files**: `.toml` files in `azure-init.d`, sorted lexicographically.
-/// 4. **CLI Overrides**: A file or directory specified via the CLI.
-///
-/// Later sources override earlier ones in case of conflicts.
 impl Config {
     const BASE_CONFIG: &'static str = "/etc/azure-init.toml";
     const DROP_IN_CONFIG: &'static str = "/etc/azure-init.d/";
 
-    /// Load provisioning configuration.
+    /// Loads defaults, `/etc/azure-init.toml`, `/etc/azure-init.d/*.toml`,
+    /// then the optional file or directory at `path`.
     ///
-    /// In addition to the provided path, configuration will also be loaded from the default locations.
+    /// Directory files are sorted lexicographically; later sources override
+    /// earlier ones.
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
         Self::load_from(
             PathBuf::from(Self::BASE_CONFIG),
@@ -398,7 +344,7 @@ impl Config {
         )
     }
 
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,
@@ -434,13 +380,10 @@ impl Config {
         figment
             .extract::<Config>()
             .inspect(|_config| {
-                tracing::info!(
-                    target: "libazureinit::config::success",
-                    "Configuration successfully loaded."
-                );
+                tracing::info!("Configuration successfully loaded.");
             })
             .map_err(|e| {
-                tracing::error!("Failed to extract configuration: {:?}", e);
+                tracing::debug!("Failed to extract configuration: {:?}", e);
                 Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Configuration error: {e:?}"),
@@ -449,7 +392,7 @@ impl Config {
     }
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
-    #[instrument(skip_all)]
+    #[instrument(err, skip_all)]
     fn merge_toml_directory(
         mut figment: Figment,
         dir_path: PathBuf,
@@ -457,7 +400,7 @@ impl Config {
         if dir_path.is_dir() {
             let mut entries: Vec<_> = fs::read_dir(&dir_path)
                 .map_err(|e| {
-                    tracing::error!(
+                    tracing::debug!(
                         "Failed to read directory {:?}: {:?}",
                         dir_path,
                         e
@@ -1042,16 +985,16 @@ mod tests {
         assert!(!config.azure_proxy_agent.enable);
         assert!(!config.telemetry.kvp_diagnostics);
         assert_eq!(
+            config.telemetry.kvp_filter,
+            Some("cli-override-filter".to_string())
+        );
+        assert_eq!(
             config.azure_init_data_dir.path.to_str().unwrap(),
             "/cli-override-azure-init-data-dir"
         );
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
-        );
-        assert_eq!(
-            config.telemetry.kvp_filter,
-            Some("cli-override-filter".to_string())
         );
 
         Ok(())

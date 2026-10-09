@@ -173,9 +173,15 @@ path = "/var/lib/azure-init/"  # Directory for storing azure-init data and state
 path = "/var/log/azure-init.log"  # Path and file to place logs in
  
 [telemetry]
-kvp_diagnostics = true  # Enable KVP diagnostics telemetry
-kvp_filter = "info"  # Level (and higher) of KVP to emit
+kvp_diagnostics = true  # Enable KVP diagnostics and final provisioning reports
+kvp_filter = "info"  # KVP tracing filter (EnvFilter syntax; default info)
 ```
+
+`kvp_filter` uses `tracing_subscriber::EnvFilter` syntax, with precedence
+`AZURE_INIT_KVP_FILTER` environment variable, then `kvp_filter`, then the default
+`info` (INFO, WARN and ERROR). `AZURE_INIT_LOG` controls file and console
+verbosity separately (defaults: file `debug`, console `error`); disabling
+`kvp_diagnostics` still leaves file, console and wireserver reporting enabled.
 
 ## Validation and Deserialization Process
 
