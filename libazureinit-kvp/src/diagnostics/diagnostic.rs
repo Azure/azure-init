@@ -77,19 +77,33 @@ impl Serialize for Encoding {
 pub enum Outcome {
     /// The operation succeeded.
     Success,
-    /// The operation failed, represented as `fail` in serialized output.
-    #[serde(rename = "fail")]
-    Failure,
+    /// The operation failed; serialized as `fail` in the DIAG format.
+    Fail,
+}
+
+impl Outcome {
+    /// Returns the canonical DIAG wire token without allocating.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Fail => "fail",
+        }
+    }
 }
 
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Success => "success",
-            Self::Failure => "fail",
-        })
+        f.write_str(self.as_str())
     }
 }
+
+/// Field name for explicitly reporting a span's outcome to the KVP layer.
+///
+/// For example, a failed HTTP attempt may log only a WARN. Record its outcome
+/// using [`Outcome::as_str`] rather than relying on ERROR events to imply failure.
+///
+/// Declare `diagnostic.result` when creating the span before recording updates.
+pub const OUTCOME_FIELD: &str = "diagnostic.result";
 
 /// The text or bytes carried by a diagnostic.
 ///
@@ -430,8 +444,9 @@ mod tests {
 
     #[rstest]
     #[case(Outcome::Success, "success")]
-    #[case(Outcome::Failure, "fail")]
+    #[case(Outcome::Fail, "fail")]
     fn outcome_uses_wire_token(#[case] result: Outcome, #[case] token: &str) {
+        assert_eq!(result.as_str(), token);
         assert_eq!(result.to_string(), token);
         assert_eq!(serde_json::to_value(result).unwrap(), token);
     }
@@ -508,7 +523,7 @@ mod tests {
 
     #[rstest]
     #[case(Outcome::Success, "success", Duration::from_micros(312), 0.000312)]
-    #[case(Outcome::Failure, "fail", Duration::ZERO, 0.0)]
+    #[case(Outcome::Fail, "fail", Duration::ZERO, 0.0)]
     #[case(Outcome::Success, "success", Duration::MAX, u64::MAX as f64)]
     fn finish_serializes_result_and_seconds(
         #[case] result: Outcome,
@@ -532,7 +547,7 @@ mod tests {
     #[case::neither(None, None)]
     #[case::result_only(Some(Outcome::Success), None)]
     #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Failure), Some(52))]
+    #[case::both(Some(Outcome::Fail), Some(52))]
     fn event_serializes_only_measured_fields(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
