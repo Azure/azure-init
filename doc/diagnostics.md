@@ -171,11 +171,18 @@ UUID validation and timestamp output formatting are not imposed on reports.
 Reports replace the prior provisioning result, are not chunked, and must fit
 one value.
 
-Azure Init writes an `in_progress` report, with the same fields as a success
-report, before provisioning, then overwrites it in place with the final result.
-This reserves the record, since updates are exempt from the
-[distinct-key limit](kvp.md#record-updates). A remaining `in_progress` report
-means provisioning never reported a result.
+Before each provisioning attempt, Azure Init writes `result=in_progress` with
+a fresh timestamp. This replaces the previous report, including its failure
+reason, supporting data, and help URL. `reason` is only used for failures.
+
+The final success or error report overwrites the same key. Updating an existing
+key is exempt from the [1,024-key limit](kvp.md#record-updates), so later
+diagnostics cannot block that update on this limit. Creating the initial key
+can fail if the pool is already full; both writes can also fail validation or
+I/O.
+
+An `in_progress` report means no final KVP result has been published for that
+attempt.
 
 ## Cloud-init Compatibility
 
@@ -303,15 +310,23 @@ let span = tracing::info_span!(
     "request_attempt",
     diagnostic.result = tracing::field::Empty,
 );
-span.record(OUTCOME_FIELD, Outcome::Failure.as_str());
+span.record(OUTCOME_FIELD, Outcome::Fail.as_str());
 ```
 
 Recording a field that was not declared when the span was created has no effect.
 
-An explicit `success` or `fail` overrides error-based inference, except that
-closing during unwinding forces failure. Invalid values cause the affected
-event or finish to be dropped.
+The Rust failure variant was renamed from `Outcome::Failure` to `Outcome::Fail`.
+Rust callers must update the variant name; diagnostic `success`/`fail` wire
+tokens and cloud-init `SUCCESS`/`FAIL` decoding are unchanged. Provisioning
+reports continue to use `error`, not `fail`.
 
-Contextual ERROR messages and `#[instrument(err)]` produce separate events
-intentionally. The additional context does not create extra span finishes or
-provisioning reports.
+An explicit `success` or `fail` overrides error-based inference, except that
+closing during unwinding forces failure even if the explicit value is invalid.
+Otherwise, invalid values cause the affected event or finish to be dropped.
+
+Keep useful error context, such as a failed command's output or a file path, at
+ERROR even when `#[instrument(err)]` also records the returned error. Remove
+redundant explicit messages when the returned error already carries the same
+information, rather than moving those messages to DEBUG. Contextual and
+automatic ERROR events do not create extra span finishes or provisioning
+reports.

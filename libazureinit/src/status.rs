@@ -133,7 +133,7 @@ pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
 
-#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
+#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn private_get_vm_id(
     product_uuid_path: Option<&str>,
     sysfs_efi_path: Option<&str>,
@@ -420,8 +420,8 @@ mod tests {
                 true,
                 Outcome::Success,
             ),
-            ("", false, Outcome::Failure),
-            ("not-a-uuid", true, Outcome::Failure),
+            ("", false, Outcome::Fail),
+            ("not-a-uuid", true, Outcome::Fail),
         ] {
             fs::write(&path, contents).unwrap();
             let (result, diagnostics) = capture_kvp_at_info(|| {

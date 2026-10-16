@@ -161,7 +161,7 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
         let path = match entry {
             Ok(e) => e.path(),
             Err(e) => {
-                tracing::debug!(
+                tracing::error!(
                     "Failed to read directory entry in {:?}: {:?}",
                     data_dir,
                     e
@@ -187,7 +187,7 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
                     );
                 }
                 Err(e) => {
-                    tracing::debug!(
+                    tracing::error!(
                         "Failed to clean provisioning marker {:?}: {:?}",
                         path,
                         e
@@ -225,7 +225,7 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
             tracing::info!("No log file found at: {:?}", log_path);
         }
         Err(e) => {
-            tracing::debug!("Failed to clean log file {:?}: {:?}", log_path, e);
+            tracing::error!("Failed to clean log file {:?}: {:?}", log_path, e);
             return Err(e);
         }
     }
@@ -269,9 +269,12 @@ fn is_config_error(error: &anyhow::Error) -> bool {
     )
 }
 
-/// Writes an in-progress report before provisioning so the final report
-/// replaces this record in place, and diagnostics appended afterward cannot
-/// block it at the pool's distinct-key limit.
+/// Writes an in-progress report before provisioning begins.
+///
+/// [`write_report`] replaces the previous report, clearing old failure details.
+/// Once the key exists, the final report can update it without adding a new key,
+/// so the 1,024-key limit cannot block that update. Validation and I/O errors
+/// can still prevent either write.
 async fn reserve_provisioning_report(
     store: Option<&KvpPoolStore>,
     vm_id: &str,

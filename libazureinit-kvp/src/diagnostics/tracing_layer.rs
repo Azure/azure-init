@@ -195,19 +195,20 @@ where
         let Some(state) = span.extensions_mut().remove::<SpanState>() else {
             return;
         };
-        let explicit = match state.fields.outcome() {
-            Ok(result) => result,
-            Err(error) => {
-                eprintln!("Dropped KVP diagnostic finish: {error}");
-                return;
-            }
-        };
-        // A span closing during a panic reports failure even without an ERROR.
+        // If this thread is already unwinding from a panic, record failure
+        // regardless of the explicit outcome.
         let result = if std::thread::panicking() {
-            Outcome::Failure
+            Outcome::Fail
         } else {
+            let explicit = match state.fields.outcome() {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("Dropped KVP diagnostic finish: {error}");
+                    return;
+                }
+            };
             explicit.unwrap_or(if state.saw_error {
-                Outcome::Failure
+                Outcome::Fail
             } else {
                 Outcome::Success
             })
@@ -243,10 +244,8 @@ impl Fields {
             {
                 Ok(Some(Outcome::Success))
             }
-            Some(Value::String(value))
-                if value == Outcome::Failure.as_str() =>
-            {
-                Ok(Some(Outcome::Failure))
+            Some(Value::String(value)) if value == Outcome::Fail.as_str() => {
+                Ok(Some(Outcome::Fail))
             }
             _ => Err(INVALID_OUTCOME),
         }
@@ -404,7 +403,7 @@ mod tests {
             });
         });
 
-        assert_eq!(finish(&entries(&store)).result, Outcome::Failure);
+        assert_eq!(finish(&entries(&store)).result, Outcome::Fail);
     }
 
     #[test]
@@ -415,7 +414,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!(
                 "op",
-                diagnostic.result = Outcome::Failure.as_str()
+                diagnostic.result = Outcome::Fail.as_str()
             );
             span.in_scope(|| {
                 tracing::error!("handled, not fatal");
@@ -430,7 +429,7 @@ mod tests {
     fn outcome_field_accepts_only_canonical_wire_tokens() {
         assert_eq!(Fields::default().outcome(), Ok(None));
         for (token, outcome) in
-            [("success", Outcome::Success), ("fail", Outcome::Failure)]
+            [("success", Outcome::Success), ("fail", Outcome::Fail)]
         {
             let fields = Fields(Map::from_iter([(
                 OUTCOME_FIELD.to_owned(),
@@ -465,14 +464,18 @@ mod tests {
         assert!(!store.path().exists());
     }
 
-    #[test]
-    fn invalid_late_result_drops_only_the_finish() {
+    #[rstest::rstest]
+    #[case::invalid_text(&"invalid")]
+    #[case::invalid_type(&true)]
+    fn invalid_late_result_drops_only_the_finish(
+        #[case] result: &dyn tracing::Value,
+    ) {
         let dir = TempDir::new().unwrap();
         let (kvp, store) = bridge(&dir);
         let subscriber = tracing_subscriber::registry().with(kvp);
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("op", diagnostic.result = "success");
-            span.record("diagnostic.result", "invalid");
+            span.record(OUTCOME_FIELD, result);
         });
         assert!(matches!(
             entries(&store).as_slice(),
@@ -516,7 +519,7 @@ mod tests {
         let entries = entries(&store);
         assert!(
             matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
-                if event.result == Some(Outcome::Failure) && event.payload == expected)
+                if event.result == Some(Outcome::Fail) && event.payload == expected)
         );
     }
 
@@ -614,21 +617,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn span_closing_while_unwinding_finishes_as_failure() {
+    #[rstest::rstest]
+    #[case::absent(None)]
+    #[case::success(Some::<&dyn tracing::Value>(&"success"))]
+    #[case::fail(Some::<&dyn tracing::Value>(&"fail"))]
+    #[case::invalid_text(Some::<&dyn tracing::Value>(&"invalid"))]
+    #[case::invalid_type(Some::<&dyn tracing::Value>(&true))]
+    fn span_closing_while_unwinding_finishes_as_failure(
+        #[case] result: Option<&dyn tracing::Value>,
+    ) {
         let dir = TempDir::new().unwrap();
         let (kvp, store) = bridge(&dir);
         let subscriber = tracing_subscriber::registry().with(kvp);
         tracing::subscriber::with_default(subscriber, || {
             let unwound =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _entered = tracing::info_span!("boom").entered();
+                    let span = tracing::info_span!(
+                        "boom",
+                        diagnostic.result = tracing::field::Empty,
+                    );
+                    if let Some(result) = result {
+                        span.record(OUTCOME_FIELD, result);
+                    }
+                    let _entered = span.entered();
                     panic!("provisioning exploded");
                 }));
             assert!(unwound.is_err());
         });
 
-        assert_eq!(finish(&entries(&store)).result, Outcome::Failure);
+        let entries = entries(&store);
+        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
+            entries.as_slice()
+        else {
+            panic!(
+                "expected start and finish during unwinding, got {entries:?}"
+            );
+        };
+        assert_eq!(start.key.event_id, finish.key.event_id);
+        assert_eq!(finish.result, Outcome::Fail);
     }
 
     #[test]

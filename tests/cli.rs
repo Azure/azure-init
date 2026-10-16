@@ -283,3 +283,38 @@ fn clean_removes_provision_and_log_files_with_log_arg(
 
     Ok(())
 }
+
+#[test]
+fn clean_failures_preserve_context_at_info(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for clean_logs in [false, true] {
+        let (_dir, data_dir, log_file, config_path) = setup_clean_test()?;
+        let (path, message) = if clean_logs {
+            (log_file, "Failed to clean log file")
+        } else {
+            (
+                data_dir.join("vm-id.provisioned"),
+                "Failed to clean provisioning marker",
+            )
+        };
+        fs::remove_file(&path)?;
+        fs::create_dir(&path)?;
+        let mut command =
+            Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
+        command
+            .arg("--config")
+            .arg(config_path)
+            .arg("clean")
+            .env("AZURE_INIT_LOG", "info");
+        if clean_logs {
+            command.arg("--logs");
+        }
+        command
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(message))
+            .stderr(predicate::str::contains(path.to_str().unwrap()));
+        assert!(path.is_dir());
+    }
+    Ok(())
+}

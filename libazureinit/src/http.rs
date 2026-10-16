@@ -112,7 +112,7 @@ async fn request(
                 "request_attempt",
                 attempt,
                 http_status = tracing::field::Empty,
-                diagnostic.result = Outcome::Failure.as_str()
+                diagnostic.result = Outcome::Fail.as_str()
             );
             let req = request.try_clone().expect("The request body MUST be clone-able");
             match client
@@ -414,7 +414,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(attempts.len(), 2);
         for (finish, (attempt, status, outcome)) in attempts.iter().zip([
-            (0_u64, StatusCode::SERVICE_UNAVAILABLE, Outcome::Failure),
+            (0_u64, StatusCode::SERVICE_UNAVAILABLE, Outcome::Fail),
             (1_u64, StatusCode::OK, Outcome::Success),
         ]) {
             assert_eq!(finish.result, outcome);

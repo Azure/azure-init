@@ -115,7 +115,7 @@ mod lib_tests {
         };
         assert_eq!(start.key.event_id, finish.key.event_id);
         assert_ne!(context.key.event_id, returned.key.event_id);
-        assert_eq!(finish.result, Outcome::Failure);
+        assert_eq!(finish.result, Outcome::Fail);
 
         let errors = kvp_error_fields(&diagnostics);
         assert_eq!(errors.len(), 2);

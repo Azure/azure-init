@@ -125,7 +125,7 @@ fn agent_provisioning_in_container() {
         .success();
 
     for (scenario, expected) in
-        [("success", Outcome::Success), ("failure", Outcome::Failure)]
+        [("success", Outcome::Success), ("failure", Outcome::Fail)]
     {
         let directory = artifacts.path().join(scenario);
         let store =
@@ -152,10 +152,9 @@ fn agent_provisioning_in_container() {
                     .unwrap()
             );
         }
-        for (name, result) in [
-            ("get_environment", Outcome::Failure),
-            ("provision", expected),
-        ] {
+        for (name, result) in
+            [("get_environment", Outcome::Fail), ("provision", expected)]
+        {
             assert!(
                 entries.iter().any(|entry| matches!(
                     entry,

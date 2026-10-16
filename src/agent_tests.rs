@@ -212,25 +212,50 @@ async fn unavailable_kvp_does_not_prevent_wireserver_reporting(
 #[tokio::test]
 async fn reserved_report_survives_diagnostics_at_key_limit(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let store =
-        KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)?;
-    reserve_provisioning_report(Some(&store), VM_ID).await;
-    let reserved = store
-        .read(PROVISIONING_REPORT_KEY)?
-        .expect("in-progress report should be written");
-    assert!(reserved.starts_with("result=in_progress|"));
+    for report in [
+        ProvisioningReport::success(
+            format!("Azure-Init/{PKG_VERSION}"),
+            VM_ID,
+            ReportPpsType::None,
+        ),
+        LibError::Timeout.as_provisioning_report(VM_ID),
+    ] {
+        let dir = TempDir::new()?;
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)?;
+        write_report(
+            &store,
+            &LibError::Timeout
+                .as_provisioning_report(VM_ID)
+                .with_extra("details", "previous attempt"),
+        )?;
+        reserve_provisioning_report(Some(&store), VM_ID).await;
+        let reserved = store
+            .read(PROVISIONING_REPORT_KEY)?
+            .expect("in-progress report should be written");
+        assert!(reserved.starts_with("result=in_progress|"));
+        assert!(!reserved.contains("reason="));
+        assert!(!reserved.contains("details="));
+        assert!(!reserved.contains("documentation_url="));
 
-    store.append_multiple((0..1024).map(|i| (format!("diag-{i}"), "x")))?;
-    let report = LibError::Timeout.as_provisioning_report(VM_ID);
-    publish_provisioning_report(Some(&store), &report, async { Ok(()) }).await;
+        store.append_multiple((0..1024).map(|i| (format!("diag-{i}"), "x")))?;
+        publish_provisioning_report(Some(&store), &report, async { Ok(()) })
+            .await;
 
-    let records = store.dump()?;
-    assert_eq!(
-        records[0],
-        (PROVISIONING_REPORT_KEY.to_owned(), report.encode())
-    );
-    assert_eq!(records.len(), 1025);
+        let records = store.dump()?;
+        assert_eq!(
+            records[0],
+            (PROVISIONING_REPORT_KEY.to_owned(), report.encode())
+        );
+        assert_eq!(records.len(), 1025);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|(key, _)| key == PROVISIONING_REPORT_KEY)
+                .count(),
+            1
+        );
+    }
     Ok(())
 }
 

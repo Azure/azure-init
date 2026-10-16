@@ -99,9 +99,6 @@ impl std::fmt::Display for ReportPpsType {
 /// stored reports can be parsed with [`str::parse`]; parsing preserves their
 /// timestamps.
 ///
-/// Writing an in-progress report before provisioning reserves the
-/// `PROVISIONING_REPORT` record, so the final report replaces it in place.
-///
 /// See the [provisioning report contract] for the stored format.
 ///
 /// [provisioning report contract]: https://github.com/Azure/azure-init/blob/main/doc/diagnostics.md#provisioning-reports
@@ -151,7 +148,8 @@ pub struct ProvisioningReport {
 }
 
 impl ProvisioningReport {
-    /// Creates a report stating that provisioning has started but not finished.
+    /// Creates an in-memory report stating that provisioning has started but
+    /// not finished.
     pub fn in_progress(
         agent: impl Into<String>,
         vm_id: impl Into<String>,
@@ -403,7 +401,8 @@ impl ProvisioningReport {
 
 /// Stores a provisioning result, replacing any existing report in the pool.
 ///
-/// An existing report is overwritten in place, keeping its record position.
+/// For any report result, the entire stored value is replaced; fields from the
+/// previous report are not retained. The record keeps its position in the pool.
 /// Only adding a new report key is subject to the store's distinct-key limit.
 /// A report must fit in one value under the store's configured size policy.
 ///
@@ -680,6 +679,43 @@ mod tests {
         assert_eq!(store.len().unwrap(), 1);
     }
 
+    #[test]
+    fn in_progress_report_resets_previous_failure() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        let mut previous = ProvisioningReport::failure(
+            "old-agent",
+            VM_ID,
+            "old failure",
+            ReportPpsType::Running,
+        )
+        .with_extra("details", "old attempt")
+        .with_documentation_url("https://example.invalid/old");
+        previous.timestamp = "2000-01-01T00:00:00Z".to_owned();
+        write_report(&store, &previous).unwrap();
+
+        let started = with_ts(ProvisioningReport::in_progress(
+            AGENT,
+            VM_ID,
+            ReportPpsType::None,
+        ));
+        write_report(&store, &started).unwrap();
+
+        let encoded = store.read(PROVISIONING_REPORT_KEY).unwrap().unwrap();
+        assert_eq!(encoded, started.encode());
+        let parsed: ProvisioningReport = encoded.parse().unwrap();
+        assert_eq!(parsed, started);
+        assert_eq!(parsed.result, ReportResult::InProgress);
+        assert_eq!(parsed.timestamp, TS);
+        assert_eq!(parsed.agent, AGENT);
+        assert_eq!(parsed.vm_id, VM_ID);
+        assert_eq!(parsed.pps_type, ReportPpsType::None);
+        assert!(parsed.reason.is_none());
+        assert!(parsed.documentation_url.is_none());
+        assert!(parsed.extra.is_empty());
+        assert_eq!(store.len().unwrap(), 1);
+    }
+
     /// The store's distinct-key limit for `insert`.
     const MAX_UNIQUE_KEYS: usize = 1024;
 
@@ -692,8 +728,21 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn in_progress_report_reserves_slot_for_final_report() {
+    #[rstest]
+    #[case::success(ProvisioningReport::success(
+        AGENT,
+        VM_ID,
+        ReportPpsType::None
+    ))]
+    #[case::failure(ProvisioningReport::failure(
+        AGENT,
+        VM_ID,
+        "boom",
+        ReportPpsType::None
+    ))]
+    fn in_progress_report_reserves_slot_for_final_report(
+        #[case] report: ProvisioningReport,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(&dir);
         store.append("before", "x").unwrap();
@@ -704,19 +753,13 @@ mod tests {
         .unwrap();
         fill_with_distinct_keys(&store);
 
-        let failure = ProvisioningReport::failure(
-            AGENT,
-            VM_ID,
-            "boom",
-            ReportPpsType::None,
-        );
-        write_report(&store, &failure).unwrap();
+        write_report(&store, &report).unwrap();
 
         let records = store.dump().unwrap();
         assert_eq!(records.len(), MAX_UNIQUE_KEYS + 2);
         assert_eq!(
             records[1],
-            (PROVISIONING_REPORT_KEY.to_owned(), failure.encode())
+            (PROVISIONING_REPORT_KEY.to_owned(), report.encode())
         );
         assert_eq!(
             records

@@ -31,7 +31,7 @@ const EVENT_ID: &str = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
 fn outcome_recording_api_preserves_wire_tokens() {
     assert_eq!(OUTCOME_FIELD, "diagnostic.result");
     assert_eq!(Outcome::Success.as_str(), "success");
-    assert_eq!(Outcome::Failure.as_str(), "fail");
+    assert_eq!(Outcome::Fail.as_str(), "fail");
 }
 
 fn store_at(dir: &TempDir) -> KvpPoolStore {
@@ -258,7 +258,7 @@ fn tracing_spans_preserve_lifecycle_updates_and_explicit_recovery(
             drop(attempt);
             operation.record("http_status", 200_u64);
             tracing::error!("recovered error");
-            operation.record(OUTCOME_FIELD, Outcome::Failure.as_str());
+            operation.record(OUTCOME_FIELD, Outcome::Fail.as_str());
             operation.record(OUTCOME_FIELD, Outcome::Success.as_str());
             tracing::info!(msg = message.as_str());
         });
@@ -281,7 +281,7 @@ fn tracing_spans_preserve_lifecycle_updates_and_explicit_recovery(
     assert_eq!(recovered.key.name, "operation");
     assert_eq!(message_event.key.name, "operation");
     assert_ne!(recovered.key.event_id, message_event.key.event_id);
-    assert_eq!(attempt_finish.result, Outcome::Failure);
+    assert_eq!(attempt_finish.result, Outcome::Fail);
     // An explicit diagnostic.result overrides the observed ERROR event.
     assert_eq!(finish.result, Outcome::Success);
     assert!(finish.duration <= elapsed);

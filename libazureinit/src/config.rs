@@ -383,7 +383,7 @@ impl Config {
                 tracing::info!("Configuration successfully loaded.");
             })
             .map_err(|e| {
-                tracing::debug!("Failed to extract configuration: {:?}", e);
+                tracing::error!("Failed to extract configuration: {:?}", e);
                 Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Configuration error: {e:?}"),
@@ -400,7 +400,7 @@ impl Config {
         if dir_path.is_dir() {
             let mut entries: Vec<_> = fs::read_dir(&dir_path)
                 .map_err(|e| {
-                    tracing::debug!(
+                    tracing::error!(
                         "Failed to read directory {:?}: {:?}",
                         dir_path,
                         e
@@ -431,7 +431,9 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
     use anyhow::Error;
+    use libazureinit_kvp::{Diagnostic, Outcome};
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
@@ -488,12 +490,48 @@ mod tests {
             Config::load_from(file_path, drop_in_path, None);
 
         assert!(result.is_err());
+        assert!(logs_contain(
+            "error=An I/O error occurred: Configuration error:"
+        ));
+        assert!(!logs_contain("Failed to extract configuration:"));
 
         tracing::debug!(
             "test_load_invalid_config completed with expected error."
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_invalid_config_preserves_error_context_at_info() {
+        for contents in
+            ["[imds\n", "[ssh]\nquery_sshd_config = \"not_a_boolean\"\n"]
+        {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("invalid.toml");
+            fs::write(&path, contents).unwrap();
+            let (result, diagnostics) = capture_kvp_at_info(|| {
+                Config::load_from(
+                    path.clone(),
+                    dir.path().join("missing-drop-ins"),
+                    None,
+                )
+            });
+            assert!(result.is_err());
+            let errors = kvp_error_fields(&diagnostics);
+            let [error] = errors.as_slice() else {
+                panic!("expected one configuration error, got {errors:?}");
+            };
+            let message = error["error"].as_str().unwrap();
+            assert!(message.contains("Configuration error:"));
+            assert!(message.contains(path.to_str().unwrap()));
+            assert!(diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                Diagnostic::Finish(finish)
+                    if finish.key.name == "load_from"
+                        && finish.result == Outcome::Fail
+            )));
+        }
     }
 
     #[test]

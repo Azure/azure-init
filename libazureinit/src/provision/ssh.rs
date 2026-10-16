@@ -139,7 +139,7 @@ pub(crate) fn provision_ssh(
 ///
 /// This function returns a path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn get_authorized_keys_path_from_sshd(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<String> {
@@ -166,7 +166,7 @@ fn get_authorized_keys_path_from_sshd(
 /// # Returns
 ///
 /// This function returns an output of the command.
-#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn run_sshd_command(
     sshd_config_command_runner: impl Fn() -> io::Result<Output>,
 ) -> Option<Output> {
@@ -183,9 +183,10 @@ fn run_sshd_command(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::debug!(stdout = %stdout, stderr = %stderr, "Failed sshd -G output");
-            tracing::warn!(
+            tracing::error!(
                 code = output.status.code().unwrap_or(-1),
+                %stdout,
+                %stderr,
                 "Failed to execute sshd -G, assuming sshd configuration defaults"
             );
             None
@@ -213,7 +214,7 @@ fn run_sshd_command(
 ///
 /// This function returns an `Option<String>` containing the path to the `authorized_keys` file if found,
 /// or `None` if the setting is not found.
-#[instrument(skip_all, fields(diagnostic.result = Outcome::Failure.as_str()))]
+#[instrument(skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn extract_authorized_keys_file_path(stdout: &[u8]) -> Option<String> {
     let output = String::from_utf8_lossy(stdout);
     for line in output.lines() {
@@ -277,6 +278,7 @@ pub(crate) fn update_sshd_config(
         )?;
         tracing::info!(
             ?sshd_config_path,
+            password_authentication = password_auth_setting,
             "Created new sshd drop-in configuration file"
         );
         return Ok(());
@@ -352,6 +354,8 @@ mod tests {
         get_sshd_config_path, provision_ssh, resolve_sshd_config_path,
         run_sshd_command, update_sshd_config,
     };
+    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
+    use libazureinit_kvp::{Diagnostic, DiagnosticPayload, Outcome};
     use std::{
         fs::{File, Permissions},
         io::{self, Read, Write},
@@ -373,13 +377,10 @@ mod tests {
 
     #[test]
     fn test_sshd_outcomes_use_shared_recording_api() {
-        use crate::unittest::capture_kvp_at_info;
-        use libazureinit_kvp::{Diagnostic, Outcome};
-
         for (status, stdout, expected) in [
             (0, "authorizedkeysfile .ssh/test_keys", Outcome::Success),
-            (0, "", Outcome::Failure),
-            (1, "", Outcome::Failure),
+            (0, "", Outcome::Fail),
+            (1, "", Outcome::Fail),
         ] {
             let (result, diagnostics) = capture_kvp_at_info(|| {
                 get_authorized_keys_path_from_sshd(|| {
@@ -451,12 +452,24 @@ mod tests {
 
     #[test]
     fn test_run_sshd_command_failure() {
-        let stdout = "authorizedkeysfile .ssh/test_authorized_keys";
-        let mock_runner =
-            || Ok(create_output(1, stdout, "Error running sshd -G"));
+        let stdout = "authorizedkeysfile .ssh/test_authorized_keys\n";
+        let stderr = "Error running sshd -G\ninvalid \"setting\"";
+        let (result, diagnostics) = capture_kvp_at_info(|| {
+            run_sshd_command(|| Ok(create_output(7 << 8, stdout, stderr)))
+        });
 
-        let result = run_sshd_command(mock_runner);
         assert!(result.is_none());
+        let errors = kvp_error_fields(&diagnostics);
+        let [error] = errors.as_slice() else {
+            panic!("expected one contextual SSH error, got {errors:?}");
+        };
+        assert_eq!(error["code"], 7);
+        assert_eq!(error["stdout"], stdout);
+        assert_eq!(error["stderr"], stderr);
+        assert_eq!(
+            error["message"],
+            "Failed to execute sshd -G, assuming sshd configuration defaults"
+        );
     }
 
     #[test]
@@ -628,6 +641,83 @@ mod tests {
         auth_file.read_to_string(&mut buf).unwrap();
 
         assert_eq!("not-a-real-key xyz987\n", buf);
+    }
+
+    #[test]
+    fn test_update_sshd_config_logs_value_and_path_at_info() {
+        for (initial, message) in [
+            (None, "Created new sshd drop-in configuration file"),
+            (
+                Some("PasswordAuthentication yes\nUsePAM yes\n"),
+                "Updated existing sshd password authentication setting",
+            ),
+            (
+                Some("UsePAM yes\n"),
+                "Added sshd password authentication setting",
+            ),
+        ] {
+            for (disable, expected) in [(false, "yes"), (true, "no")] {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("sshd_config");
+                if let Some(initial) = initial {
+                    std::fs::write(&path, initial).unwrap();
+                }
+                let (result, diagnostics) = capture_kvp_at_info(|| {
+                    update_sshd_config(path.to_str().unwrap(), disable)
+                });
+                result.unwrap();
+                let events: Vec<_> = diagnostics
+                    .iter()
+                    .filter_map(|diagnostic| match diagnostic {
+                        Diagnostic::Event(event) => {
+                            let DiagnosticPayload::Text(text) = &event.payload
+                            else {
+                                panic!("expected JSON text");
+                            };
+                            Some(
+                                serde_json::from_str::<serde_json::Value>(text)
+                                    .unwrap(),
+                            )
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let [event] = events.as_slice() else {
+                    panic!(
+                        "expected one SSH configuration event, got {events:?}"
+                    );
+                };
+                assert_eq!(event["level"], "INFO");
+                assert_eq!(event["fields"]["message"], message);
+                assert_eq!(
+                    event["fields"]["sshd_config_path"],
+                    format!("{path:?}")
+                );
+                assert_eq!(
+                    event["fields"]["password_authentication"],
+                    expected
+                );
+                let contents = std::fs::read_to_string(&path).unwrap();
+                let settings: Vec<_> = contents
+                    .lines()
+                    .filter(|line| line.starts_with("PasswordAuthentication "))
+                    .map(|line| line.split('#').next().unwrap().trim())
+                    .collect();
+                assert_eq!(
+                    settings,
+                    [format!("PasswordAuthentication {expected}")]
+                );
+                if initial.is_some() {
+                    assert!(contents.contains("UsePAM yes\n"));
+                } else {
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode()
+                            & 0o777,
+                        0o600
+                    );
+                }
+            }
+        }
     }
 
     #[test]

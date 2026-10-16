@@ -716,7 +716,7 @@ mod tests {
 
     #[rstest]
     #[case::success(Outcome::Success, "success", 312_000, "0.312000")]
-    #[case::failure(Outcome::Failure, "fail", 0, "0.000000")]
+    #[case::failure(Outcome::Fail, "fail", 0, "0.000000")]
     fn exact_finish_key_matches_diag_layout(
         #[case] result: Outcome,
         #[case] token: &str,
@@ -747,7 +747,7 @@ mod tests {
     #[case::neither(None, None, "")]
     #[case::result_only(Some(Outcome::Success), None, "")]
     #[case::zero_duration(None, Some(0), "0.000000")]
-    #[case::both(Some(Outcome::Failure), Some(52), "0.000052")]
+    #[case::both(Some(Outcome::Fail), Some(52), "0.000052")]
     fn event_optional_fields_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
@@ -790,7 +790,7 @@ mod tests {
                 "test",
                 "finished",
                 None,
-                Outcome::Failure,
+                Outcome::Fail,
                 Duration::from_micros(17),
             )
             .unwrap();
@@ -1120,7 +1120,7 @@ mod tests {
                 "bad|name",
                 "message",
                 None,
-                Outcome::Failure,
+                Outcome::Fail,
                 Duration::ZERO,
             )
         });
@@ -1155,7 +1155,7 @@ mod tests {
                 "test",
                 payload,
                 None,
-                Outcome::Failure,
+                Outcome::Fail,
                 Duration::ZERO,
             )
         });

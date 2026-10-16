@@ -78,8 +78,7 @@ pub enum Outcome {
     /// The operation succeeded.
     Success,
     /// The operation failed; serialized as `fail` in the DIAG format.
-    #[serde(rename = "fail")]
-    Failure,
+    Fail,
 }
 
 impl Outcome {
@@ -87,7 +86,7 @@ impl Outcome {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
-            Self::Failure => "fail",
+            Self::Fail => "fail",
         }
     }
 }
@@ -445,7 +444,7 @@ mod tests {
 
     #[rstest]
     #[case(Outcome::Success, "success")]
-    #[case(Outcome::Failure, "fail")]
+    #[case(Outcome::Fail, "fail")]
     fn outcome_uses_wire_token(#[case] result: Outcome, #[case] token: &str) {
         assert_eq!(result.as_str(), token);
         assert_eq!(result.to_string(), token);
@@ -524,7 +523,7 @@ mod tests {
 
     #[rstest]
     #[case(Outcome::Success, "success", Duration::from_micros(312), 0.000312)]
-    #[case(Outcome::Failure, "fail", Duration::ZERO, 0.0)]
+    #[case(Outcome::Fail, "fail", Duration::ZERO, 0.0)]
     #[case(Outcome::Success, "success", Duration::MAX, u64::MAX as f64)]
     fn finish_serializes_result_and_seconds(
         #[case] result: Outcome,
@@ -548,7 +547,7 @@ mod tests {
     #[case::neither(None, None)]
     #[case::result_only(Some(Outcome::Success), None)]
     #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Failure), Some(52))]
+    #[case::both(Some(Outcome::Fail), Some(52))]
     fn event_serializes_only_measured_fields(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
