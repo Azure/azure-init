@@ -12,6 +12,41 @@ from unittest.mock import patch
 import container_provisioning as fixture
 
 
+class MountTableTests(unittest.TestCase):
+    def check_mount_table(self, contents):
+        with tempfile.TemporaryDirectory() as temporary:
+            mtab = Path(temporary) / "mtab"
+            mtab.write_text(contents)
+            fixture.check_mount_table(mtab)
+
+    def test_allows_empty_and_standard_container_mounts(self):
+        for contents in (
+            "",
+            "# No mounted media\n\n",
+            "overlay / overlay rw,relatime 0 0\n"
+            "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+            "tmpfs /dev tmpfs rw,nosuid 0 0\n"
+            "tmpfs /media/iso9660 tmpfs rw 0 0\n",
+        ):
+            with self.subTest(contents=contents):
+                self.check_mount_table(contents)
+
+    def test_rejects_mounted_provisioning_media(self):
+        for filesystem in ("iso9660", "udf"):
+            with self.subTest(filesystem=filesystem):
+                with self.assertRaisesRegex(
+                    RuntimeError, f"mounted {filesystem} provisioning media"
+                ):
+                    self.check_mount_table(
+                        "overlay / overlay rw,relatime 0 0\n"
+                        f"/dev/sr0 /media/ovf {filesystem} ro 0 0\n"
+                    )
+
+    def test_rejects_malformed_mount_entries(self):
+        with self.assertRaisesRegex(RuntimeError, "invalid mount table entry"):
+            self.check_mount_table("invalid entry\n")
+
+
 class ContainerRunnerTests(unittest.TestCase):
     def run_fixture(self, root, docker, profile_pattern=None):
         artifacts = root / "artifacts"

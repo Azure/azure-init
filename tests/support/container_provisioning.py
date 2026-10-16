@@ -17,13 +17,25 @@ VM_ID = "00000000-0000-0000-0000-000000000000"
 SCENARIOS = ("success", "failure")
 
 
+def check_mount_table(mtab):
+    for entry in mtab.read_text().splitlines():
+        fields = entry.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        if len(fields) < 3:
+            raise RuntimeError(f"invalid mount table entry: {entry!r}")
+        if fields[2] in ("iso9660", "udf"):
+            raise RuntimeError(
+                f"fixture must not expose mounted {fields[2]} provisioning media"
+            )
+
+
 def inside_container(scenario):
     if not Path("/test/isolated-provisioning").is_file():
         raise RuntimeError("provisioning fixture must only run in its isolated image")
     if Path("/sys/class/dmi/id/product_uuid").exists():
         raise RuntimeError("fixture requires an isolated, empty /sys")
-    if Path("/etc/mtab").read_text():
-        raise RuntimeError("fixture requires an empty mount table")
+    check_mount_table(Path("/etc/mtab"))
 
     requests = []
     service_errors = []
