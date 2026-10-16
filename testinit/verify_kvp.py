@@ -10,7 +10,6 @@ import uuid
 
 KVP = "/usr/bin/libazureinit-kvp"
 VM_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
-REPORT_KEY = "PROVISIONING_REPORT"
 
 
 def require(condition, message):
@@ -43,7 +42,6 @@ def verify_cli():
         commands = (
             "info", "dump", "entries", "read", "write", "emit", "load",
             "append-multiple", "delete", "delete-multiple", "clear", "is-stale",
-            "report-success", "report-failure",
         )
         help_text = cli(directory, "--help")
         for command in commands:
@@ -120,24 +118,14 @@ def verify_cli():
         require(event["vm_id"] == VM_ID and event["agent"] == "testinit/1", "event identity differs")
         uuid.UUID(event["event_id"])
         cli(directory, "write", "raw-note", "preserved")
-        cli(directory, "report-success", "--vm-id", VM_ID, "--supporting-data", "detail='left,right',empty=")
-        report = next(entry for entry in cli_json(directory, "dump", "--parse") if entry["type"] == REPORT_KEY)
-        require(report["result"] == "success", "success report missing")
-        require(report["extra"] == [["detail", "left,right"], ["empty", ""]], "supporting data changed")
-        reason = 'failed | "quoted"\nnext line'
-        cli(directory, "report-failure", "--vm-id", VM_ID, "--agent", "testinit/1", "--reason", reason, "--documentation-url", "https://example.invalid/help")
         parsed = cli_json(directory, "dump", "--parse", "--name", "artifact", "--kind", "event")
-        reports = [entry for entry in parsed if entry["type"] == REPORT_KEY]
-        require(len(reports) == 1 and reports[0]["result"] == "error", "report was not replaced")
-        require(reports[0]["reason"] == reason, "report quoting changed")
-        require(reports[0]["documentation_url"] == "https://example.invalid/help", "help URL changed")
+        require(len(parsed) == 2 and parsed[0] == event, "parsed filters changed the diagnostic")
         require(any(entry["type"] == "raw" for entry in parsed), "parsed filter lost raw data")
         filtered = cli_json(directory, "dump", "--parse", "--kind", "start")
-        require(len(filtered) == 2, "kind filter must keep only the report and raw record")
+        require(len(filtered) == 1 and filtered[0]["type"] == "raw", "kind filter must keep only the raw record")
         filtered = cli_json(directory, "dump", "--parse", "--name", "absent")
-        require(len(filtered) == 2, "name filter must keep the report and raw record")
+        require(len(filtered) == 1 and filtered[0]["type"] == "raw", "name filter must keep only the raw record")
         require("diagnostic kind=event" in cli(directory, "dump", "--parse", "--text"), "parsed text output missing")
-        cli(directory, "report-failure", "--vm-id", VM_ID, "--reason", "invalid", "--supporting-data", "bad", expected=2)
 
         stale_dir = directory / "stale"
         stale_dir.mkdir()

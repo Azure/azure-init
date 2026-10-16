@@ -153,7 +153,7 @@ reading.
 
 | Field | Description | Format | Required |
 |---|---|---|---|
-| `result` | Provisioning state | `in_progress`, `success` or `error` (not diagnostic `fail`) | All reports |
+| `result` | Provisioning state | `success` or `error` (not diagnostic `fail`) | All reports |
 | `agent` | Reporting agent | UTF-8 text | All reports |
 | `vm_id` | VM identity | UTF-8 text, usually a UUID | All reports |
 | `pps_type` | Pre-provisioning type | `None`, `PreprovisionedOSDisk`, `Running`, `Savable`, or `Unknown` | All reports |
@@ -171,18 +171,6 @@ UUID validation and timestamp output formatting are not imposed on reports.
 Reports replace the prior provisioning result, are not chunked, and must fit
 one value.
 
-Before each provisioning attempt, Azure Init writes `result=in_progress` with
-a fresh timestamp. This replaces the previous report, including its failure
-reason, supporting data, and help URL. `reason` is only used for failures.
-
-The final success or error report overwrites the same key. Updating an existing
-key is exempt from the [1,024-key limit](kvp.md#record-updates), so later
-diagnostics cannot block that update on this limit. Creating the initial key
-can fail if the pool is already full; both writes can also fail validation or
-I/O.
-
-An `in_progress` report means no final KVP result has been published for that
-attempt.
 
 ## Cloud-init Compatibility
 

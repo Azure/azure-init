@@ -115,9 +115,9 @@ installs the systemd service. Python is installed only for the test verifier.
 ### KVP Checks
 
 CI invokes `verify_kvp.py` in a separate step after starting the testinit
-environment. It checks all fourteen CLI commands,
+environment. It checks the twelve storage and diagnostics CLI commands,
 including append/upsert behavior, batch input from files and stdin, parsed
-diagnostics, report replacement, output modes, pool selection, safe/unsafe
+diagnostics, output modes, pool selection, safe/unsafe
 limits, stale cleanup, and exit codes. All CLI checks use temporary directories
 selected with `--dir`, never the agent's diagnostic pool. The verifier does not
 launch `azure-init`, modify its configuration, or rerun provisioning.

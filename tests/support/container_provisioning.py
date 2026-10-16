@@ -167,11 +167,10 @@ def inside_container(scenario):
                 description = report["details"]["description"]
                 assert "reason=failed to provision hostname" in description
                 assert not (work / "state" / f"{VM_ID}.provisioned").exists()
-                (artifacts / "http-description").write_text(description)
             log = (work / "azure-init.log").read_text()
             assert "Failed to find valid OVF provisioning data" in log
             shutil.copyfile("/var/lib/hyperv/.kvp_pool_1", artifacts / ".kvp_pool_1")
-            print(f"Verified {scenario}: missing VM ID, OVF fallback, provisioning and reporting")
+            print(f"Verified {scenario}: missing VM ID, OVF fallback, provisioning and KVP diagnostics")
         finally:
             server.shutdown()
             thread.join(timeout=5)

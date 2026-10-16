@@ -12,6 +12,7 @@ use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{fmt, fs};
@@ -237,7 +238,7 @@ impl Default for Wireserver {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Telemetry {
-    /// Enables KVP diagnostics and final provisioning reports. Defaults to `true`.
+    /// Enables KVP diagnostics. Defaults to `true`.
     ///
     /// Disabling KVP does not disable file/console logs or wireserver HTTP.
     pub kvp_diagnostics: bool,
@@ -344,7 +345,7 @@ impl Config {
         )
     }
 
-    #[instrument(err, skip_all)]
+    #[instrument(skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,
@@ -380,14 +381,17 @@ impl Config {
         figment
             .extract::<Config>()
             .inspect(|_config| {
+                tracing::Span::current()
+                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
                 tracing::info!("Configuration successfully loaded.");
             })
             .map_err(|e| {
-                tracing::error!("Failed to extract configuration: {:?}", e);
-                Error::Io(std::io::Error::new(
+                let error = Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Configuration error: {e:?}"),
-                ))
+                ));
+                tracing::error!(%error, "Failed to extract configuration");
+                error
             })
     }
 
@@ -493,7 +497,7 @@ mod tests {
         assert!(logs_contain(
             "error=An I/O error occurred: Configuration error:"
         ));
-        assert!(!logs_contain("Failed to extract configuration:"));
+        assert!(logs_contain("Failed to extract configuration"));
 
         tracing::debug!(
             "test_load_invalid_config completed with expected error."
@@ -522,6 +526,7 @@ mod tests {
             let [error] = errors.as_slice() else {
                 panic!("expected one configuration error, got {errors:?}");
             };
+            assert_eq!(error["message"], "Failed to extract configuration");
             let message = error["error"].as_str().unwrap();
             assert!(message.contains("Configuration error:"));
             assert!(message.contains(path.to_str().unwrap()));
@@ -532,6 +537,26 @@ mod tests {
                         && finish.result == Outcome::Fail
             )));
         }
+    }
+
+    #[test]
+    fn test_valid_config_records_success_outcome() {
+        let dir = tempdir().unwrap();
+        let (result, diagnostics) = capture_kvp_at_info(|| {
+            Config::load_from(
+                dir.path().join("missing.toml"),
+                dir.path().join("missing-drop-ins"),
+                None,
+            )
+        });
+        assert!(result.is_ok());
+        assert!(kvp_error_fields(&diagnostics).is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            Diagnostic::Finish(finish)
+                if finish.key.name == "load_from"
+                    && finish.result == Outcome::Success
+        )));
     }
 
     #[test]
@@ -1185,9 +1210,37 @@ query_sshd_config = false
             figment::providers::Serialized::defaults(Config::default()),
         );
         let result = Config::merge_toml_directory(figment, unreadable.clone());
+        let (load_results, diagnostics) = capture_kvp_at_info(|| {
+            [
+                Config::load_from(
+                    dir.path().join("missing.toml"),
+                    unreadable.clone(),
+                    None,
+                ),
+                Config::load_from(
+                    dir.path().join("missing.toml"),
+                    dir.path().join("missing-drop-ins"),
+                    Some(unreadable.clone()),
+                ),
+            ]
+        });
         // Restore permissions so tempdir cleanup succeeds
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755))
             .unwrap();
         assert!(result.is_err());
+        assert!(load_results.iter().all(Result::is_err));
+        let finishes: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                Diagnostic::Finish(finish)
+                    if finish.key.name == "load_from" =>
+                {
+                    Some(finish)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finishes.len(), 2);
+        assert!(finishes.iter().all(|finish| finish.result == Outcome::Fail));
     }
 }

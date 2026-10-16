@@ -169,7 +169,6 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_eq!(decoded_report, &report);
 
     let dumped = store.dump().unwrap();
-    assert_eq!(dumped[3].1, report.encode());
     for (key, _) in &dumped[..3] {
         assert!(key
             .starts_with(&format!("{DIAGNOSTIC_VERSION_ID}|{AGENT}|{VM_ID}|")));

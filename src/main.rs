@@ -10,15 +10,12 @@ use libazureinit::{
     config::Config,
     error::Error as LibError,
     get_vm_id,
+    health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
     is_provisioning_complete, mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
-    wireserver::{report_failure, report_ready},
     Provision, User,
-};
-use libazureinit_kvp::{
-    write_report, KvpPoolStore, ProvisioningReport, ReportPpsType,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -233,20 +230,6 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Builds a provisioning report from a provisioning error, preferring the
-/// library error's own encoding and falling back to an unhandled error.
-fn failure_report(error: &anyhow::Error, vm_id: &str) -> ProvisioningReport {
-    error
-        .downcast_ref::<LibError>()
-        .map(|lib_error| lib_error.as_provisioning_report(vm_id))
-        .unwrap_or_else(|| {
-            LibError::UnhandledError {
-                details: format!("{error:?}"),
-            }
-            .as_provisioning_report(vm_id)
-        })
-}
-
 /// Maps a provisioning error to a process exit code, reporting configuration
 /// errors distinctly from general failures.
 fn exit_code_for(error: &anyhow::Error) -> ExitCode {
@@ -267,67 +250,6 @@ fn is_config_error(error: &anyhow::Error) -> bool {
         error.root_cause().downcast_ref::<LibError>(),
         Some(LibError::UserMissing { .. } | LibError::NonEmptyPassword)
     )
-}
-
-/// Writes an in-progress report before provisioning begins.
-///
-/// [`write_report`] replaces the previous report, clearing old failure details.
-/// Once the key exists, the final report can update it without adding a new key,
-/// so the 1,024-key limit cannot block that update. Validation and I/O errors
-/// can still prevent either write.
-async fn reserve_provisioning_report(
-    store: Option<&KvpPoolStore>,
-    vm_id: &str,
-) {
-    let Some(store) = store else {
-        return;
-    };
-    let store = store.clone();
-    let report = ProvisioningReport::in_progress(
-        format!("Azure-Init/{PKG_VERSION}"),
-        vm_id,
-        ReportPpsType::None,
-    );
-    let result =
-        tokio::task::spawn_blocking(move || write_report(&store, &report))
-            .await
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result.map_err(anyhow::Error::from));
-
-    // Report a KVP failure to stderr, not tracing, to avoid writing into the pool that just failed.
-    if let Err(error) = result {
-        eprintln!(
-            "Failed to write in-progress provisioning report to KVP: {error:#}"
-        );
-    }
-}
-
-async fn publish_provisioning_report(
-    store: Option<&KvpPoolStore>,
-    report: &ProvisioningReport,
-    wireserver: impl std::future::Future<Output = Result<(), LibError>>,
-) {
-    let kvp = async {
-        if let Some(store) = store {
-            let store = store.clone();
-            let report = report.clone();
-            tokio::task::spawn_blocking(move || write_report(&store, &report))
-                .await??;
-        }
-        Ok::<_, anyhow::Error>(())
-    };
-
-    let (kvp_result, wireserver_result) = tokio::join!(kvp, wireserver);
-
-    // Report a KVP failure to stderr, not tracing, to avoid writing into the pool that just failed.
-    if let Err(error) = kvp_result {
-        eprintln!("Failed to write provisioning report to KVP: {error:#}");
-    }
-    if let Err(error) = wireserver_result {
-        tracing::warn!(
-            "Failed to send provisioning report to wireserver: {error:?}"
-        );
-    }
 }
 
 #[tokio::main]
@@ -353,13 +275,13 @@ async fn main() -> ExitCode {
             eprintln!("Failed to load configuration: {error:?}");
             eprintln!("Example configuration:\n\n{}", Config::default());
 
-            let wireserver = libazureinit::config::Wireserver::default();
+            let config = Config::default();
             let err = LibError::LoadSshdConfig {
                 details: format!("{error:?}"),
             };
 
-            let report = err.as_provisioning_report(&vm_id);
-            let report_result = report_failure(&report, &wireserver)
+            let report = err.as_encoded_report(&vm_id);
+            let report_result = report_failure(report, &config)
                 .with_subscriber(bootstrap)
                 .await;
 
@@ -377,10 +299,7 @@ async fn main() -> ExitCode {
         logging::setup_layers(&logging_vm_id, &logging_config)
     })
     .await;
-    let logging::LoggingSetup {
-        subscriber,
-        report_store,
-    } = match setup {
+    let logging::LoggingSetup { subscriber } = match setup {
         Ok(setup) => setup,
         Err(error) => {
             eprintln!("Failed to initialize logging: {error}");
@@ -409,35 +328,39 @@ async fn main() -> ExitCode {
         );
         ExitCode::SUCCESS
     } else {
-        reserve_provisioning_report(report_store.as_ref(), &vm_id).await;
         let clone_config = config.clone();
         match provision(config, &vm_id, opts).await {
             Ok(_) => {
+                if let Err(report_error) =
+                    report_ready(&clone_config, &vm_id, None).await
+                {
+                    tracing::warn!(
+                        "Failed to send provisioning success report: {report_error:?}"
+                    );
+                }
                 tracing::info!("Provisioning completed successfully");
-                let report = ProvisioningReport::success(
-                    format!("Azure-Init/{PKG_VERSION}"),
-                    &vm_id,
-                    ReportPpsType::None,
-                );
-                publish_provisioning_report(
-                    report_store.as_ref(),
-                    &report,
-                    report_ready(&clone_config.wireserver),
-                )
-                .await;
 
                 ExitCode::SUCCESS
             }
             Err(e) => {
                 tracing::error!("Provisioning failed with error: {e:?}");
 
-                let report = failure_report(&e, &vm_id);
-                publish_provisioning_report(
-                    report_store.as_ref(),
-                    &report,
-                    report_failure(&report, &clone_config.wireserver),
-                )
-                .await;
+                let report = e
+                    .downcast_ref::<LibError>()
+                    .map(|lib_error| lib_error.as_encoded_report(&vm_id))
+                    .unwrap_or_else(|| {
+                        LibError::UnhandledError {
+                            details: format!("{e:?}"),
+                        }
+                        .as_encoded_report(&vm_id)
+                    });
+                if let Err(report_error) =
+                    report_failure(report, &clone_config).await
+                {
+                    tracing::warn!(
+                        "Failed to send provisioning failure report: {report_error:?}"
+                    );
+                }
 
                 exit_code_for(&e)
             }

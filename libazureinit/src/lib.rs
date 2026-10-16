@@ -7,10 +7,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod config;
 pub use config::{HostnameProvisioner, PasswordProvisioner, UserProvisioner};
 pub mod error;
+pub mod health;
 pub(crate) mod http;
 pub mod imds;
 pub mod media;
-pub mod wireserver;
 
 mod provision;
 pub use provision::{

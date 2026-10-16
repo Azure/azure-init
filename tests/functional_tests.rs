@@ -5,9 +5,9 @@ use libazureinit::config::Config;
 use libazureinit::imds::PublicKeys;
 use libazureinit::User;
 use libazureinit::{
+    health::report_ready,
     imds,
     reqwest::{header, Client},
-    wireserver::report_ready,
     Provision,
 };
 use std::env;
@@ -35,7 +35,8 @@ async fn main() {
     println!();
 
     println!("Reporting VM Health to wireserver");
-    match report_ready(&config.wireserver).await {
+    let vm_id = "00000000-0000-0000-0000-000000000000";
+    match report_ready(&config, vm_id, None).await {
         Ok(()) => println!("VM Health successfully reported"),
         Err(err) => {
             println!("Failed to report health: {err:?}");
@@ -90,7 +91,7 @@ async fn main() {
 fn agent_provisioning_in_container() {
     use libazureinit_kvp::{
         Diagnostic, DiagnosticReader, Entry, KvpPool, KvpPoolStore, Outcome,
-        PoolMode,
+        PoolMode, PROVISIONING_REPORT_KEY,
     };
     use std::path::Path;
     use std::time::Duration;
@@ -131,27 +132,8 @@ fn agent_provisioning_in_container() {
         let store =
             KvpPoolStore::new_in(KvpPool::Guest, &directory, PoolMode::Safe)
                 .unwrap();
-        let entries = DiagnosticReader::new(store).entries().unwrap();
-        let reports: Vec<_> = entries
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Report(report) => Some(report),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(reports.len(), 1);
-        let encoded = reports[0].encode();
-        assert!(encoded.contains("vm_id=00000000-0000-0000-0000-000000000000"));
-        if expected == Outcome::Success {
-            assert!(encoded.starts_with("result=success|"));
-        } else {
-            assert!(encoded.starts_with("result=error|"));
-            assert_eq!(
-                encoded,
-                std::fs::read_to_string(directory.join("http-description"))
-                    .unwrap()
-            );
-        }
+        let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
+        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
         for (name, result) in
             [("get_environment", Outcome::Fail), ("provision", expected)]
         {
@@ -164,6 +146,8 @@ fn agent_provisioning_in_container() {
                 "missing {name} finish with {result} in {scenario}"
             );
         }
-        assert!(!entries.iter().any(|entry| matches!(entry, Entry::Raw(_))));
+        assert!(entries
+            .iter()
+            .all(|entry| matches!(entry, Entry::Diagnostic(_))));
     }
 }

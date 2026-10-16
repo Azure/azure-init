@@ -20,8 +20,6 @@ const AZURE_INIT_KVP_FILTER: &str = "AZURE_INIT_KVP_FILTER";
 
 pub(crate) struct LoggingSetup {
     pub(crate) subscriber: Box<dyn Subscriber + Send + Sync>,
-    /// Final-report store, present when KVP is enabled and cleanup succeeds.
-    pub(crate) report_store: Option<KvpPoolStore>,
 }
 
 /// A minimal stderr subscriber for use before the configured layers exist.
@@ -113,9 +111,6 @@ fn setup_layers_in(
         }
     };
 
-    // The report is written through the store directly, so it still publishes
-    // when a non-UUID vm_id prevents the diagnostics writer from initializing.
-    let mut report_store = None;
     let kvp_layer = if config.telemetry.kvp_diagnostics {
         match KvpPoolStore::new_in(KvpPool::Guest, kvp_dir, PoolMode::Safe)
             .and_then(|store| {
@@ -123,7 +118,6 @@ fn setup_layers_in(
                 Ok(store)
             }) {
             Ok(store) => {
-                report_store = Some(store.clone());
                 match DiagnosticWriter::new(
                     store,
                     concat!("azure-init/", env!("CARGO_PKG_VERSION")),
@@ -135,7 +129,7 @@ fn setup_layers_in(
                         ))
                     }
                     Err(error) => {
-                        eprintln!("Failed to initialize KVP diagnostics: {error}. Provisioning reports remain enabled.");
+                        eprintln!("Failed to initialize KVP diagnostics: {error}. Continuing without KVP telemetry.");
                         None
                     }
                 }
@@ -156,13 +150,16 @@ fn setup_layers_in(
 
     LoggingSetup {
         subscriber: Box::new(subscriber),
-        report_store,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libazureinit_kvp::{
+        Diagnostic, DiagnosticPayload, DiagnosticReader, Entry, Outcome,
+        PROVISIONING_REPORT_KEY,
+    };
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -232,8 +229,17 @@ mod tests {
                 std::fs::set_permissions(path, Permissions::from_mode(0o644))
                     .unwrap();
             }
-            let setup = setup_layers(VM_ID, &config);
-            assert!(setup.report_store.is_none());
+            let kvp_dir = dir.path().join("kvp");
+            std::fs::create_dir(&kvp_dir).unwrap();
+            let store =
+                KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
+                    .unwrap();
+            store.append("sentinel", "untouched").unwrap();
+            std::fs::File::open(store.path())
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH)
+                .unwrap();
+            let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
             assert_eq!(
                 std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
                 0o600
@@ -241,6 +247,13 @@ mod tests {
             assert_eq!(
                 std::fs::read_to_string(path).unwrap(),
                 if existing { "existing log\n" } else { "" }
+            );
+            tracing::subscriber::with_default(setup.subscriber, || {
+                tracing::info!("KVP is disabled");
+            });
+            assert_eq!(
+                store.dump().unwrap(),
+                vec![("sentinel".to_owned(), "untouched".to_owned())]
             );
         }
     }
@@ -251,7 +264,6 @@ mod tests {
         let mut config = local_only_config(&dir);
         config.azure_init_log_path.path = dir.path().to_path_buf();
         let setup = setup_layers(VM_ID, &config);
-        assert!(setup.report_store.is_none());
         assert!(dir.path().is_dir());
         tracing::subscriber::with_default(setup.subscriber, || {
             tracing::error!(
@@ -270,29 +282,65 @@ mod tests {
     }
 
     #[test]
-    fn kvp_setup_enables_report_store_and_diagnostics() {
+    fn kvp_setup_emits_diagnostics_without_special_health_reporting() {
         let dir = TempDir::new().unwrap();
         let (config, kvp_dir) = kvp_config(&dir);
         let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
-        assert!(setup.report_store.is_some());
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
+                .unwrap();
+        tracing::subscriber::with_default(setup.subscriber, || {
+            tracing::info_span!("operation").in_scope(|| {
+                tracing::info!(
+                    health_report = "result=success",
+                    "An ordinary diagnostic event"
+                );
+            });
+        });
+        let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
+        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Event(event)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
+            entries.as_slice()
+        else {
+            panic!("unexpected diagnostics: {entries:?}");
+        };
+        assert_eq!(start.key.event_id, finish.key.event_id);
+        assert_ne!(start.key.event_id, event.key.event_id);
+        assert_eq!(finish.result, Outcome::Success);
+        assert!(matches!(&event.payload, DiagnosticPayload::Text(payload)
+            if payload.contains("\"health_report\":\"result=success\"")));
+        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
     }
 
     #[test]
-    fn kvp_setup_with_invalid_vm_id_keeps_report_store() {
+    fn kvp_setup_with_invalid_vm_id_preserves_local_logging() {
         let dir = TempDir::new().unwrap();
         let (config, kvp_dir) = kvp_config(&dir);
-        // The store is captured before the diagnostics writer is built, so
-        // reports still publish even though the writer rejects the non-UUID id.
         let setup = setup_layers_in("not-a-uuid", &config, &kvp_dir);
-        assert!(setup.report_store.is_some());
+        tracing::subscriber::with_default(setup.subscriber, || {
+            tracing::info!("Local logging still works with an invalid VM ID");
+        });
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
+                .unwrap();
+        assert!(store.dump().unwrap().is_empty());
+        assert!(std::fs::read_to_string(&config.azure_init_log_path.path)
+            .unwrap()
+            .contains("Local logging still works with an invalid VM ID"));
     }
 
     #[test]
-    fn kvp_setup_with_unusable_pool_disables_reporting() {
+    fn kvp_setup_with_unusable_pool_preserves_local_logging() {
         let dir = TempDir::new().unwrap();
         let (config, kvp_dir) = kvp_config(&dir);
-        std::fs::create_dir(kvp_dir.join(KvpPool::Guest.file_name())).unwrap();
+        let pool_path = kvp_dir.join(KvpPool::Guest.file_name());
+        std::fs::create_dir(&pool_path).unwrap();
         let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
-        assert!(setup.report_store.is_none());
+        tracing::subscriber::with_default(setup.subscriber, || {
+            tracing::info!("Local logging still works with an unusable pool");
+        });
+        assert!(pool_path.is_dir());
+        assert!(std::fs::read_to_string(&config.azure_init_log_path.path)
+            .unwrap()
+            .contains("Local logging still works with an unusable pool"));
     }
 }
