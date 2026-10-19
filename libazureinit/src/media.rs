@@ -353,7 +353,6 @@ pub fn parse_ovf_env(ovf_body: &str) -> Result<Environment, Error> {
 /// # Returns
 ///
 /// A `Result` containing the parsed `Environment` struct, or an `Error`.
-#[instrument(err, skip_all)]
 pub fn mount_parse_ovf_env(dev: String) -> Result<Environment, Error> {
     let mount_media =
         Media::new(PathBuf::from(dev), PathBuf::from(PATH_MOUNT_POINT));

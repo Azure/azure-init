@@ -345,7 +345,8 @@ impl Config {
         )
     }
 
-    #[instrument(skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
+    // Recorded once per path: fmt appends every recorded value to log lines.
+    #[instrument(skip_all, fields(diagnostic.result = tracing::field::Empty))]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,
@@ -364,11 +365,17 @@ impl Config {
             );
         }
 
-        figment = Self::merge_toml_directory(figment, drop_in_path)?;
+        let record_outcome = |outcome: Outcome| {
+            tracing::Span::current().record(OUTCOME_FIELD, outcome.as_str());
+        };
+
+        figment = Self::merge_toml_directory(figment, drop_in_path)
+            .inspect_err(|_| record_outcome(Outcome::Fail))?;
 
         if let Some(cli_path) = path {
             if cli_path.is_dir() {
-                figment = Self::merge_toml_directory(figment, cli_path)?;
+                figment = Self::merge_toml_directory(figment, cli_path)
+                    .inspect_err(|_| record_outcome(Outcome::Fail))?;
             } else {
                 tracing::info!(
                     "Merging configuration file from CLI: {:?}",
@@ -381,8 +388,7 @@ impl Config {
         figment
             .extract::<Config>()
             .inspect(|_config| {
-                tracing::Span::current()
-                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
+                record_outcome(Outcome::Success);
                 tracing::info!("Configuration successfully loaded.");
             })
             .map_err(|e| {
@@ -390,6 +396,7 @@ impl Config {
                     std::io::ErrorKind::InvalidData,
                     format!("Configuration error: {e:?}"),
                 ));
+                record_outcome(Outcome::Fail);
                 tracing::error!(%error, "Failed to extract configuration");
                 error
             })

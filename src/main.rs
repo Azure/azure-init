@@ -17,6 +17,7 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision, User,
 };
+use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
@@ -97,7 +98,10 @@ enum Command {
 /// This is one of two primary sources for provisioning data, the other being
 /// the Azure Instance Metadata Service (IMDS). The agent prioritizes IMDS
 /// when available for most data, but can use OVF as a fallback for the username.
-#[instrument(err)]
+// No `err`: missing OVF media is a normal IMDS fallback, so it is a WARN
+// rather than an ERROR. The span defaults to `fail` and records success when
+// an OVF environment is found.
+#[instrument(fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn get_environment() -> Result<Environment, anyhow::Error> {
     tracing::debug!("Searching for OVF environment on local block devices.");
     let ovf_devices = get_mount_device(None)?;
@@ -107,6 +111,8 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
     for dev in ovf_devices {
         environment = match mount_parse_ovf_env(dev) {
             Ok(env) => {
+                tracing::Span::current()
+                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
                 tracing::info!("Successfully parsed OVF environment.");
                 Some(env)
             }
@@ -343,8 +349,7 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                tracing::error!("Provisioning failed with error: {e:?}");
-
+                // `provision` already logged the error chain at ERROR.
                 let report = e
                     .downcast_ref::<LibError>()
                     .map(|lib_error| lib_error.as_encoded_report(&vm_id))
@@ -370,7 +375,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(skip_all, err)]
+#[instrument(skip_all, err(Debug))]
 async fn provision(
     config: Config,
     vm_id: &str,

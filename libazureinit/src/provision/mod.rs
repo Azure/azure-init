@@ -59,7 +59,6 @@ impl Provision {
     ///
     /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
     /// configured or if all backends fail to create the user.
-    #[instrument(err, skip_all)]
     pub fn create_user(&self) -> Result<(), Error> {
         self.config
             .user_provisioners
@@ -87,7 +86,6 @@ impl Provision {
     /// Returns `Ok(())` if the hostname was set successfully.
     /// Returns [`Error::NoHostnameProvisioner`] if no hostname provisioner backends are
     /// configured or if all backends fail to set the hostname.
-    #[instrument(err, skip_all)]
     pub fn set_hostname(&self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
@@ -109,7 +107,6 @@ impl Provision {
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
     /// partial provisioning.
-    #[instrument(err, skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         // Provision core resources (hostname, user, password)
         self.provision_core()?;
@@ -124,7 +121,6 @@ impl Provision {
     }
 
     /// Internal helper to provision core resources.
-    #[instrument(err, skip_all)]
     fn provision_core(&self) -> Result<(), Error> {
         self.set_hostname()?;
 
@@ -147,7 +143,6 @@ impl Provision {
     }
 
     /// Updates SSH configuration based on the `disable_password_authentication` flag.
-    #[instrument(err, skip_all)]
     fn update_ssh_config(&self, sshd_config_path: &str) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
         let ssh_config_update_required =

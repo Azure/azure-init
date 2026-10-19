@@ -25,7 +25,7 @@ The setup creates two Docker networks with Azure-like IP addresses:
 
 - Docker and Docker Compose
 - WSL2 or Linux environment
-- The repository source and service file; the image builds both binaries
+- The `azure-init` binary and service file
 
 ## Quick Start
 
@@ -41,7 +41,6 @@ This will:
 1. Start the testing server container first (creates networks with Azure IP addresses)
 2. Wait for the testing server to be ready
 3. Start the provisioning agent
-4. Wait for its systemd exit result
 
 #### Selecting Images
 
@@ -76,8 +75,7 @@ This will:
 - **Image**: Built from local Dockerfile
 - **Service**: systemd-based `azure-init.service`
 - **Privileges**: Runs with `privileged: true` for systemd support
-- **Binaries**: `/usr/bin/azure-init` and `/usr/bin/libazureinit-kvp`
-- **KVP Pool**: A private container tmpfs at `/var/lib/hyperv`, recreated for each run
+- **Binaries**: `/usr/bin/azure-init` and `/usr/bin/libazureinit-kvp`, built in the image
 
 ### Testing Server
 
@@ -86,9 +84,6 @@ This will:
   - IMDS: `http://169.254.169.254/metadata/instance`
   - WireServer: `http://168.63.129.16`
 - **Port**: 80 (mapped to host)
-- **Readiness**: TCP connections to both configured Azure endpoint addresses.
-  The health check sends no HTTP requests, preserving the scripted failures and
-  delays for provisioning retry tests.
 
 ## Monitoring and Debugging
 
@@ -109,26 +104,15 @@ docker compose logs -f testing-server
 
 ### Building
 
-The Dockerfile builds the agent and KVP CLI from the workspace source and
-installs the systemd service. Python is installed only for the test verifier.
+The Dockerfile expects:
+- `azure-init/target/debug/azure-init` - The main binary (compiled via `cargo build`)
+- `azure-init/config/azure-init.service` - The systemd service file
 
-### KVP Checks
+### KVP CLI checks
 
-CI invokes `verify_kvp.py` in a separate step after starting the testinit
-environment. It checks the twelve storage and diagnostics CLI commands,
-including append/upsert behavior, batch input from files and stdin, parsed
-diagnostics, output modes, pool selection, safe/unsafe
-limits, stale cleanup, and exit codes. All CLI checks use temporary directories
-selected with `--dir`, never the agent's diagnostic pool. The verifier does not
-launch `azure-init`, modify its configuration, or rerun provisioning.
-
-To run the same CLI checks manually in an already-built container:
+`verify_kvp.py` exercises the KVP CLI against temporary pools; it never touches
+the agent's pool:
 
 ```bash
 docker exec azureinit-provisioning-agent python3 /build/testinit/verify_kvp.py
 ```
-
-CI collects the CLI output, agent logs, raw pool and parsed telemetry before
-cleanup. These tests validate the local CLI and pool behavior, not Hyper-V or
-Azure host retrieval. The privileged environment must still be run only on
-disposable test hosts.

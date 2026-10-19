@@ -42,6 +42,13 @@ pub(crate) fn capture_kvp_at_info<T>(
 }
 
 pub(crate) fn kvp_error_fields(diagnostics: &[Diagnostic]) -> Vec<Value> {
+    kvp_event_fields(diagnostics, "ERROR")
+}
+
+pub(crate) fn kvp_event_fields(
+    diagnostics: &[Diagnostic],
+    level: &str,
+) -> Vec<Value> {
     diagnostics
         .iter()
         .filter_map(|diagnostic| {
@@ -52,7 +59,7 @@ pub(crate) fn kvp_error_fields(diagnostics: &[Diagnostic]) -> Vec<Value> {
                 panic!("expected a JSON text payload");
             };
             let payload: Value = serde_json::from_str(text).unwrap();
-            (payload["level"] == "ERROR").then(|| payload["fields"].clone())
+            (payload["level"] == level).then(|| payload["fields"].clone())
         })
         .collect()
 }

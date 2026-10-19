@@ -125,17 +125,23 @@ fn agent_provisioning_in_container() {
         .assert()
         .success();
 
-    for (scenario, expected) in
-        [("success", Outcome::Success), ("failure", Outcome::Fail)]
-    {
+    for (scenario, expected, report_prefix) in [
+        ("success", Outcome::Success, "result=success|"),
+        ("failure", Outcome::Fail, "result=error|"),
+    ] {
+        // Only the success scenario has (fake) OVF media.
         let directory = artifacts.path().join(scenario);
         let store =
             KvpPoolStore::new_in(KvpPool::Guest, &directory, PoolMode::Safe)
                 .unwrap();
         let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
-        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
+        let report = store.read(PROVISIONING_REPORT_KEY).unwrap().unwrap();
+        assert!(
+            report.starts_with(report_prefix),
+            "unexpected {scenario} report: {report}"
+        );
         for (name, result) in
-            [("get_environment", Outcome::Fail), ("provision", expected)]
+            [("get_environment", expected), ("provision", expected)]
         {
             assert!(
                 entries.iter().any(|entry| matches!(
@@ -146,8 +152,17 @@ fn agent_provisioning_in_container() {
                 "missing {name} finish with {result} in {scenario}"
             );
         }
-        assert!(entries
-            .iter()
-            .all(|entry| matches!(entry, Entry::Diagnostic(_))));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, Entry::Report(_)))
+                .count(),
+            1,
+            "expected one parsed provisioning report in {scenario}"
+        );
+        assert!(entries.iter().all(|entry| matches!(
+            entry,
+            Entry::Diagnostic(_) | Entry::Report(_)
+        )));
     }
 }

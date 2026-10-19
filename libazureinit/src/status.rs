@@ -133,7 +133,8 @@ pub fn get_vm_id() -> Option<String> {
     private_get_vm_id(None, None, None)
 }
 
-#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = Outcome::Fail.as_str()))]
+// Recorded once per path: fmt appends every recorded value to log lines.
+#[instrument(name = "get_vm_id", skip_all, fields(diagnostic.result = tracing::field::Empty))]
 fn private_get_vm_id(
     product_uuid_path: Option<&str>,
     sysfs_efi_path: Option<&str>,
@@ -144,12 +145,14 @@ fn private_get_vm_id(
     let system_uuid = match fs::read_to_string(path) {
         Ok(s) => s.trim().to_lowercase(),
         Err(err) => {
+            record_outcome(Outcome::Fail);
             tracing::error!("Failed to read VM ID from {}: {}", path, err);
             return None;
         }
     };
 
     if system_uuid.is_empty() {
+        record_outcome(Outcome::Fail);
         tracing::warn!("VM ID file is empty at path: {}", path);
         return None;
     }
@@ -160,12 +163,12 @@ fn private_get_vm_id(
                 let swapped_uuid =
                     swap_uuid_to_little_endian(*uuid_parsed.as_bytes());
                 let final_id = swapped_uuid.to_string();
-                tracing::Span::current()
-                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
+                record_outcome(Outcome::Success);
                 tracing::info!("VM ID (Gen1, swapped): {}", final_id);
                 Some(final_id)
             }
             Err(e) => {
+                record_outcome(Outcome::Fail);
                 tracing::error!(
                     "Failed to parse system UUID '{}': {}",
                     system_uuid,
@@ -175,11 +178,14 @@ fn private_get_vm_id(
             }
         }
     } else {
-        tracing::Span::current()
-            .record(OUTCOME_FIELD, Outcome::Success.as_str());
+        record_outcome(Outcome::Success);
         tracing::info!("VM ID (Gen2, no swap): {}", system_uuid);
         Some(system_uuid)
     }
+}
+
+fn record_outcome(outcome: Outcome) {
+    tracing::Span::current().record(OUTCOME_FIELD, outcome.as_str());
 }
 
 /// Checks whether a provisioning status file exists for the current VM ID.
@@ -243,12 +249,14 @@ pub fn mark_provisioning_complete(
             );
         }
         Err(error) => {
-            tracing::debug!(
-                ?error,
-                file_path=?file_path,
-                "Failed to create provisioning status file"
-            );
-            return Err(error.into());
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to create provisioning status file {}: {error}",
+                    file_path.display()
+                ),
+            )
+            .into());
         }
     }
 
@@ -318,6 +326,19 @@ mod tests {
 
         mark_provisioning_complete(Some(&test_config), &vm_id).unwrap();
         assert!(file_path.exists(), "Provisioning file should be created");
+    }
+
+    #[test]
+    fn test_mark_provisioning_complete_error_names_the_file() {
+        let (test_config, test_dir) = create_test_config();
+        let vm_id = "550e8400-e29b-41d4-a716-446655440000";
+        let file_path = test_dir.path().join(format!("{vm_id}.provisioned"));
+        create_dir(&file_path).unwrap();
+
+        let error =
+            mark_provisioning_complete(Some(&test_config), vm_id).unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(error.to_string().contains(file_path.to_str().unwrap()));
     }
 
     #[test]
@@ -445,6 +466,23 @@ mod tests {
                 .unwrap();
             assert_eq!(finish.result, expected);
         }
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_get_vm_id_logs_show_a_single_outcome() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("product_uuid");
+        let missing_efi = dir.path().join("missing-efi");
+        fs::write(&path, "550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert!(private_get_vm_id(
+            Some(path.to_str().unwrap()),
+            Some(missing_efi.to_str().unwrap()),
+            Some(missing_efi.to_str().unwrap()),
+        )
+        .is_some());
+        assert!(logs_contain(r#"diagnostic.result="success""#));
+        assert!(!logs_contain(r#"diagnostic.result="fail""#));
     }
 
     #[test]

@@ -15,6 +15,21 @@ import uuid
 IMAGE = "azure-init-main-tests:local"
 VM_ID = "00000000-0000-0000-0000-000000000000"
 SCENARIOS = ("success", "failure")
+OVF_DEVICE = "/dev/sr0"
+OVF_ENV = """<Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+    xmlns:wa="http://schemas.microsoft.com/windowsazure">
+  <wa:ProvisioningSection><wa:Version>1.0</wa:Version>
+    <LinuxProvisioningConfigurationSet xmlns="http://schemas.microsoft.com/windowsazure">
+      <UserName>ovf-user</UserName><UserPassword></UserPassword><HostName>ovf-host</HostName>
+    </LinuxProvisioningConfigurationSet>
+  </wa:ProvisioningSection>
+  <wa:PlatformSettingsSection><wa:Version>1.0</wa:Version>
+    <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure">
+      <PreprovisionedVm>false</PreprovisionedVm>
+    </PlatformSettings>
+  </wa:PlatformSettingsSection>
+</Environment>
+"""
 
 
 def check_mount_table(mtab):
@@ -35,7 +50,9 @@ def inside_container(scenario):
         raise RuntimeError("provisioning fixture must only run in its isolated image")
     if Path("/sys/class/dmi/id/product_uuid").exists():
         raise RuntimeError("fixture requires an isolated, empty /sys")
-    check_mount_table(Path("/etc/mtab"))
+    # The agent reads /etc/mtab, which the image links to /work/mtab; check the
+    # real mounts so only fixture-provided media can be seen.
+    check_mount_table(Path("/proc/self/mounts"))
 
     requests = []
     service_errors = []
@@ -90,10 +107,17 @@ def inside_container(scenario):
     commands = work / "commands.jsonl"
     stubs = work / "bin"
     stubs.mkdir()
+    mounts = Path("/proc/self/mounts").read_text()
+    if scenario == "success":
+        # Fake OVF media: the agent lists it from /etc/mtab and the `mount`
+        # stub below serves ovf-env.xml at the requested mount point.
+        mounts += f"{OVF_DEVICE} /run/azure-init/media iso9660 ro 0 0\n"
+    (work / "mtab").write_text(mounts)
+    (work / "ovf-env.xml").write_text(OVF_ENV)
     stub = stubs / "command-stub"
     stub.write_text(
         "#!/usr/bin/python3\n"
-        "import json, os, sys\n"
+        "import json, os, shutil, sys\n"
         "name = os.path.basename(sys.argv[0])\n"
         "with open('/work/commands.jsonl', 'a') as output:\n"
         "    output.write(json.dumps([name, *sys.argv[1:]]) + '\\n')\n"
@@ -102,11 +126,16 @@ def inside_container(scenario):
         "if name == 'hostnamectl' and os.environ['TEST_SCENARIO'] == 'failure':\n"
         "    print('expected hostname failure', file=sys.stderr)\n"
         "    sys.exit(17)\n"
-        "if name not in ('hostnamectl', 'useradd', 'usermod', 'passwd'):\n"
+        "if name == 'mount':\n"
+        "    shutil.copy('/work/ovf-env.xml', os.path.join(sys.argv[-1], 'ovf-env.xml'))\n"
+        "if name not in ('hostnamectl', 'useradd', 'usermod', 'passwd', 'mount', 'umount', 'eject'):\n"
         "    raise RuntimeError('unexpected command: ' + name)\n"
     )
     stub.chmod(0o755)
-    for name in ("hostnamectl", "getent", "useradd", "usermod", "passwd"):
+    for name in (
+        "hostnamectl", "getent", "useradd", "usermod", "passwd",
+        "mount", "umount", "eject",
+    ):
         (stubs / name).symlink_to(stub)
 
     with HTTPServer(("127.0.0.1", 0), Handler) as server:
@@ -151,6 +180,7 @@ def inside_container(scenario):
             assert result.returncode == expected_status, result
             assert [kind for kind, _ in requests] == ["imds", "report"], requests
             report = requests[1][1]
+            log = (work / "azure-init.log").read_text()
             if scenario == "success":
                 assert report == {"state": "Ready"}, report
                 assert (work / "state" / f"{VM_ID}.provisioned").is_file()
@@ -159,9 +189,12 @@ def inside_container(scenario):
                 )
                 calls = [json.loads(line) for line in commands.read_text().splitlines()]
                 assert [call[0] for call in calls] == [
-                    "hostnamectl", "getent", "useradd", "passwd"
+                    "mount", "umount", "eject",
+                    "hostnamectl", "getent", "useradd", "passwd",
                 ], calls
-                assert calls[0] == ["hostnamectl", "set-hostname", "coverage-host"]
+                assert calls[0] == ["mount", "-o", "ro", OVF_DEVICE, "/run/azure-init/media/"]
+                assert calls[2] == ["eject", OVF_DEVICE]
+                assert calls[3] == ["hostnamectl", "set-hostname", "coverage-host"]
                 assert calls[-1] == ["passwd", "-l", "coverage-user"]
                 completed = subprocess.run(
                     ["/test/azure-init", "--config", str(config)],
@@ -172,17 +205,17 @@ def inside_container(scenario):
                 )
                 assert completed.returncode == 0, completed
                 assert len(requests) == 2, "completed provisioning contacted a service"
-                assert len(commands.read_text().splitlines()) == 4
+                assert len(commands.read_text().splitlines()) == len(calls)
+                assert "Successfully parsed OVF environment" in log
             else:
                 assert report["state"] == "NotReady", report
                 assert report["details"]["subStatus"] == "ProvisioningFailed", report
                 description = report["details"]["description"]
                 assert "reason=failed to provision hostname" in description
                 assert not (work / "state" / f"{VM_ID}.provisioned").exists()
-            log = (work / "azure-init.log").read_text()
-            assert "Failed to find valid OVF provisioning data" in log
+                assert "Failed to find valid OVF provisioning data" in log
             shutil.copyfile("/var/lib/hyperv/.kvp_pool_1", artifacts / ".kvp_pool_1")
-            print(f"Verified {scenario}: missing VM ID, OVF fallback, provisioning and KVP diagnostics")
+            print(f"Verified {scenario}: missing VM ID, OVF discovery, provisioning and KVP diagnostics")
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -209,6 +242,7 @@ def run_containers(agent, artifacts):
                 "--network", "none", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--read-only",
                 "--tmpfs", "/work:exec,mode=0700",
+                "--tmpfs", "/run:mode=0755",
                 "--tmpfs", "/var/lib/hyperv:mode=0700",
                 "--tmpfs", "/etc/sudoers.d:mode=0700",
                 "--mount", f"type=bind,src={agent},dst=/test/azure-init,readonly",

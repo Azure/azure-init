@@ -3,8 +3,6 @@
 
 use std::process::Command;
 
-use tracing::instrument;
-
 use crate::error::Error;
 
 use crate::provision::HostnameProvisioner;
@@ -29,7 +27,6 @@ impl HostnameProvisioner {
 ///
 /// The binary path is taken from the compile-time `PATH_HOSTNAMECTL`.
 /// Requires sufficient privileges; returns an error if the command fails.
-#[instrument(err)]
 fn hostnamectl(hostname: &str) -> Result<(), Error> {
     let path_hostnamectl = env!("PATH_HOSTNAMECTL");
 

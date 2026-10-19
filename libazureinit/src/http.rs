@@ -49,7 +49,6 @@ pub(crate) const HARDFAIL_CODES: &[StatusCode] = &[
 ];
 
 /// Send an HTTP GET request to the given URL with an empty body.
-#[instrument(err, skip_all)]
 pub(crate) async fn get(
     client: &Client,
     headers: HeaderMap,
@@ -69,7 +68,6 @@ pub(crate) async fn get(
 /// Send an HTTP POST request to the given URL with the specified body.
 ///
 /// `body` must implement Clone as retries must clone the entire request.
-#[instrument(err, skip_all)]
 pub(crate) async fn post<T: Into<reqwest::Body> + Clone>(
     client: &Client,
     headers: HeaderMap,

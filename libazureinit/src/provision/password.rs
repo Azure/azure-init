@@ -178,7 +178,6 @@ fn handle_lock_result(
 /// (there is no alternate locking path). Library consumers that want a password
 /// must explicitly call `User::with_password`.
 /// See `doc/azure_init_behavior.md` for details.
-#[instrument(err, skip_all)]
 fn passwd(user: &User) -> Result<(), Error> {
     if let Some(ref password) = user.password {
         set_user_password(&user.name, password)
