@@ -99,8 +99,7 @@ enum Command {
 /// the Azure Instance Metadata Service (IMDS). The agent prioritizes IMDS
 /// when available for most data, but can use OVF as a fallback for the username.
 // No `err`: missing OVF media is a normal IMDS fallback, so it is a WARN
-// rather than an ERROR. The span defaults to `fail` and records success when
-// an OVF environment is found.
+// rather than an ERROR. KVP still records whether an environment was found.
 #[instrument(fields(diagnostic.result = Outcome::Fail.as_str()))]
 fn get_environment() -> Result<Environment, anyhow::Error> {
     tracing::debug!("Searching for OVF environment on local block devices.");
@@ -111,15 +110,23 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
     for dev in ovf_devices {
         environment = match mount_parse_ovf_env(dev) {
             Ok(env) => {
-                tracing::Span::current()
-                    .record(OUTCOME_FIELD, Outcome::Success.as_str());
-                tracing::info!("Successfully parsed OVF environment.");
+                tracing::info!(
+                    target = "libazureinit::media::success",
+                    "Successfully parsed OVF environment."
+                );
                 Some(env)
             }
             Err(_) => continue,
         }
     }
 
+    tracing::Span::current().record(
+        OUTCOME_FIELD,
+        environment
+            .as_ref()
+            .map_or(Outcome::Fail, |_| Outcome::Success)
+            .as_str(),
+    );
     environment.ok_or_else(|| {
         tracing::warn!("Failed to find valid OVF provisioning data on any block device. Falling back to IMDS.");
         anyhow::anyhow!("Unable to get list of block devices")

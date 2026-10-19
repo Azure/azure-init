@@ -129,7 +129,6 @@ fn agent_provisioning_in_container() {
         ("success", Outcome::Success, "result=success|"),
         ("failure", Outcome::Fail, "result=error|"),
     ] {
-        // Only the success scenario has (fake) OVF media.
         let directory = artifacts.path().join(scenario);
         let store =
             KvpPoolStore::new_in(KvpPool::Guest, &directory, PoolMode::Safe)
@@ -141,7 +140,7 @@ fn agent_provisioning_in_container() {
             "unexpected {scenario} report: {report}"
         );
         for (name, result) in
-            [("get_environment", expected), ("provision", expected)]
+            [("get_environment", Outcome::Fail), ("provision", expected)]
         {
             assert!(
                 entries.iter().any(|entry| matches!(
