@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::User;
 use tracing::instrument;
 
-/// Applies hostname, user, password and SSH configuration to the host.
+/// The interface for applying the desired configuration to the host.
 ///
 /// By default, all known tools for provisioning a particular resource are tried
 /// until one succeeds. Particular tools can be selected via the
@@ -59,6 +59,7 @@ impl Provision {
     ///
     /// Returns [`Error::NoUserProvisioner`] if no user provisioner backends are
     /// configured or if all backends fail to create the user.
+    #[instrument(skip_all)]
     pub fn create_user(&self) -> Result<(), Error> {
         self.config
             .user_provisioners
@@ -86,6 +87,7 @@ impl Provision {
     /// Returns `Ok(())` if the hostname was set successfully.
     /// Returns [`Error::NoHostnameProvisioner`] if no hostname provisioner backends are
     /// configured or if all backends fail to set the hostname.
+    #[instrument(skip_all)]
     pub fn set_hostname(&self) -> Result<(), Error> {
         self.config
             .hostname_provisioners
@@ -107,12 +109,13 @@ impl Provision {
     /// if there is no useradd command on the system's PATH, or if the command
     /// returns an error, this will return an error. It does not attempt to undo
     /// partial provisioning.
+    #[instrument(skip_all)]
     pub fn provision(self) -> Result<(), Error> {
         // Provision core resources (hostname, user, password)
         self.provision_core()?;
 
         // Update SSH configuration (separate from password provisioning)
-        self.update_ssh_config(ssh::get_sshd_config_path())?;
+        self.update_ssh_config()?;
 
         // Provision SSH keys
         self.provision_ssh_keys()?;
@@ -121,6 +124,7 @@ impl Provision {
     }
 
     /// Internal helper to provision core resources.
+    #[instrument(skip_all)]
     fn provision_core(&self) -> Result<(), Error> {
         self.set_hostname()?;
 
@@ -143,12 +147,14 @@ impl Provision {
     }
 
     /// Updates SSH configuration based on the `disable_password_authentication` flag.
-    fn update_ssh_config(&self, sshd_config_path: &str) -> Result<(), Error> {
+    #[instrument(skip_all)]
+    fn update_ssh_config(&self) -> Result<(), Error> {
         // Only update SSH config if explicitly enabled via config.
         let ssh_config_update_required =
             self.config.ssh.configure_sshd_password_authentication;
 
         if ssh_config_update_required {
+            let sshd_config_path = ssh::get_sshd_config_path();
             if let Err(error) = ssh::update_sshd_config(
                 sshd_config_path,
                 self.disable_password_authentication,
@@ -168,7 +174,7 @@ impl Provision {
     /// Provisions SSH keys for the user.
     ///
     /// Creates the `.ssh` directory and writes the `authorized_keys` file.
-    #[instrument(err, skip_all)]
+    #[instrument(skip_all)]
     fn provision_ssh_keys(self) -> Result<(), Error> {
         if !self.user.ssh_keys.is_empty() {
             let user = users::get_user_by_name(&self.user.name).ok_or(
@@ -206,45 +212,7 @@ mod tests {
         HostnameProvisioners, PasswordProvisioners, UserProvisioners,
     };
     use crate::error::Error;
-    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
     use crate::User;
-
-    #[test]
-    fn test_update_ssh_config_failure_preserves_context_at_info() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().to_str().unwrap();
-        for enabled in [false, true] {
-            let mut config = Config::default();
-            config.ssh.configure_sshd_password_authentication = enabled;
-            let provision = Provision::new(
-                "test-host",
-                User::new("test-user", vec![]),
-                config,
-                true,
-            );
-            let (result, diagnostics) =
-                capture_kvp_at_info(|| provision.update_ssh_config(path));
-            let errors = kvp_error_fields(&diagnostics);
-            if enabled {
-                assert!(matches!(result, Err(Error::UpdateSshdConfig)));
-                let context = errors
-                    .iter()
-                    .find(|fields| {
-                        fields["message"]
-                            == "Failed to update sshd configuration for password authentication"
-                    })
-                    .expect("contextual SSH failure at ERROR");
-                assert_eq!(context["sshd_config_path"], path);
-                assert!(context["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("directory"));
-            } else {
-                assert!(result.is_ok());
-                assert!(errors.is_empty());
-            }
-        }
-    }
 
     #[test]
     fn test_successful_provision() {

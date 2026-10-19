@@ -12,7 +12,7 @@ use libazureinit_kvp::{
     DiagnosticWriter, DiagnosticsKvp, KvpError, KvpPool, KvpPoolStore,
     PoolMode, PROVISIONING_REPORT_KEY,
 };
-use tracing::{field::Visit, Dispatch, Event, Level, Subscriber};
+use tracing::{field::Visit, Event, Level, Subscriber};
 use tracing_subscriber::{
     filter::Targets, fmt, fmt::format::FmtSpan, layer::Context,
     layer::SubscriberExt, EnvFilter, Layer, Registry,
@@ -84,17 +84,6 @@ fn write_provisioning_report(
 
 pub(crate) struct LoggingSetup {
     pub(crate) subscriber: Box<dyn Subscriber + Send + Sync>,
-}
-
-/// A minimal stderr subscriber for use before the configured layers exist.
-pub(crate) fn bootstrap() -> Dispatch {
-    Dispatch::new(
-        Registry::default().with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_filter(output_filter("info")),
-        ),
-    )
 }
 
 /// The console/file filter, honoring `AZURE_INIT_LOG` with the given default.

@@ -12,7 +12,6 @@ use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
-use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{fmt, fs};
@@ -205,7 +204,9 @@ pub const DEFAULT_WIRESERVER_CONNECTION_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_WIRESERVER_READ_TIMEOUT_SECS: f64 = 60.0;
 pub const DEFAULT_WIRESERVER_HEALTH_ENDPOINT: &str =
     "http://168.63.129.16/provisioning/health";
-/// Azure wireserver health endpoint and timeouts, in seconds.
+/// Wire server configuration struct.
+///
+/// Holds timeout settings for connecting to and reading from the Azure wire server.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Wireserver {
@@ -259,13 +260,21 @@ impl Default for Telemetry {
     }
 }
 
-/// Default directory for provisioning state and other Azure Init data.
+/// The default directory for storing azure-init data files, such as the provisioning status file.
+///
+/// This constant is declared outside its related struct so that both the `AzureInitDataDir` struct
+/// and other modules (like `status.rs`) can reference the same path without risking any mismatch.
 pub const DEFAULT_AZURE_INIT_DATA_DIR: &str = "/var/lib/azure-init/";
 
-/// Directory for provisioning state and other Azure Init data.
+/// Azure-init data directory directory configuration struct.
+///
+/// Configures settings for where azure-init should store data (especially provisioning-related) files.
+/// If no custom path is provided, `AzureInitDataDir::default()` uses
+/// [`DEFAULT_AZURE_INIT_DATA_DIR`], ensuring a single source of truth.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AzureInitDataDir {
+    /// Specifies the path used for storing azure-init data files.
     /// Defaults to `/var/lib/azure-init/`.
     pub path: PathBuf,
 }
@@ -278,13 +287,17 @@ impl Default for AzureInitDataDir {
     }
 }
 
-/// Default path of the Azure Init log file.
+/// The default directory for azure-init.log
 pub const DEFAULT_AZURE_INIT_LOG_PATH: &str = "/var/log/azure-init.log";
 
-/// Location of the Azure Init log file.
+/// Telemetry log (azure-init.log) struct.
+/// Configures settings for where azure-init should channel telemetry logs.
+/// If no custom path is provided, `AzureInitLogPath::default()` uses
+/// [`DEFAULT_AZURE_INIT_LOG_PATH`].
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AzureInitLogPath {
+    /// Specifies the path used to capture all telemetry logs.
     /// Defaults to `/var/log/azure-init.log`.
     pub path: PathBuf,
 }
@@ -299,7 +312,8 @@ impl Default for AzureInitLogPath {
 
 /// General configuration struct for azure-init.
 ///
-/// Missing fields use their defaults. See [`Config::load`] for source precedence.
+/// Aggregates all configuration settings for managing SSH, provisioning, IMDS, media,
+/// and telemetry, supporting loading from file or directory and merging configurations.
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Config {
@@ -316,7 +330,10 @@ pub struct Config {
     pub azure_init_log_path: AzureInitLogPath,
 }
 
-/// Formats the configuration as pretty-printed TOML.
+/// Implements `Display` for `Config`, formatting it as a readable TOML string.
+///
+/// Uses `toml::to_string_pretty` to serialize the configuration. If serialization fails,
+/// a fallback message is displayed..
 impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -328,15 +345,24 @@ impl fmt::Display for Config {
     }
 }
 
+/// Loads the configuration for `azure-init`.
+///
+/// This method uses the `Figment` library to load configuration from the following sources,
+/// in order of priority:
+///
+/// 1. **Defaults**: Base configuration from `Config::default()`.
+/// 2. **Main File**: `azure-init.toml`, if present.
+/// 3. **Directory Files**: `.toml` files in `azure-init.d`, sorted lexicographically.
+/// 4. **CLI Overrides**: A file or directory specified via the CLI.
+///
+/// Later sources override earlier ones in case of conflicts.
 impl Config {
     const BASE_CONFIG: &'static str = "/etc/azure-init.toml";
     const DROP_IN_CONFIG: &'static str = "/etc/azure-init.d/";
 
-    /// Loads defaults, `/etc/azure-init.toml`, `/etc/azure-init.d/*.toml`,
-    /// then the optional file or directory at `path`.
+    /// Load provisioning configuration.
     ///
-    /// Directory files are sorted lexicographically; later sources override
-    /// earlier ones.
+    /// In addition to the provided path, configuration will also be loaded from the default locations.
     pub fn load(path: Option<PathBuf>) -> Result<Config, Error> {
         Self::load_from(
             PathBuf::from(Self::BASE_CONFIG),
@@ -345,8 +371,7 @@ impl Config {
         )
     }
 
-    // Recorded once per path: fmt appends every recorded value to log lines.
-    #[instrument(skip_all, fields(diagnostic.result = tracing::field::Empty))]
+    #[instrument(skip_all)]
     fn load_from(
         base_path: PathBuf,
         drop_in_path: PathBuf,
@@ -365,17 +390,11 @@ impl Config {
             );
         }
 
-        let record_outcome = |outcome: Outcome| {
-            tracing::Span::current().record(OUTCOME_FIELD, outcome.as_str());
-        };
-
-        figment = Self::merge_toml_directory(figment, drop_in_path)
-            .inspect_err(|_| record_outcome(Outcome::Fail))?;
+        figment = Self::merge_toml_directory(figment, drop_in_path)?;
 
         if let Some(cli_path) = path {
             if cli_path.is_dir() {
-                figment = Self::merge_toml_directory(figment, cli_path)
-                    .inspect_err(|_| record_outcome(Outcome::Fail))?;
+                figment = Self::merge_toml_directory(figment, cli_path)?;
             } else {
                 tracing::info!(
                     "Merging configuration file from CLI: {:?}",
@@ -388,22 +407,22 @@ impl Config {
         figment
             .extract::<Config>()
             .inspect(|_config| {
-                record_outcome(Outcome::Success);
-                tracing::info!("Configuration successfully loaded.");
+                tracing::info!(
+                    target: "libazureinit::config::success",
+                    "Configuration successfully loaded."
+                );
             })
             .map_err(|e| {
-                let error = Error::Io(std::io::Error::new(
+                tracing::error!("Failed to extract configuration: {:?}", e);
+                Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("Configuration error: {e:?}"),
-                ));
-                record_outcome(Outcome::Fail);
-                tracing::error!(%error, "Failed to extract configuration");
-                error
+                ))
             })
     }
 
     /// Helper function to merge `.toml` files from a directory into the Figment configuration.
-    #[instrument(err, skip_all)]
+    #[instrument(skip_all)]
     fn merge_toml_directory(
         mut figment: Figment,
         dir_path: PathBuf,
@@ -442,9 +461,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unittest::{capture_kvp_at_info, kvp_error_fields};
     use anyhow::Error;
-    use libazureinit_kvp::{Diagnostic, Outcome};
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
@@ -501,69 +518,12 @@ mod tests {
             Config::load_from(file_path, drop_in_path, None);
 
         assert!(result.is_err());
-        assert!(logs_contain(
-            "error=An I/O error occurred: Configuration error:"
-        ));
-        assert!(logs_contain("Failed to extract configuration"));
 
         tracing::debug!(
             "test_load_invalid_config completed with expected error."
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn test_invalid_config_preserves_error_context_at_info() {
-        for contents in
-            ["[imds\n", "[ssh]\nquery_sshd_config = \"not_a_boolean\"\n"]
-        {
-            let dir = tempdir().unwrap();
-            let path = dir.path().join("invalid.toml");
-            fs::write(&path, contents).unwrap();
-            let (result, diagnostics) = capture_kvp_at_info(|| {
-                Config::load_from(
-                    path.clone(),
-                    dir.path().join("missing-drop-ins"),
-                    None,
-                )
-            });
-            assert!(result.is_err());
-            let errors = kvp_error_fields(&diagnostics);
-            let [error] = errors.as_slice() else {
-                panic!("expected one configuration error, got {errors:?}");
-            };
-            assert_eq!(error["message"], "Failed to extract configuration");
-            let message = error["error"].as_str().unwrap();
-            assert!(message.contains("Configuration error:"));
-            assert!(message.contains(path.to_str().unwrap()));
-            assert!(diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic,
-                Diagnostic::Finish(finish)
-                    if finish.key.name == "load_from"
-                        && finish.result == Outcome::Fail
-            )));
-        }
-    }
-
-    #[test]
-    fn test_valid_config_records_success_outcome() {
-        let dir = tempdir().unwrap();
-        let (result, diagnostics) = capture_kvp_at_info(|| {
-            Config::load_from(
-                dir.path().join("missing.toml"),
-                dir.path().join("missing-drop-ins"),
-                None,
-            )
-        });
-        assert!(result.is_ok());
-        assert!(kvp_error_fields(&diagnostics).is_empty());
-        assert!(diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic,
-            Diagnostic::Finish(finish)
-                if finish.key.name == "load_from"
-                    && finish.result == Outcome::Success
-        )));
     }
 
     #[test]
@@ -1055,16 +1015,16 @@ mod tests {
         assert!(!config.azure_proxy_agent.enable);
         assert!(!config.telemetry.kvp_diagnostics);
         assert_eq!(
-            config.telemetry.kvp_filter,
-            Some("cli-override-filter".to_string())
-        );
-        assert_eq!(
             config.azure_init_data_dir.path.to_str().unwrap(),
             "/cli-override-azure-init-data-dir"
         );
         assert_eq!(
             config.azure_init_log_path.path.to_str().unwrap(),
             "/custom/path/azure-init.log"
+        );
+        assert_eq!(
+            config.telemetry.kvp_filter,
+            Some("cli-override-filter".to_string())
         );
 
         Ok(())
@@ -1217,37 +1177,9 @@ query_sshd_config = false
             figment::providers::Serialized::defaults(Config::default()),
         );
         let result = Config::merge_toml_directory(figment, unreadable.clone());
-        let (load_results, diagnostics) = capture_kvp_at_info(|| {
-            [
-                Config::load_from(
-                    dir.path().join("missing.toml"),
-                    unreadable.clone(),
-                    None,
-                ),
-                Config::load_from(
-                    dir.path().join("missing.toml"),
-                    dir.path().join("missing-drop-ins"),
-                    Some(unreadable.clone()),
-                ),
-            ]
-        });
         // Restore permissions so tempdir cleanup succeeds
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755))
             .unwrap();
         assert!(result.is_err());
-        assert!(load_results.iter().all(Result::is_err));
-        let finishes: Vec<_> = diagnostics
-            .iter()
-            .filter_map(|diagnostic| match diagnostic {
-                Diagnostic::Finish(finish)
-                    if finish.key.name == "load_from" =>
-                {
-                    Some(finish)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(finishes.len(), 2);
-        assert!(finishes.iter().all(|finish| finish.result == Outcome::Fail));
     }
 }

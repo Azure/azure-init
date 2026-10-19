@@ -17,11 +17,11 @@ use libazureinit::{
     reqwest::{header, Client},
     Provision, User,
 };
-use libazureinit_kvp::{Outcome, OUTCOME_FIELD};
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
-use tracing::{instrument, instrument::WithSubscriber};
+use tracing::instrument;
+use tracing_subscriber::{prelude::*, Layer};
 
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -98,9 +98,7 @@ enum Command {
 /// This is one of two primary sources for provisioning data, the other being
 /// the Azure Instance Metadata Service (IMDS). The agent prioritizes IMDS
 /// when available for most data, but can use OVF as a fallback for the username.
-// No `err`: missing OVF media is a normal IMDS fallback, so it is a WARN
-// rather than an ERROR. KVP still records whether an environment was found.
-#[instrument(fields(diagnostic.result = Outcome::Fail.as_str()))]
+#[instrument]
 fn get_environment() -> Result<Environment, anyhow::Error> {
     tracing::debug!("Searching for OVF environment on local block devices.");
     let ovf_devices = get_mount_device(None)?;
@@ -120,20 +118,13 @@ fn get_environment() -> Result<Environment, anyhow::Error> {
         }
     }
 
-    tracing::Span::current().record(
-        OUTCOME_FIELD,
-        environment
-            .as_ref()
-            .map_or(Outcome::Fail, |_| Outcome::Success)
-            .as_str(),
-    );
     environment.ok_or_else(|| {
         tracing::warn!("Failed to find valid OVF provisioning data on any block device. Falling back to IMDS.");
         anyhow::anyhow!("Unable to get list of block devices")
     })
 }
 
-#[instrument(err, skip_all)]
+#[instrument(skip_all)]
 fn get_username(
     instance_metadata: Option<&InstanceMetadata>,
     environment: Option<&Environment>,
@@ -153,7 +144,10 @@ fn get_username(
                 .linux_prov_conf_set
                 .username
         })
-        .ok_or_else(|| LibError::UsernameFailure.into())
+        .ok_or_else(|| {
+            tracing::error!("Username Failure: Could not determine username from IMDS or OVF environment.");
+            LibError::UsernameFailure.into()
+        })
 }
 
 /// Cleans all provisioning state marker files from the azure-init data directory.
@@ -162,7 +156,7 @@ fn get_username(
 /// by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker files
 /// indicate that provisioning has completed. Removing them allows azure-init to
 /// re-run provisioning logic on the next boot.
-#[instrument(err, skip_all, fields(path = %config.azure_init_data_dir.path.display()))]
+#[instrument]
 fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
     let data_dir = &config.azure_init_data_dir.path;
     let mut found = false;
@@ -223,7 +217,7 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
 /// This removes the log file at the path configured by `azure_init_log_path`,
 /// which defaults to `/var/log/azure-init.log`. If the file does not exist,
 /// a message is logged but no error is returned.
-#[instrument(err, skip_all, fields(path = %config.azure_init_log_path.path.display()))]
+#[instrument]
 fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     let log_path = &config.azure_init_log_path.path;
 
@@ -243,89 +237,68 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Maps a provisioning error to a process exit code, reporting configuration
-/// errors distinctly from general failures.
-fn exit_code_for(error: &anyhow::Error) -> ExitCode {
-    if is_config_error(error) {
-        let config: u8 = exitcode::CONFIG
-            .try_into()
-            .expect("Error code must be less than 256");
-        ExitCode::from(config)
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
-/// Whether a provisioning error stems from user configuration (a missing user
-/// or a non-empty password) rather than a general runtime failure.
-fn is_config_error(error: &anyhow::Error) -> bool {
-    matches!(
-        error.root_cause().downcast_ref::<LibError>(),
-        Some(LibError::UserMissing { .. } | LibError::NonEmptyPassword)
-    )
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
+    let vm_id: String = get_vm_id()
+        .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
+
     let opts = Cli::parse();
     if opts.show_version {
         println!("azure-init {}", version_string());
         return ExitCode::SUCCESS;
     }
 
-    let bootstrap = logging::bootstrap();
-    let (vm_id, config_result) =
-        tracing::dispatcher::with_default(&bootstrap, || {
-            let vm_id = get_vm_id().unwrap_or_else(|| {
-                "00000000-0000-0000-0000-000000000000".to_string()
-            });
-            (vm_id, Config::load(opts.config.clone()))
+    let temp_layer = tracing_subscriber::fmt::layer()
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
+        .with_writer(std::io::stderr)
+        .with_filter(tracing_subscriber::EnvFilter::new(
+            "libazureinit::config=info",
+        ));
+
+    let temp_subscriber =
+        tracing_subscriber::Registry::default().with(temp_layer);
+
+    let setup_result =
+        tracing::subscriber::with_default(temp_subscriber, || {
+            let config = Config::load(opts.config.clone())?;
+            let logging::LoggingSetup { subscriber } =
+                logging::setup_layers(&vm_id, &config);
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber)
+            {
+                eprintln!("Failed to set global default subscriber: {e}");
+            }
+            Ok::<_, anyhow::Error>(config)
         });
 
-    let config = match config_result {
+    let config = match setup_result {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Failed to load configuration: {error:?}");
             eprintln!("Example configuration:\n\n{}", Config::default());
 
-            let config = Config::default();
+            // Build temporary config to pass in wireserver defaults for report_failure
+            let cfg = Config::default();
+
             let err = LibError::LoadSshdConfig {
                 details: format!("{error:?}"),
             };
 
-            let report = err.as_encoded_report(&vm_id);
-            let report_result = report_failure(report, &config)
-                .with_subscriber(bootstrap)
-                .await;
+            // Report the failure to the health endpoint
+            let report_str = err.as_encoded_report(&vm_id);
+            let report_result = report_failure(report_str, &cfg).await;
 
             if let Err(report_error) = report_result {
-                eprintln!("Failed to send provisioning failure report: {report_error:?}");
+                tracing::warn!(
+                    "Failed to send provisioning failure report: {:?}",
+                    report_error
+                );
             }
 
             return ExitCode::FAILURE;
         }
     };
 
-    let logging_config = config.clone();
-    let logging_vm_id = vm_id.clone();
-    let setup = tokio::task::spawn_blocking(move || {
-        logging::setup_layers(&logging_vm_id, &logging_config)
-    })
-    .await;
-    let logging::LoggingSetup { subscriber } = match setup {
-        Ok(setup) => setup,
-        Err(error) => {
-            eprintln!("Failed to initialize logging: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
-        eprintln!("Failed to set global default subscriber: {error}");
-        return ExitCode::FAILURE;
-    }
-    drop(bootstrap);
-
-    tracing::debug!("Final configuration: {:#?}", config);
+    tracing::info!("Final configuration: {:#?}", config);
 
     let exit_code = if let Some(Command::Clean { logs }) = opts.command {
         if clean_provisioning_status(&config).is_err()
@@ -344,20 +317,24 @@ async fn main() -> ExitCode {
         let clone_config = config.clone();
         match provision(config, &vm_id, opts).await {
             Ok(_) => {
-                if let Err(report_error) =
-                    report_ready(&clone_config, &vm_id, None).await
-                {
+                let report_result =
+                    report_ready(&clone_config, &vm_id, None).await;
+
+                if let Err(report_error) = report_result {
                     tracing::warn!(
-                        "Failed to send provisioning success report: {report_error:?}"
+                        "Failed to send provisioning success report: {:?}",
+                        report_error
                     );
                 }
+
                 tracing::info!("Provisioning completed successfully");
 
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                // `provision` already logged the error chain at ERROR.
-                let report = e
+                eprintln!("{e:?}");
+
+                let report_str = e
                     .downcast_ref::<LibError>()
                     .map(|lib_error| lib_error.as_encoded_report(&vm_id))
                     .unwrap_or_else(|| {
@@ -366,15 +343,28 @@ async fn main() -> ExitCode {
                         }
                         .as_encoded_report(&vm_id)
                     });
-                if let Err(report_error) =
-                    report_failure(report, &clone_config).await
-                {
+                let report_result =
+                    report_failure(report_str, &clone_config).await;
+
+                if let Err(report_error) = report_result {
                     tracing::warn!(
-                        "Failed to send provisioning failure report: {report_error:?}"
+                        "Failed to send provisioning failure report: {:?}",
+                        report_error
                     );
                 }
 
-                exit_code_for(&e)
+                tracing::error!("Provisioning failed with error: {e:?}");
+
+                let config: u8 = exitcode::CONFIG
+                    .try_into()
+                    .expect("Error code must be less than 256");
+                match e.root_cause().downcast_ref::<LibError>() {
+                    Some(LibError::UserMissing { user: _ }) => {
+                        ExitCode::from(config)
+                    }
+                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+                    Some(_) | None => ExitCode::FAILURE,
+                }
             }
         }
     };
@@ -382,7 +372,7 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-#[instrument(skip_all, err(Debug))]
+#[instrument(skip_all, err)]
 async fn provision(
     config: Config,
     vm_id: &str,
@@ -456,11 +446,12 @@ async fn provision(
     )
     .provision()?;
 
-    mark_provisioning_complete(Some(&clone_config), vm_id)
-        .context("Failed to mark provisioning complete.")?;
+    mark_provisioning_complete(Some(&clone_config), vm_id).with_context(
+        || {
+            tracing::error!("Failed to mark provisioning complete.");
+            "Failed to mark provisioning complete."
+        },
+    )?;
 
     Ok(())
 }
-
-#[cfg(test)]
-mod agent_tests;

@@ -10,7 +10,6 @@ license = "MIT"
 description = "A common library for provisioning Linux VMs on Azure."
 
 [dependencies]
-libazureinit-kvp = { path = "../libazureinit-kvp", version = "0.1.0" }
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json"] }
 serde = {version = "1.0.163", features = ["derive"]}
 thiserror = "2.0.3"
@@ -33,8 +32,6 @@ csv = "1"
 zeroize = "1.8"
 
 [dev-dependencies]
-libazureinit-kvp = { path = "../libazureinit-kvp", version = "0.1.0", features = ["tracing"] }
-tracing-subscriber = { version = "0.3.18", default-features = false, features = ["registry", "std"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }

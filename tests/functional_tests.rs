@@ -139,18 +139,14 @@ fn agent_provisioning_in_container() {
             report.starts_with(report_prefix),
             "unexpected {scenario} report: {report}"
         );
-        for (name, result) in
-            [("get_environment", Outcome::Fail), ("provision", expected)]
-        {
-            assert!(
-                entries.iter().any(|entry| matches!(
-                    entry,
-                    Entry::Diagnostic(Diagnostic::Finish(finish))
-                        if finish.key.name == name && finish.result == result
-                )),
-                "missing {name} finish with {result} in {scenario}"
-            );
-        }
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                Entry::Diagnostic(Diagnostic::Finish(finish))
+                    if finish.key.name == "provision" && finish.result == expected
+            )),
+            "missing provision finish with {expected} in {scenario}"
+        );
         assert_eq!(
             entries
                 .iter()
