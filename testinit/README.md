@@ -75,7 +75,7 @@ This will:
 - **Image**: Built from local Dockerfile
 - **Service**: systemd-based `azure-init.service`
 - **Privileges**: Runs with `privileged: true` for systemd support
-- **Binaries**: `/usr/bin/azure-init` and `/usr/bin/libazureinit-kvp`, built in the image
+- **Binaries**: `/usr/bin/azure-init` and `/usr/bin/libazureinit-kvp`
 
 ### Testing Server
 
@@ -107,12 +107,3 @@ docker compose logs -f testing-server
 The Dockerfile expects:
 - `azure-init/target/debug/azure-init` - The main binary (compiled via `cargo build`)
 - `azure-init/config/azure-init.service` - The systemd service file
-
-### KVP CLI checks
-
-`verify_kvp.py` exercises the KVP CLI against temporary pools; it never touches
-the agent's pool:
-
-```bash
-docker exec azureinit-provisioning-agent python3 /build/testinit/verify_kvp.py
-```

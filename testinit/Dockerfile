@@ -16,7 +16,6 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
     ca-certificates \
     util-linux \
     openssh-server \
-    python3 \
     build-essential \
     pkg-config \
     libudev-dev \
@@ -31,7 +30,6 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
     ca-certificates \
     util-linux \
     openssh-server \
-    python3 \
     gcc \
     gcc-c++ \
     glibc-devel \
@@ -63,12 +61,11 @@ RUN mkdir -p /etc/sudoers.d
 # Create the SSHD directory
 RUN mkdir -p /etc/ssh
 
-# Build the agent and the standalone KVP CLI from the same source.
+# Copy source code and build azure-init
 COPY . /build
 WORKDIR /build
-RUN cargo build --verbose -p azure-init --bin azure-init \
-    -p libazureinit-kvp --bin libazureinit-kvp
-RUN install -m 0755 target/debug/azure-init target/debug/libazureinit-kvp /usr/bin/
+RUN cargo build --verbose
+RUN cp target/debug/azure-init /usr/bin/azure-init && chmod +x /usr/bin/azure-init
 
 WORKDIR /
 

@@ -265,9 +265,9 @@ mod tests {
     fn fast_config(mock_url: Option<String>) -> Config {
         let mut cfg = Config::default();
         cfg.wireserver = Wireserver {
-            connection_timeout_secs: 0.1,
-            read_timeout_secs: 0.1,
-            total_retry_timeout_secs: 0.5,
+            connection_timeout_secs: 0.01,
+            read_timeout_secs: 0.01,
+            total_retry_timeout_secs: 0.05,
             health_endpoint: mock_url.unwrap_or(cfg.wireserver.health_endpoint),
         };
         cfg
