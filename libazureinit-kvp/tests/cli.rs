@@ -494,7 +494,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
             "artifact",
             vec![0, 255],
             Some(encoding),
-            Some(Outcome::Fail),
+            Some(Outcome::Failure),
             Some(Duration::from_micros(7)),
         )
         .unwrap();

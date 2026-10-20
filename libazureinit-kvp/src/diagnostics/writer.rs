@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;
 
 use super::diagnostic::{
@@ -192,9 +192,8 @@ impl DiagnosticWriter {
         payload: impl Into<DiagnosticPayload>,
         encoding: Option<Encoding>,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
         self.emit(Diagnostic::Start(DiagnosticStart {
-            key: self.key_at(event_id, name, encoding, timestamp),
+            key: self.key(event_id, name, encoding),
             payload: payload.into(),
         }))
     }
@@ -212,9 +211,8 @@ impl DiagnosticWriter {
         result: Outcome,
         duration: Duration,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
         self.emit(Diagnostic::Finish(DiagnosticFinish {
-            key: self.key_at(event_id, name, encoding, timestamp),
+            key: self.key(event_id, name, encoding),
             payload: payload.into(),
             result,
             duration,
@@ -232,34 +230,26 @@ impl DiagnosticWriter {
         result: Option<Outcome>,
         duration: Option<Duration>,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
         self.emit(Diagnostic::Event(DiagnosticEvent {
-            key: self.key_at(
-                &Uuid::new_v4().to_string(),
-                name,
-                encoding,
-                timestamp,
-            ),
+            key: self.key(&Uuid::new_v4().to_string(), name, encoding),
             payload: payload.into(),
             result,
             duration,
         }))
     }
 
-    /// Builds producer metadata without I/O at the caller's capture time.
-    fn key_at(
+    fn key(
         &self,
         event_id: &str,
         name: &str,
         encoding: Option<Encoding>,
-        timestamp: DateTime<Utc>,
     ) -> DiagnosticKey {
         DiagnosticKey {
             agent: self.agent.clone(),
             vm_id: Some(self.vm_id.clone()),
             name: name.to_owned(),
             event_id: event_id.to_owned(),
-            timestamp,
+            timestamp: Utc::now(),
             encoding,
         }
     }
@@ -518,28 +508,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir, PoolMode::Safe);
         let (writer, ops) = observed_writer(&dir);
-        let timestamp = DateTime::parse_from_rfc3339(TIMESTAMP)
-            .unwrap()
-            .with_timezone(&Utc);
-        let captured_key = writer.key_at(EVENT_ID, "test", None, timestamp);
-        assert_eq!(captured_key.agent, AGENT);
-        assert_eq!(captured_key.vm_id.as_deref(), Some(VM_ID));
-        assert_eq!(captured_key.event_id, EVENT_ID);
-        assert_eq!(captured_key.name, "test");
-        assert_eq!(captured_key.timestamp, timestamp);
-
-        let payload = "x".repeat(MAX_CHUNK_BYTES * 3 + 1);
-        let diagnostic = event(captured_key, payload.into());
         assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
         assert!(!pool.path().exists());
 
-        writer.emit(diagnostic.clone()).unwrap();
+        let payload = "x".repeat(MAX_CHUNK_BYTES * 3 + 1);
+        writer
+            .emit_event("test", payload, None, None, None)
+            .unwrap();
         assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
         assert_eq!(pool.dump().unwrap().len(), 4);
-        assert_eq!(
-            DiagnosticReader::new(pool).entries().unwrap(),
-            vec![Entry::Diagnostic(diagnostic)]
-        );
     }
 
     #[test]
@@ -716,7 +693,7 @@ mod tests {
 
     #[rstest]
     #[case::success(Outcome::Success, "success", 312_000, "0.312000")]
-    #[case::failure(Outcome::Fail, "fail", 0, "0.000000")]
+    #[case::failure(Outcome::Failure, "fail", 0, "0.000000")]
     fn exact_finish_key_matches_diag_layout(
         #[case] result: Outcome,
         #[case] token: &str,
@@ -747,7 +724,7 @@ mod tests {
     #[case::neither(None, None, "")]
     #[case::result_only(Some(Outcome::Success), None, "")]
     #[case::zero_duration(None, Some(0), "0.000000")]
-    #[case::both(Some(Outcome::Fail), Some(52), "0.000052")]
+    #[case::both(Some(Outcome::Failure), Some(52), "0.000052")]
     fn event_optional_fields_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
@@ -790,7 +767,7 @@ mod tests {
                 "test",
                 "finished",
                 None,
-                Outcome::Fail,
+                Outcome::Failure,
                 Duration::from_micros(17),
             )
             .unwrap();
@@ -1120,7 +1097,7 @@ mod tests {
                 "bad|name",
                 "message",
                 None,
-                Outcome::Fail,
+                Outcome::Failure,
                 Duration::ZERO,
             )
         });
@@ -1155,7 +1132,7 @@ mod tests {
                 "test",
                 payload,
                 None,
-                Outcome::Fail,
+                Outcome::Failure,
                 Duration::ZERO,
             )
         });

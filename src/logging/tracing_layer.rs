@@ -153,7 +153,7 @@ where
         // If this thread is already unwinding from a panic, record failure
         // regardless of the explicit outcome.
         let result = if std::thread::panicking() {
-            Outcome::Fail
+            Outcome::Failure
         } else {
             let explicit = match state.fields.outcome() {
                 Ok(result) => result,
@@ -163,7 +163,7 @@ where
                 }
             };
             explicit.unwrap_or(if state.saw_error {
-                Outcome::Fail
+                Outcome::Failure
             } else {
                 Outcome::Success
             })
@@ -191,13 +191,11 @@ impl Fields {
     fn outcome(&self) -> Result<Option<Outcome>, &'static str> {
         match self.0.get(OUTCOME_FIELD) {
             None => Ok(None),
-            Some(Value::String(value))
-                if value == Outcome::Success.as_str() =>
-            {
+            Some(Value::String(value)) if value == "success" => {
                 Ok(Some(Outcome::Success))
             }
-            Some(Value::String(value)) if value == Outcome::Fail.as_str() => {
-                Ok(Some(Outcome::Fail))
+            Some(Value::String(value)) if value == "fail" => {
+                Ok(Some(Outcome::Failure))
             }
             _ => Err(INVALID_OUTCOME),
         }
@@ -395,7 +393,7 @@ mod tests {
             });
         });
 
-        assert_eq!(finish(&entries(&store)).result, Outcome::Fail);
+        assert_eq!(finish(&entries(&store)).result, Outcome::Failure);
     }
 
     #[test]
@@ -404,13 +402,10 @@ mod tests {
         let (kvp, store) = bridge(&dir);
         let subscriber = tracing_subscriber::registry().with(kvp);
         tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!(
-                "op",
-                diagnostic.result = Outcome::Fail.as_str()
-            );
+            let span = tracing::info_span!("op", diagnostic.result = "fail");
             span.in_scope(|| {
                 tracing::error!("handled, not fatal");
-                span.record(OUTCOME_FIELD, Outcome::Success.as_str());
+                span.record(OUTCOME_FIELD, "success");
             });
         });
 
@@ -421,7 +416,7 @@ mod tests {
     fn outcome_field_accepts_only_canonical_wire_tokens() {
         assert_eq!(Fields::default().outcome(), Ok(None));
         for (token, outcome) in
-            [("success", Outcome::Success), ("fail", Outcome::Fail)]
+            [("success", Outcome::Success), ("fail", Outcome::Failure)]
         {
             let fields = Fields(Map::from_iter([(
                 OUTCOME_FIELD.to_owned(),
@@ -511,7 +506,7 @@ mod tests {
         let entries = entries(&store);
         assert!(
             matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
-                if event.result == Some(Outcome::Fail) && event.payload == expected)
+                if event.result == Some(Outcome::Failure) && event.payload == expected)
         );
     }
 
@@ -646,7 +641,7 @@ mod tests {
             );
         };
         assert_eq!(start.key.event_id, finish.key.event_id);
-        assert_eq!(finish.result, Outcome::Fail);
+        assert_eq!(finish.result, Outcome::Failure);
     }
 
     #[test]
