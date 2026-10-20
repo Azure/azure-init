@@ -168,4 +168,36 @@ mod tests {
         cancel.cancel();
         assert_eq!(server.await.unwrap(), 1);
     }
+
+    #[tokio::test]
+    async fn serve_requests_panics_on_invalid_utf8_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_requests(
+            listener,
+            get_http_response_payload(&StatusCode::OK, "response"),
+            CancellationToken::new(),
+        ));
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: \xff\r\n\r\n")
+            .await
+            .unwrap();
+
+        let error = timeout(Duration::from_secs(5), server)
+            .await
+            .expect("mock did not reject invalid UTF-8 headers")
+            .expect_err("mock should panic on an unexpected I/O error");
+        assert!(error.is_panic(), "mock task should panic, not be cancelled");
+
+        let panic = error.into_panic();
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("mock panic should include an error message");
+        assert!(
+            message.starts_with("HTTP mock failed:"),
+            "unexpected mock panic: {message}"
+        );
+    }
 }
