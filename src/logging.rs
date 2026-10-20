@@ -95,9 +95,29 @@ fn output_filter(default: &str) -> EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new(default))
 }
 
-/// azure-init's default KVP filter: INFO and above (INFO, WARN, ERROR).
+/// Default KVP filter with azure-init-specific target overrides.
 fn default_kvp_filter() -> EnvFilter {
-    EnvFilter::new("info")
+    EnvFilter::builder()
+        .parse(
+            [
+                "WARN",
+                "azure_init=INFO",
+                "libazureinit=INFO",
+                "libazureinit::config::success",
+                "libazureinit::http::received",
+                "libazureinit::http::success",
+                "libazureinit::ssh::authorized_keys",
+                "libazureinit::ssh::success",
+                "libazureinit::user::add",
+                "libazureinit::status::success",
+                "libazureinit::status::retrieved_vm_id",
+                "libazureinit::health::status",
+                "libazureinit::health::report",
+                "libazureinit::password::status",
+            ]
+            .join(","),
+        )
+        .expect("the default KVP filter is valid")
 }
 
 /// Tries environment, configuration, then default, skipping invalid values.
@@ -156,7 +176,7 @@ fn setup_layers_in(
             fmt::layer()
                 .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
                 .with_writer(file)
-                .with_filter(output_filter("debug")),
+                .with_filter(output_filter("info")),
         ),
         Err(error) => {
             eprintln!(
@@ -240,19 +260,24 @@ mod tests {
     #[test]
     fn kvp_filter_precedence_and_fallbacks() {
         const CASE_ENV: &str = "AZURE_INIT_TEST_KVP_FILTER_CASE";
+        let default = default_kvp_filter().to_string();
         let cases = [
-            (None, None, "info"),
+            (None, None, default.as_str()),
             (Some("trace"), Some("warn"), "trace"),
             (Some("off"), Some("trace"), "off"),
             (Some(""), Some("warn"), "warn"),
             (Some(" \t "), Some("debug"), "debug"),
             (Some("target=invalid"), Some("error"), "error"),
             (None, Some(" debug "), "debug"),
-            (None, Some(""), "info"),
-            (None, Some(" \t "), "info"),
-            (None, Some("target=invalid"), "info"),
-            (Some("target=invalid"), None, "info"),
-            (Some("target=invalid"), Some("target=invalid"), "info"),
+            (None, Some(""), default.as_str()),
+            (None, Some(" \t "), default.as_str()),
+            (None, Some("target=invalid"), default.as_str()),
+            (Some("target=invalid"), None, default.as_str()),
+            (
+                Some("target=invalid"),
+                Some("target=invalid"),
+                default.as_str(),
+            ),
             (
                 None,
                 Some("warn,libazureinit=debug"),
@@ -280,6 +305,64 @@ mod tests {
                 let output = child.output().unwrap();
                 assert!(output.status.success(), "case {index}: {output:?}");
             }
+        }
+    }
+
+    #[test]
+    fn default_logging_filters_preserve_main_behavior() {
+        const CASE_ENV: &str = "AZURE_INIT_TEST_DEFAULT_LOGGING_FILTERS";
+        if std::env::var_os(CASE_ENV).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "logging::tests::default_logging_filters_preserve_main_behavior",
+                    "--nocapture",
+                ])
+                .env(CASE_ENV, "1")
+                .env_remove("AZURE_INIT_LOG")
+                .env_remove(AZURE_INIT_KVP_FILTER)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        let (config, kvp_dir) = kvp_config(&dir);
+        let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
+        tracing::subscriber::with_default(setup.subscriber, || {
+            tracing::info!(target: "azure_init", "default-agent-info");
+            tracing::info!(target: "libazureinit", "default-library-info");
+            tracing::debug!(target: "azure_init", "default-agent-debug");
+            tracing::warn!(target: "dependency", "default-dependency-warn");
+            tracing::info!(target: "dependency", "default-dependency-info");
+            tracing::debug!(target: "libazureinit::http", "default-library-debug");
+            tracing::trace!(target: "libazureinit::http::success", "default-target-trace");
+        });
+
+        let file =
+            std::fs::read_to_string(&config.azure_init_log_path.path).unwrap();
+        let store =
+            KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
+                .unwrap();
+        let kvp = store
+            .dump()
+            .unwrap()
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (message, in_file, in_kvp) in [
+            ("default-agent-info", true, true),
+            ("default-library-info", true, true),
+            ("default-agent-debug", false, false),
+            ("default-dependency-warn", true, true),
+            ("default-dependency-info", true, false),
+            ("default-library-debug", false, false),
+            ("default-target-trace", false, true),
+        ] {
+            assert_eq!(file.contains(message), in_file, "{message}: file");
+            assert_eq!(kvp.contains(message), in_kvp, "{message}: KVP");
         }
     }
 

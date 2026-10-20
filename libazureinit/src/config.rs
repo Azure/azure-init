@@ -235,19 +235,46 @@ impl Default for Wireserver {
     }
 }
 
-/// KVP telemetry enablement and filtering.
+/// Telemetry configuration struct.
+///
+/// Configures telemetry behavior, including diagnostic settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Telemetry {
-    /// Enables KVP diagnostics. Defaults to `true`.
-    ///
-    /// Disabling KVP does not disable file/console logs or wireserver HTTP.
+    /// Flag to enable or disable KVP diagnostics. Defaults to `true`.
     pub kvp_diagnostics: bool,
 
-    /// Optional KVP `EnvFilter` directives, such as `warn,libazureinit=debug`.
+    /// Optional filter directives for the KVP tracing layer. When set,
+    /// these directives are parsed using `tracing_subscriber::EnvFilter` and
+    /// applied to the KVP layer unless overridden by the `AZURE_INIT_KVP_FILTER`
+    /// environment variable. When not set, defaults tailored for azure-init are used.
     ///
-    /// Azure Init tries `AZURE_INIT_KVP_FILTER`, then this value, then `info`,
-    /// skipping empty or invalid values. Does not override `kvp_diagnostics`.
+    /// **Precedence**: Environment variable `AZURE_INIT_KVP_FILTER` takes precedence
+    /// over this config value. If neither is set, azure-init-specific defaults are used.
+    ///
+    /// The value must be a string that follows the syntax for
+    /// `tracing_subscriber::EnvFilter`, which is a comma-separated list of
+    /// logging directives. For example: `warn,my_crate=debug`.
+    ///
+    /// ### Examples of acceptable values:
+    ///
+    /// - **Capture `INFO` level and above for all crates:**
+    ///   ```toml
+    ///   kvp_filter = "info"
+    ///   ```
+    ///
+    /// - **Capture `DEBUG` from your crate and `WARN` from others:**
+    ///   ```toml
+    ///   kvp_filter = "warn,my_crate=debug"
+    ///   ```
+    ///
+    /// - **Capture `TRACE` from a specific module:**
+    ///   ```toml
+    ///   kvp_filter = "info,my_crate::api=trace"
+    ///   ```
+    ///
+    /// If an invalid filter string is provided, a warning is logged
+    /// and the default filter is used instead.
     pub kvp_filter: Option<String>,
 }
 

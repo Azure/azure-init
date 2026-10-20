@@ -75,7 +75,7 @@ This will:
 - **Image**: Built from local Dockerfile
 - **Service**: systemd-based `azure-init.service`
 - **Privileges**: Runs with `privileged: true` for systemd support
-- **Binaries**: `/usr/bin/azure-init` and `/usr/bin/libazureinit-kvp`
+- **Binary Location**: In the container, located at `/usr/bin/azure-init`
 
 ### Testing Server
 
