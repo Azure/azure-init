@@ -247,7 +247,7 @@ impl DiagnosticWriter {
     }
 
     /// Builds producer metadata without I/O at the caller's capture time.
-    pub(super) fn key_at(
+    fn key_at(
         &self,
         event_id: &str,
         name: &str,
@@ -264,7 +264,7 @@ impl DiagnosticWriter {
         }
     }
 
-    pub(super) fn emit(&self, diagnostic: Diagnostic) -> Result<(), KvpError> {
+    fn emit(&self, diagnostic: Diagnostic) -> Result<(), KvpError> {
         self.store.append_multiple(prepare_records(
             diagnostic,
             self.timestamp_precision,

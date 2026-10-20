@@ -97,14 +97,6 @@ impl fmt::Display for Outcome {
     }
 }
 
-/// Field name for explicitly reporting a span's outcome to the KVP layer.
-///
-/// For example, a failed HTTP attempt may log only a WARN. Record its outcome
-/// using [`Outcome::as_str`] rather than relying on ERROR events to imply failure.
-///
-/// Declare `diagnostic.result` when creating the span before recording updates.
-pub const OUTCOME_FIELD: &str = "diagnostic.result";
-
 /// The text or bytes carried by a diagnostic.
 ///
 /// Strings convert to [`Text`](Self::Text); byte slices and vectors convert to

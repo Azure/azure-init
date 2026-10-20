@@ -3,14 +3,17 @@
 
 //! Azure Init's stderr, file and KVP subscriber configuration.
 
+mod tracing_layer;
+
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use self::tracing_layer::DiagnosticsKvp;
 use libazureinit::config::Config;
 use libazureinit_kvp::{
-    DiagnosticWriter, DiagnosticsKvp, KvpError, KvpPool, KvpPoolStore,
-    PoolMode, PROVISIONING_REPORT_KEY,
+    DiagnosticWriter, KvpError, KvpPool, KvpPoolStore, PoolMode,
+    PROVISIONING_REPORT_KEY,
 };
 use tracing::{field::Visit, Event, Level, Subscriber};
 use tracing_subscriber::{

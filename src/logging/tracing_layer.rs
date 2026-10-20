@@ -1,12 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Synchronous `tracing`-to-KVP bridge.
+//! Azure Init's private, synchronous `tracing`-to-KVP adapter.
 
 use std::fmt;
 use std::time::Instant;
 
-use chrono::Utc;
+use libazureinit_kvp::{
+    DiagnosticPayload, DiagnosticWriter, KvpError, Outcome,
+};
 use serde_json::{Map, Number, Value};
 use tracing::{
     field::Visit,
@@ -16,19 +18,13 @@ use tracing::{
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 use uuid::Uuid;
 
-use super::{
-    Diagnostic, DiagnosticEvent, DiagnosticFinish, DiagnosticPayload,
-    DiagnosticStart, DiagnosticWriter, Outcome, OUTCOME_FIELD,
-};
-use crate::KvpError;
-
+const OUTCOME_FIELD: &str = "diagnostic.result";
 const INVALID_OUTCOME: &str =
     "diagnostic.result must be a string containing success or fail";
 
 /// Bridges `tracing` spans and events to a [`DiagnosticWriter`].
 ///
-/// Requires the `tracing` feature. Callbacks write synchronously through
-/// [`emit`](Self::emit), using the writer's validation, encoding and pool locks.
+/// Callbacks use the public writer methods for validation, encoding and locking.
 /// Storage and lock contention can block the calling thread indefinitely;
 /// callback errors are reported to stderr.
 ///
@@ -44,54 +40,21 @@ const INVALID_OUTCOME: &str =
 /// observed ERROR implies success. Unwinding implies failure regardless of an
 /// override. Invalid explicit outcomes drop the event or finish. Filtering,
 /// missing instrumentation and cancellation can hide failures.
-///
-/// # Example
-/// ```no_run
-/// use libazureinit_kvp::{
-///     DiagnosticsKvp, DiagnosticWriter, KvpPool, KvpPoolStore, PoolMode,
-/// };
-/// use tracing_subscriber::{filter::LevelFilter, prelude::*};
-///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let store = KvpPoolStore::new(KvpPool::Guest, PoolMode::Safe)?;
-/// let writer = DiagnosticWriter::new(
-///     store, "example/1", "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-/// )?;
-/// let kvp = DiagnosticsKvp::new(writer);
-/// let subscriber = tracing_subscriber::registry()
-///     .with(kvp.clone().with_filter(LevelFilter::INFO));
-/// tracing::subscriber::with_default(subscriber, || {
-///     tracing::info_span!("configure").in_scope(|| {
-///         tracing::info!(records = 3_u64, "configuration applied");
-///     });
-/// });
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Clone, Debug)]
-pub struct DiagnosticsKvp {
+pub(super) struct DiagnosticsKvp {
     writer: DiagnosticWriter,
 }
 
 impl DiagnosticsKvp {
-    /// Creates a bridge that emits through the given writer.
-    pub fn new(writer: DiagnosticWriter) -> Self {
+    pub(super) fn new(writer: DiagnosticWriter) -> Self {
         Self { writer }
     }
+}
 
-    /// Writes one diagnostic synchronously through the underlying writer.
-    ///
-    /// Used by callbacks and direct callers. An I/O error may leave a partial
-    /// chunked payload in the pool.
-    pub fn emit(&self, diagnostic: Diagnostic) -> Result<(), KvpError> {
-        self.writer.emit(diagnostic)
-    }
-
-    /// Reports callback write errors to stderr without reentering tracing.
-    fn deliver(&self, diagnostic: Diagnostic) {
-        if let Err(error) = self.emit(diagnostic) {
-            eprintln!("Failed to write KVP diagnostic: {error}");
-        }
+/// Reports callback write errors to stderr without reentering tracing.
+fn report_write_error(result: Result<(), KvpError>) {
+    if let Err(error) = result {
+        eprintln!("Failed to write KVP diagnostic: {error}");
     }
 }
 
@@ -114,7 +77,6 @@ where
         id: &Id,
         ctx: Context<'_, S>,
     ) {
-        let timestamp = Utc::now();
         let started = Instant::now();
         let Some(span) = ctx.span(id) else {
             return;
@@ -123,18 +85,17 @@ where
         attrs.record(&mut fields);
         let event_id = Uuid::new_v4().to_string();
         let name = attrs.metadata().name();
-        let diagnostic = Diagnostic::Start(DiagnosticStart {
-            key: self.writer.key_at(&event_id, name, None, timestamp),
-            payload: fields.payload(attrs.metadata()),
-        });
+        let payload = fields.payload(attrs.metadata());
         span.extensions_mut().insert(SpanState {
-            event_id,
+            event_id: event_id.clone(),
             name,
             started,
             fields,
             saw_error: false,
         });
-        self.deliver(diagnostic);
+        report_write_error(
+            self.writer.emit_start(&event_id, name, payload, None),
+        );
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
@@ -148,7 +109,6 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let timestamp = Utc::now();
         let is_error = *event.metadata().level() == Level::ERROR;
         let enclosing = ctx.event_span(event);
         let name = match &enclosing {
@@ -173,21 +133,16 @@ where
                 return;
             }
         };
-        self.deliver(Diagnostic::Event(DiagnosticEvent {
-            key: self.writer.key_at(
-                &Uuid::new_v4().to_string(),
-                name,
-                None,
-                timestamp,
-            ),
-            payload: fields.payload(event.metadata()),
+        report_write_error(self.writer.emit_event(
+            name,
+            fields.payload(event.metadata()),
+            None,
             result,
-            duration: None,
-        }));
+            None,
+        ));
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        let timestamp = Utc::now();
         let closed_at = Instant::now();
         let Some(span) = ctx.span(&id) else {
             return;
@@ -213,17 +168,14 @@ where
                 Outcome::Success
             })
         };
-        self.deliver(Diagnostic::Finish(DiagnosticFinish {
-            key: self.writer.key_at(
-                &state.event_id,
-                state.name,
-                None,
-                timestamp,
-            ),
-            payload: state.fields.payload(span.metadata()),
+        report_write_error(self.writer.emit_finish(
+            &state.event_id,
+            state.name,
+            state.fields.payload(span.metadata()),
+            None,
             result,
-            duration: closed_at.saturating_duration_since(state.started),
-        }));
+            closed_at.saturating_duration_since(state.started),
+        ));
     }
 }
 
@@ -316,8 +268,9 @@ mod tests {
     use tempfile::TempDir;
     use tracing_subscriber::prelude::*;
 
-    use crate::{
-        DiagnosticReader, Entry, Kind, KvpPool, KvpPoolStore, PoolMode,
+    use libazureinit_kvp::{
+        Diagnostic, DiagnosticFinish, DiagnosticReader, Entry, Kind, KvpPool,
+        KvpPoolStore, PoolMode,
     };
 
     const AGENT: &str = "test/1";
@@ -390,6 +343,45 @@ mod tests {
             matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
                 if event.key.name.starts_with("event ") && event.result.is_none())
         );
+    }
+
+    #[test]
+    fn span_preserves_writer_timestamps_and_measured_duration() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        let subscriber = tracing_subscriber::registry().with(kvp);
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let started = Instant::now();
+        let work = Duration::from_millis(2);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!("timed").in_scope(|| thread::sleep(work));
+        });
+        let elapsed = started.elapsed();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let entries = entries(&store);
+        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
+            entries.as_slice()
+        else {
+            panic!("expected start and finish, got {entries:?}");
+        };
+        for key in [&start.key, &finish.key] {
+            let timestamp =
+                u128::try_from(key.timestamp.timestamp_millis()).unwrap();
+            assert!((before..=after).contains(&timestamp));
+            assert_eq!(key.timestamp.timestamp_subsec_nanos() % 1_000_000, 0);
+        }
+        assert_eq!(start.key.event_id, finish.key.event_id);
+        assert!(finish.duration >= work);
+        assert!(finish.duration <= elapsed);
     }
 
     #[test]
