@@ -33,7 +33,7 @@ pub use reqwest;
 
 /// Run a command, capturing its output and logging it if it fails.
 ///
-/// In the event of a failure, the provided `error_message` is logged at
+/// Command execution errors and unsuccessful exit statuses are logged at
 /// error level.
 ///
 /// <div class="warning">
@@ -50,7 +50,13 @@ pub(crate) fn run(
     let _entered = span.enter();
 
     tracing::debug!(?command, "About to execute system program");
-    let output = command.output()?;
+    let output = command.output().inspect_err(|error| {
+        tracing::error!(
+            program = %program,
+            %error,
+            "Failed to execute system program"
+        );
+    })?;
     let status = output.status;
     tracing::debug!(?status, "System program completed");
 
@@ -77,20 +83,99 @@ pub(crate) fn run(
 #[cfg(test)]
 mod lib_tests {
     use super::*;
-    use std::process::Command;
+    use std::{fs, io::ErrorKind, process::Command};
+    use tempfile::{tempdir, NamedTempFile};
+    use tracing::Level;
+
+    fn run_with_logs(
+        command: Command,
+        level: Level,
+    ) -> (Result<(), error::Error>, String) {
+        let log_file = NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_ansi(false)
+            .with_writer(log_file.reopen().unwrap())
+            .finish();
+        let result =
+            tracing::subscriber::with_default(subscriber, || run(command));
+        let logs = fs::read_to_string(log_file.path()).unwrap();
+        (result, logs)
+    }
 
     #[test]
     fn test_run_success() {
         let cmd = Command::new("true");
-        assert!(run(cmd).is_ok());
+        let (result, logs) = run_with_logs(cmd, Level::INFO);
+        assert!(result.is_ok());
+        assert!(!logs.contains("ERROR"), "{logs}");
     }
 
     #[test]
     fn test_run_failure() {
         let cmd = Command::new("false");
-        let result = run(cmd);
+        let (result, logs) = run_with_logs(cmd, Level::INFO);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, error::Error::SubprocessFailed { .. }));
+
+        let errors = logs
+            .lines()
+            .filter(|line| line.contains("ERROR"))
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{logs}");
+        assert!(errors[0].contains("Command 'false' failed"), "{logs}");
+    }
+
+    #[test]
+    fn test_run_launch_errors_preserve_context_and_io_error() {
+        for level in [Level::INFO, Level::ERROR] {
+            for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+                let dir = tempdir().unwrap();
+                let program = dir.path().join("program");
+                if kind == ErrorKind::PermissionDenied {
+                    fs::write(&program, "not executable").unwrap();
+                }
+
+                let expected_error =
+                    Command::new(&program).output().unwrap_err();
+                assert_eq!(expected_error.kind(), kind);
+
+                let (result, logs) =
+                    run_with_logs(Command::new(&program), level);
+                let io_error = match result.unwrap_err() {
+                    error::Error::Io(error) => error,
+                    error => panic!("Expected an I/O error, got {error:?}"),
+                };
+                assert_eq!(io_error.kind(), kind);
+                assert_eq!(
+                    io_error.raw_os_error(),
+                    expected_error.raw_os_error()
+                );
+                assert_eq!(io_error.to_string(), expected_error.to_string());
+
+                let errors = logs
+                    .lines()
+                    .filter(|line| line.contains("ERROR"))
+                    .collect::<Vec<_>>();
+                assert_eq!(errors.len(), 1, "{level} {kind:?}:\n{logs}");
+                let event = errors[0];
+                assert!(
+                    event.contains("Failed to execute system program"),
+                    "{event}"
+                );
+                assert!(
+                    event.contains(&format!("program={}", program.display())),
+                    "{event}"
+                );
+                assert!(
+                    event.contains(&format!("error={expected_error}")),
+                    "{event}"
+                );
+                if level == Level::INFO {
+                    assert!(event.contains("subprocess"), "{event}");
+                }
+            }
+        }
     }
 }
