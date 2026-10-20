@@ -416,7 +416,7 @@ mod tests {
 
         let mut config = config::Config::default();
         config.imds.retry_interval_secs = 0.01;
-        config.imds.total_retry_timeout_secs = 0.5;
+        config.imds.total_retry_timeout_secs = 0.05;
 
         let serverlistener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = serverlistener.local_addr().unwrap();
