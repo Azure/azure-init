@@ -4,7 +4,7 @@ use assert_cmd::prelude::*;
 use predicates::prelude::*;
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use tempfile::tempdir;
 
 // Assert help text includes the --groups flag
@@ -87,6 +87,9 @@ fn setup_clean_test() -> Result<
 
         [azure_init_log_path]
         path = "{}"
+
+        [telemetry]
+        kvp_diagnostics = false
         "#,
         data_dir.display(),
         log_file.display()
@@ -151,6 +154,65 @@ fn clean_removes_provision_and_log_files_with_log_arg(
         !log_file.exists(),
         "Expected azure-init.log file to be deleted"
     );
+
+    Ok(())
+}
+
+#[test]
+fn clean_reports_data_directory_errors(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for expected_kind in [ErrorKind::NotFound, ErrorKind::NotADirectory] {
+        let (_temp_dir, data_dir, log_file, config_path) = setup_clean_test()?;
+        fs::remove_file(data_dir.join("vm-id.provisioned"))?;
+        fs::remove_dir(&data_dir)?;
+        if expected_kind == ErrorKind::NotADirectory {
+            fs::write(&data_dir, "not a directory")?;
+        }
+
+        let expected_error = fs::read_dir(&data_dir).unwrap_err();
+        assert_eq!(expected_error.kind(), expected_kind);
+        let expected_error = expected_error.to_string();
+
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
+        cmd.env_remove("AZURE_INIT_LOG")
+            .env_remove("AZURE_INIT_KVP_FILTER")
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "clean",
+                "--logs",
+            ]);
+
+        let assertion = cmd.assert().code(1);
+        let stderr = std::str::from_utf8(&assertion.get_output().stderr)?;
+        let log_contents = fs::read_to_string(&log_file)?;
+        for contents in [stderr, log_contents.as_str()] {
+            let mut errors =
+                contents.lines().filter(|line| line.contains("ERROR"));
+            let error = errors.next().unwrap_or_else(|| {
+                panic!(
+                    "Missing cleanup error for {expected_kind:?}:\n{contents}"
+                )
+            });
+            assert!(
+                error.contains("Failed to read provisioning state directory"),
+                "{error}"
+            );
+            assert!(error.contains(data_dir.to_str().unwrap()), "{error}");
+            assert!(error.contains(&expected_error), "{error}");
+            assert!(
+                errors.next().is_none(),
+                "Duplicate cleanup errors for {expected_kind:?}:\n{contents}"
+            );
+        }
+
+        assert!(log_contents.contains("fake log line"));
+        if expected_kind == ErrorKind::NotADirectory {
+            assert_eq!(fs::read_to_string(&data_dir)?, "not a directory");
+        } else {
+            assert!(!data_dir.exists());
+        }
+    }
 
     Ok(())
 }
