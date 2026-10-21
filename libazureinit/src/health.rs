@@ -259,6 +259,7 @@ mod tests {
     use crate::config::{Config, Wireserver};
     use crate::unittest::{get_http_response_payload, serve_requests};
     use reqwest::StatusCode;
+    use rstest::rstest;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
@@ -274,14 +275,20 @@ mod tests {
     }
 
     /// Verifies that `_report` times out after multiple attempts
-    /// when the server consistently responds with a retryable error (HTTP 503).
+    /// for retryable HTTP statuses 400, 404, 410, 429, 500, and 503.
+    #[rstest]
+    #[case::bad_request(StatusCode::BAD_REQUEST)]
+    #[case::not_found(StatusCode::NOT_FOUND)]
+    #[case::gone(StatusCode::GONE)]
+    #[case::too_many_requests(StatusCode::TOO_MANY_REQUESTS)]
+    #[case::internal_server_error(StatusCode::INTERNAL_SERVER_ERROR)]
+    #[case::service_unavailable(StatusCode::SERVICE_UNAVAILABLE)]
     #[tokio::test]
-    async fn test_report_all_retryable() {
+    async fn test_report_all_retryable(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mock_url = format!("http://{}", addr);
-        let payload =
-            get_http_response_payload(&StatusCode::SERVICE_UNAVAILABLE, "");
+        let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
         let server =
             tokio::spawn(serve_requests(listener, payload, cancel.clone()));
@@ -297,9 +304,12 @@ mod tests {
         let requests = server.await.unwrap();
         assert!(
             matches!(&result, Err(Error::Timeout)),
-            "expected a timeout after retrying HTTP 503, got {result:?}"
+            "expected a timeout after retrying HTTP {status}, got {result:?}"
         );
-        assert!(requests >= 2, "HTTP 503 should cause multiple attempts");
+        assert!(
+            requests >= 2,
+            "HTTP {status} should cause multiple attempts, got {requests}"
+        );
     }
 
     /// Verifies that `_report` succeeds immediately
@@ -328,14 +338,18 @@ mod tests {
         }
     }
 
-    /// Verifies that `_report` fails immediately
-    /// when the server responds with a non-retryable error (e.g. HTTP 403).
+    /// Verifies that `_report` fails after exactly one request
+    /// for non-retryable HTTP statuses 401, 403, and 405.
+    #[rstest]
+    #[case::unauthorized(StatusCode::UNAUTHORIZED)]
+    #[case::forbidden(StatusCode::FORBIDDEN)]
+    #[case::method_not_allowed(StatusCode::METHOD_NOT_ALLOWED)]
     #[tokio::test]
-    async fn test_report_unexpected_code() {
+    async fn test_report_non_retryable_codes(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mock_url = format!("http://{}", addr);
-        let payload = get_http_response_payload(&StatusCode::FORBIDDEN, "");
+        let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
         let server =
             tokio::spawn(serve_requests(listener, payload, cancel.clone()));
@@ -343,20 +357,19 @@ mod tests {
         let cfg = fast_config(mock_url);
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let err = Error::UnhandledError {
-            details: "test_report_unexpected_code".to_string(),
+            details: "test_report_non_retryable_codes".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let result = report_failure(report_str, &cfg).await;
         cancel.cancel();
-        assert_eq!(server.await.unwrap(), 1);
-        let err = result.expect_err("403 Forbidden should fail immediately");
+        let requests = server.await.unwrap();
+        assert_eq!(requests, 1, "HTTP {status} should not be retried");
         assert!(
             matches!(
-                &err,
-                Error::Http(error)
-                    if error.status() == Some(StatusCode::FORBIDDEN)
+                &result,
+                Err(Error::Http(error)) if error.status() == Some(status)
             ),
-            "expected HTTP 403, got {err:?}"
+            "expected HTTP {status}, got {result:?}"
         );
     }
 

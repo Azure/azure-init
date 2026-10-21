@@ -47,6 +47,7 @@ whoami = "2"
 anyhow = "1.0.81"
 gag = "1.0.0"
 serial_test = "3.0.0"
+rstest = { version = "0.27", default-features = false }
 
 [lib]
 name = "libazureinit"
