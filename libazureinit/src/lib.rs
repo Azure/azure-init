@@ -34,7 +34,7 @@ pub use reqwest;
 /// Run a command, capturing its output and logging it if it fails.
 ///
 /// Command execution errors and unsuccessful exit statuses are logged at
-/// error level.
+/// debug level and returned to the caller.
 ///
 /// <div class="warning">
 ///
@@ -51,7 +51,7 @@ pub(crate) fn run(
 
     tracing::debug!(?command, "About to execute system program");
     let output = command.output().inspect_err(|error| {
-        tracing::error!(
+        tracing::debug!(
             program = %program,
             %error,
             "Failed to execute system program"
@@ -63,7 +63,7 @@ pub(crate) fn run(
     if !status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        tracing::error!(
+        tracing::debug!(
             ?status,
             ?command,
             ?stdout,
@@ -106,30 +106,66 @@ mod lib_tests {
     #[test]
     fn test_run_success() {
         let cmd = Command::new("true");
-        let (result, logs) = run_with_logs(cmd, Level::INFO);
+        let (result, logs) = run_with_logs(cmd, Level::DEBUG);
         assert!(result.is_ok());
+        assert!(!logs.contains("WARN"), "{logs}");
         assert!(!logs.contains("ERROR"), "{logs}");
+        assert!(!logs.contains("failed"), "{logs}");
     }
 
     #[test]
     fn test_run_failure() {
-        let cmd = Command::new("false");
-        let (result, logs) = run_with_logs(cmd, Level::INFO);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, error::Error::SubprocessFailed { .. }));
+        for level in [Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
+            let cmd = Command::new("false");
+            let (result, logs) = run_with_logs(cmd, level);
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    error::Error::SubprocessFailed { ref command, status }
+                        if command.contains("false") && status.code() == Some(1)
+                ),
+                "{err:?}"
+            );
 
-        let errors = logs
-            .lines()
-            .filter(|line| line.contains("ERROR"))
-            .collect::<Vec<_>>();
-        assert_eq!(errors.len(), 1, "{logs}");
-        assert!(errors[0].contains("Command 'false' failed"), "{logs}");
+            if level != Level::DEBUG {
+                assert!(logs.is_empty(), "{level}:\n{logs}");
+                continue;
+            }
+
+            let diagnostics = logs
+                .lines()
+                .filter(|line| line.contains("Command 'false' failed"))
+                .collect::<Vec<_>>();
+            assert_eq!(diagnostics.len(), 1, "{logs}");
+            assert!(diagnostics[0].contains("DEBUG"), "{logs}");
+            assert!(diagnostics[0].contains("command=\"false\""), "{logs}");
+        }
+    }
+
+    #[test]
+    fn test_run_failure_logs_output_at_debug() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            "printf 'subprocess stdout'; printf 'subprocess stderr' >&2; exit 7",
+        );
+        let (result, logs) = run_with_logs(command, Level::DEBUG);
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                error::Error::SubprocessFailed { status, .. }
+                    if status.code() == Some(7)
+            ),
+            "{err:?}"
+        );
+        assert!(logs.contains("stdout=\"subprocess stdout\""), "{logs}");
+        assert!(logs.contains("stderr=\"subprocess stderr\""), "{logs}");
     }
 
     #[test]
     fn test_run_launch_errors_preserve_context_and_io_error() {
-        for level in [Level::INFO, Level::ERROR] {
+        for level in [Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
             for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
                 let dir = tempdir().unwrap();
                 let program = dir.path().join("program");
@@ -154,16 +190,20 @@ mod lib_tests {
                 );
                 assert_eq!(io_error.to_string(), expected_error.to_string());
 
-                let errors = logs
+                if level != Level::DEBUG {
+                    assert!(logs.is_empty(), "{level} {kind:?}:\n{logs}");
+                    continue;
+                }
+
+                let diagnostics = logs
                     .lines()
-                    .filter(|line| line.contains("ERROR"))
+                    .filter(|line| {
+                        line.contains("Failed to execute system program")
+                    })
                     .collect::<Vec<_>>();
-                assert_eq!(errors.len(), 1, "{level} {kind:?}:\n{logs}");
-                let event = errors[0];
-                assert!(
-                    event.contains("Failed to execute system program"),
-                    "{event}"
-                );
+                assert_eq!(diagnostics.len(), 1, "{kind:?}:\n{logs}");
+                let event = diagnostics[0];
+                assert!(event.contains("DEBUG"), "{event}");
                 assert!(
                     event.contains(&format!("program={}", program.display())),
                     "{event}"
@@ -172,9 +212,7 @@ mod lib_tests {
                     event.contains(&format!("error={expected_error}")),
                     "{event}"
                 );
-                if level == Level::INFO {
-                    assert!(event.contains("subprocess"), "{event}");
-                }
+                assert!(event.contains("subprocess"), "{event}");
             }
         }
     }
