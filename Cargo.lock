@@ -866,6 +866,7 @@ dependencies = [
  "opentelemetry_sdk",
  "regex",
  "reqwest",
+ "rstest",
  "rustix",
  "serde",
  "serde-xml-rs",
