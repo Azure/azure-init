@@ -64,7 +64,7 @@ RUN mkdir -p /etc/ssh
 # Copy source code and build azure-init
 COPY . /build
 WORKDIR /build
-RUN cargo build --verbose
+RUN cargo build --locked --verbose
 RUN cp target/debug/azure-init /usr/bin/azure-init && chmod +x /usr/bin/azure-init
 
 WORKDIR /
