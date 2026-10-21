@@ -103,6 +103,19 @@ mod lib_tests {
         (result, logs)
     }
 
+    fn expect_io_error(error: error::Error) -> std::io::Error {
+        match error {
+            error::Error::Io(error) => error,
+            error => panic!("Expected an I/O error, got {error:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected an I/O error, got Timeout")]
+    fn test_expect_io_error_rejects_non_io_error() {
+        expect_io_error(error::Error::Timeout);
+    }
+
     #[test]
     fn test_run_success() {
         let cmd = Command::new("true");
@@ -179,10 +192,7 @@ mod lib_tests {
 
                 let (result, logs) =
                     run_with_logs(Command::new(&program), level);
-                let io_error = match result.unwrap_err() {
-                    error::Error::Io(error) => error,
-                    error => panic!("Expected an I/O error, got {error:?}"),
-                };
+                let io_error = expect_io_error(result.unwrap_err());
                 assert_eq!(io_error.kind(), kind);
                 assert_eq!(
                     io_error.raw_os_error(),
