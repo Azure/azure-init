@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use uuid::Uuid;
 
 use super::diagnostic::{
@@ -192,8 +192,9 @@ impl DiagnosticWriter {
         payload: impl Into<DiagnosticPayload>,
         encoding: Option<Encoding>,
     ) -> Result<(), KvpError> {
+        let timestamp = Utc::now();
         self.emit(Diagnostic::Start(DiagnosticStart {
-            key: self.key(event_id, name, encoding),
+            key: self.key_at(event_id, name, encoding, timestamp),
             payload: payload.into(),
         }))
     }
@@ -211,8 +212,9 @@ impl DiagnosticWriter {
         result: Outcome,
         duration: Duration,
     ) -> Result<(), KvpError> {
+        let timestamp = Utc::now();
         self.emit(Diagnostic::Finish(DiagnosticFinish {
-            key: self.key(event_id, name, encoding),
+            key: self.key_at(event_id, name, encoding, timestamp),
             payload: payload.into(),
             result,
             duration,
@@ -230,26 +232,34 @@ impl DiagnosticWriter {
         result: Option<Outcome>,
         duration: Option<Duration>,
     ) -> Result<(), KvpError> {
+        let timestamp = Utc::now();
         self.emit(Diagnostic::Event(DiagnosticEvent {
-            key: self.key(&Uuid::new_v4().to_string(), name, encoding),
+            key: self.key_at(
+                &Uuid::new_v4().to_string(),
+                name,
+                encoding,
+                timestamp,
+            ),
             payload: payload.into(),
             result,
             duration,
         }))
     }
 
-    fn key(
+    /// Builds producer metadata without I/O at the caller's capture time.
+    fn key_at(
         &self,
         event_id: &str,
         name: &str,
         encoding: Option<Encoding>,
+        timestamp: DateTime<Utc>,
     ) -> DiagnosticKey {
         DiagnosticKey {
             agent: self.agent.clone(),
             vm_id: Some(self.vm_id.clone()),
             name: name.to_owned(),
             event_id: event_id.to_owned(),
-            timestamp: Utc::now(),
+            timestamp,
             encoding,
         }
     }
@@ -517,6 +527,34 @@ mod tests {
             .unwrap();
         assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
         assert_eq!(pool.dump().unwrap().len(), 4);
+    }
+
+    #[rstest]
+    #[case::plain(None)]
+    #[case::zlib(Some(Encoding::ZlibB64))]
+    #[case::gzip(Some(Encoding::GzB64))]
+    fn key_at_preserves_metadata_and_capture_time_without_io(
+        #[case] encoding: Option<Encoding>,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let (writer, ops) = observed_writer(&dir);
+        let timestamp = DateTime::parse_from_rfc3339(TIMESTAMP)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            writer.key_at(EVENT_ID, "test", encoding.clone(), timestamp),
+            DiagnosticKey {
+                agent: AGENT.into(),
+                vm_id: Some(VM_ID.into()),
+                name: "test".into(),
+                event_id: EVENT_ID.into(),
+                timestamp,
+                encoding,
+            }
+        );
+        assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
+        assert!(!writer.store.path().exists());
     }
 
     #[test]
