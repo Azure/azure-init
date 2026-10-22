@@ -191,7 +191,7 @@ pub(crate) mod tests {
             header::HeaderMap::new(),
             Duration::from_millis(500),
             Duration::from_millis(5),
-            Duration::from_millis(100),
+            Duration::from_secs(1),
             format!("http://{:}:{:}/", addr.ip(), addr.port()).as_str(),
         )
         .await;

@@ -34,9 +34,9 @@ pub(crate) struct SshUser {
     pub gid: u32,
 }
 
-impl From<&users::User> for SshUser {
-    fn from(user: &users::User) -> Self {
-        use users::os::unix::UserExt;
+impl From<&uzers::User> for SshUser {
+    fn from(user: &uzers::User) -> Self {
+        use uzers::os::unix::UserExt;
         SshUser {
             home_dir: user.home_dir().to_path_buf(),
             uid: user.uid(),
@@ -372,8 +372,8 @@ mod tests {
         let home_dir =
             tempfile::TempDir::new().expect("Failed to create temp directory");
 
-        let current_user = users::get_current_uid();
-        let current_group = users::get_current_gid();
+        let current_user = uzers::get_current_uid();
+        let current_group = uzers::get_current_gid();
 
         let user = SshUser {
             home_dir: home_dir.path().to_path_buf(),
@@ -677,10 +677,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ssh_user_from_users_user() {
-        use users::os::unix::UserExt;
-        let current_uid = users::get_current_uid();
-        let user = users::get_user_by_uid(current_uid)
+    fn test_ssh_user_from_uzers_user() {
+        use uzers::os::unix::UserExt;
+        let current_uid = uzers::get_current_uid();
+        let user = uzers::get_user_by_uid(current_uid)
             .expect("Current user must exist");
         let ssh_user = SshUser::from(&user);
         assert_eq!(ssh_user.uid, user.uid());

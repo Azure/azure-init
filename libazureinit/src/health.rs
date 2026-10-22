@@ -259,141 +259,175 @@ mod tests {
     use crate::config::{Config, Wireserver};
     use crate::unittest::{get_http_response_payload, serve_requests};
     use reqwest::StatusCode;
+    use rstest::rstest;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    fn fast_config(mock_url: Option<String>) -> Config {
+    fn fast_config(mock_url: String) -> Config {
         let mut cfg = Config::default();
         cfg.wireserver = Wireserver {
-            connection_timeout_secs: 0.01,
-            read_timeout_secs: 0.01,
-            total_retry_timeout_secs: 0.05,
-            health_endpoint: mock_url.unwrap_or(cfg.wireserver.health_endpoint),
+            connection_timeout_secs: 0.1,
+            read_timeout_secs: 0.1,
+            total_retry_timeout_secs: 0.5,
+            health_endpoint: mock_url,
         };
         cfg
     }
 
     /// Verifies that `_report` times out after multiple attempts
-    /// when the server consistently responds with a retryable error (HTTP 503).
+    /// for retryable HTTP statuses 400, 404, 410, 429, 500, and 503.
+    #[rstest]
+    #[case::bad_request(StatusCode::BAD_REQUEST)]
+    #[case::not_found(StatusCode::NOT_FOUND)]
+    #[case::gone(StatusCode::GONE)]
+    #[case::too_many_requests(StatusCode::TOO_MANY_REQUESTS)]
+    #[case::internal_server_error(StatusCode::INTERNAL_SERVER_ERROR)]
+    #[case::service_unavailable(StatusCode::SERVICE_UNAVAILABLE)]
     #[tokio::test]
-    async fn test_report_all_retryable() {
+    async fn test_report_all_retryable(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mock_url = format!("http://{}", addr);
-        let payload =
-            get_http_response_payload(&StatusCode::SERVICE_UNAVAILABLE, "");
+        let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
-        let _server = tokio::spawn(serve_requests(
-            listener,
-            payload.clone(),
-            cancel.clone(),
-        ));
+        let server =
+            tokio::spawn(serve_requests(listener, payload, cancel.clone()));
 
-        let cfg = fast_config(Some(mock_url));
+        let cfg = fast_config(mock_url);
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let err = Error::UnhandledError {
             details: "test_failure_retryable".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let result = report_failure(report_str, &cfg).await;
-        assert!(result.is_err(), "should have timed out after retrying");
         cancel.cancel();
+        let requests = server.await.unwrap();
+        assert!(
+            matches!(&result, Err(Error::Timeout)),
+            "expected a timeout after retrying HTTP {status}, got {result:?}"
+        );
+        assert!(
+            requests >= 2,
+            "HTTP {status} should cause multiple attempts, got {requests}"
+        );
     }
 
     /// Verifies that `_report` succeeds immediately
-    /// when the server responds with HTTP 201 Created on the first attempt.
+    /// when the server responds with HTTP 200 OK or 201 Created on the first attempt.
     #[tokio::test]
     async fn test_report_immediate_success() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let mock_url = format!("http://{}", addr);
-        let payload = get_http_response_payload(&StatusCode::CREATED, "");
-        let cancel = CancellationToken::new();
-        let _server = tokio::spawn(serve_requests(
-            listener,
-            payload.clone(),
-            cancel.clone(),
-        ));
+        for status in [StatusCode::OK, StatusCode::CREATED] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let mock_url = format!("http://{}", addr);
+            let payload = get_http_response_payload(&status, "");
+            let cancel = CancellationToken::new();
+            let server =
+                tokio::spawn(serve_requests(listener, payload, cancel.clone()));
 
-        let cfg = fast_config(Some(mock_url));
-        let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let result = report_ready(&cfg, test_vm_id, None).await;
-        assert!(result.is_ok(), "201 Created should be accepted as success");
+            let cfg = fast_config(mock_url);
+            let test_vm_id = "00000000-0000-0000-0000-000000000000";
+            let result = report_ready(&cfg, test_vm_id, None).await;
 
-        cancel.cancel();
+            cancel.cancel();
+            assert_eq!(server.await.unwrap(), 1);
+            assert!(
+                result.is_ok(),
+                "{status} should be accepted as success, got {result:?}"
+            );
+        }
     }
 
-    /// Verifies that `_report` fails immediately
-    /// when the server responds with a non-retryable error (e.g. HTTP 400).
+    /// Verifies that `_report` fails after exactly one request
+    /// for non-retryable HTTP statuses 401, 403, and 405.
+    #[rstest]
+    #[case::unauthorized(StatusCode::UNAUTHORIZED)]
+    #[case::forbidden(StatusCode::FORBIDDEN)]
+    #[case::method_not_allowed(StatusCode::METHOD_NOT_ALLOWED)]
     #[tokio::test]
-    async fn test_report_unexpected_code() {
+    async fn test_report_non_retryable_codes(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mock_url = format!("http://{}", addr);
-        let payload = get_http_response_payload(&StatusCode::BAD_REQUEST, "");
+        let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
-        let _server = tokio::spawn(serve_requests(
-            listener,
-            payload.clone(),
-            cancel.clone(),
-        ));
+        let server =
+            tokio::spawn(serve_requests(listener, payload, cancel.clone()));
 
-        let cfg = fast_config(Some(mock_url));
+        let cfg = fast_config(mock_url);
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
         let err = Error::UnhandledError {
-            details: "test_report_unexpected_code".to_string(),
+            details: "test_report_non_retryable_codes".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let result = report_failure(report_str, &cfg).await;
-        assert!(result.is_err(), "400 Bad Request should fail immediately");
         cancel.cancel();
+        let requests = server.await.unwrap();
+        assert_eq!(requests, 1, "HTTP {status} should not be retried");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::Http(error)) if error.status() == Some(status)
+            ),
+            "expected HTTP {status}, got {result:?}"
+        );
     }
 
-    /// “InProgress” should be treated as success on 200 or 201 immediately.
+    /// Reporting in progress should succeed on HTTP 200 or 201 immediately.
     #[tokio::test]
     async fn test_report_in_progress_immediate_success() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let mock_url = format!("http://{}", addr);
-        let payload = get_http_response_payload(&StatusCode::CREATED, "");
-        let cancel = CancellationToken::new();
-        let _server =
-            tokio::spawn(serve_requests(listener, payload, cancel.clone()));
+        for status in [StatusCode::OK, StatusCode::CREATED] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let mock_url = format!("http://{}", addr);
+            let payload = get_http_response_payload(&status, "");
+            let cancel = CancellationToken::new();
+            let server =
+                tokio::spawn(serve_requests(listener, payload, cancel.clone()));
 
-        let cfg = fast_config(Some(mock_url));
-        let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let res = report_in_progress(&cfg, test_vm_id).await;
-        let ok = res.is_ok();
-        assert!(ok, "201 Created (or 200 OK) should be accepted as success");
+            let cfg = fast_config(mock_url);
+            let test_vm_id = "00000000-0000-0000-0000-000000000000";
+            let result = report_in_progress(&cfg, test_vm_id).await;
 
-        cancel.cancel();
+            cancel.cancel();
+            assert_eq!(server.await.unwrap(), 1);
+            assert!(
+                result.is_ok(),
+                "{status} should be accepted as success, got {result:?}"
+            );
+        }
     }
 
     /// The public wrappers at least compile and call into `_report`.
-    /// Here we point at a “dead” endpoint (no test server), and with tiny timeouts
+    /// Here we point at an unresponsive loopback endpoint, and with tiny timeouts
     /// we expect both `report_ready` and `report_failure` to error out fast.
     #[tokio::test]
     async fn test_public_wrappers_error_on_dead_endpoint() {
-        let mut cfg = fast_config(None);
-        // Shrink the wireserver timeouts so we fail immediately
-        cfg.wireserver = crate::config::Wireserver {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut cfg = fast_config(format!("http://{addr}"));
+        cfg.wireserver = Wireserver {
             connection_timeout_secs: 0.01,
             read_timeout_secs: 0.01,
             total_retry_timeout_secs: 0.01,
-            ..Default::default()
+            ..cfg.wireserver
         };
 
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        // no override == real health_endpoint, which we can't reach in tests
         let r1 = report_ready(&cfg, test_vm_id, None).await;
         let err = Error::UnhandledError {
             details: "no config".to_string(),
         };
         let report_str = err.as_encoded_report(test_vm_id);
         let r2 = report_failure(report_str, &cfg).await;
-        let failed = r1.is_err();
-        assert!(failed, "report_ready should fail against a dead server");
-        assert!(r2.is_err(), "report_failure should also fail");
+        assert!(
+            matches!(&r1, Err(Error::Timeout)),
+            "report_ready should time out against an unresponsive server, got {r1:?}"
+        );
+        assert!(
+            matches!(&r2, Err(Error::Timeout)),
+            "report_failure should time out against an unresponsive server, got {r2:?}"
+        );
     }
 
     // Verifies encoded_success_report() creates the correct

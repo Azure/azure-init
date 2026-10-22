@@ -11,6 +11,9 @@ instructions provided by the bot. You will only need to do this once across all 
 
 For each pull request, CI automatically runs unit tests by running `cargo test`, and also checks for coding styles and lints by running `cargo fmt` and `cargo clippy`. So please make sure that the all steps pass with the changes you made, `test`, `fmt`, and `clippy`, to avoid making CI fail with such issues.
 
+The minimum supported Rust version (MSRV) is defined in `workspace.package.rust-version`
+in [Cargo.toml](Cargo.toml). All workspace packages inherit it, and the CI and Clippy read it for their `msrv` jobs, in addition to separate `stable` jobs. Update that single field when raising the MSRV. The dependency audit runs on stable Rust.
+
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
 or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
