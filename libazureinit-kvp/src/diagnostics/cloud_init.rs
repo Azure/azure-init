@@ -171,7 +171,7 @@ fn diagnostic(
         "finish" => {
             let result = match metadata.get("result").and_then(Value::as_str) {
                 Some("SUCCESS") => Outcome::Success,
-                Some("FAIL") => Outcome::Failure,
+                Some("FAIL") => Outcome::Fail,
                 _ => return Err(DecodeError::Malformed),
             };
             let duration = metadata
@@ -421,7 +421,7 @@ mod tests {
             entries.as_slice(),
             [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))]
                 if start.key.event_id == finish.key.event_id
-                    && finish.result == Outcome::Failure
+                    && finish.result == Outcome::Fail
                     && finish.duration == Duration::from_micros(123_400)
         ));
     }
