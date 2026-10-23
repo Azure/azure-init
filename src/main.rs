@@ -1,5 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+mod logging;
+
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -10,9 +12,7 @@ use libazureinit::{
     get_vm_id,
     health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
-    is_provisioning_complete,
-    logging::setup_layers,
-    mark_provisioning_complete,
+    is_provisioning_complete, mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
     Provision, User,
@@ -20,7 +20,6 @@ use libazureinit::{
 use std::process::ExitCode;
 use std::time::Duration;
 use sysinfo::System;
-use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
@@ -271,8 +270,6 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let graceful_shutdown = CancellationToken::new();
-
     let temp_layer = tracing_subscriber::fmt::layer()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
         .with_writer(std::io::stderr)
@@ -286,17 +283,17 @@ async fn main() -> ExitCode {
     let setup_result =
         tracing::subscriber::with_default(temp_subscriber, || {
             let config = Config::load(opts.config.clone())?;
-            let (subscriber, rx) =
-                setup_layers(&vm_id, &config, graceful_shutdown.clone())?;
+            let logging::LoggingSetup { subscriber } =
+                logging::setup_layers(&vm_id, &config);
             if let Err(e) = tracing::subscriber::set_global_default(subscriber)
             {
                 eprintln!("Failed to set global default subscriber: {e}");
             }
-            Ok::<_, anyhow::Error>((config, rx))
+            Ok::<_, anyhow::Error>(config)
         });
 
-    let (config, kvp_completion_rx) = match setup_result {
-        Ok((config, rx)) => (config, rx),
+    let config = match setup_result {
+        Ok(config) => config,
         Err(error) => {
             eprintln!("Failed to load configuration: {error:?}");
             eprintln!("Example configuration:\n\n{}", Config::default());
@@ -394,24 +391,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    if let Some(handle) = kvp_completion_rx {
-        graceful_shutdown.cancel();
-
-        match handle.await {
-            Ok(Ok(_)) => {
-                tracing::info!("KVP writer task finished successfully.");
-            }
-            Ok(Err(io_err)) => {
-                tracing::warn!(
-                    "KVP writer task finished with an IO error: {:?}",
-                    io_err
-                );
-            }
-            Err(join_err) => {
-                tracing::warn!("KVP writer task panicked: {:?}", join_err);
-            }
-        }
-    }
     exit_code
 }
 
