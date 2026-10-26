@@ -39,7 +39,7 @@
 //!     "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
 //! )?;
 //! writer.emit_event(
-//!     "imds", "metadata retrieved", None, Some(Outcome::Ok), None,
+//!     "imds", "metadata retrieved", None, Some(Outcome::Success), None,
 //! )?;
 //! writer.emit_event(
 //!     "os:release", std::fs::read("/etc/os-release")?,
