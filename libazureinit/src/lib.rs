@@ -31,10 +31,10 @@ mod unittest;
 // Re-export as the Client is used in our API.
 pub use reqwest;
 
-/// Run a command, capturing its output and logging it if it fails.
+/// Run a command, capturing its output.
 ///
-/// Command execution errors and unsuccessful exit statuses are logged at
-/// debug level and returned to the caller.
+/// Command execution errors and exit statuses are logged at debug level.
+/// Execution errors and unsuccessful exit statuses are returned to the caller.
 ///
 /// <div class="warning">
 ///
@@ -61,16 +61,6 @@ pub(crate) fn run(
     tracing::debug!(?status, "System program completed");
 
     if !status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        tracing::debug!(
-            ?status,
-            ?command,
-            ?stdout,
-            ?stderr,
-            "Command '{}' failed",
-            program
-        );
         return Err(error::Error::SubprocessFailed {
             command: format!("{command:?}"),
             status,
@@ -140,6 +130,7 @@ mod lib_tests {
                 ),
                 "{err:?}"
             );
+            assert!(!logs.contains("Command 'false' failed"), "{logs}");
 
             if level != Level::DEBUG {
                 assert!(logs.is_empty(), "{level}:\n{logs}");
@@ -148,32 +139,40 @@ mod lib_tests {
 
             let diagnostics = logs
                 .lines()
-                .filter(|line| line.contains("Command 'false' failed"))
+                .filter(|line| line.contains("System program completed"))
                 .collect::<Vec<_>>();
             assert_eq!(diagnostics.len(), 1, "{logs}");
             assert!(diagnostics[0].contains("DEBUG"), "{logs}");
-            assert!(diagnostics[0].contains("command=\"false\""), "{logs}");
+            assert!(logs.contains("command=\"false\""), "{logs}");
         }
     }
 
     #[test]
-    fn test_run_failure_logs_output_at_debug() {
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(
+    fn test_run_failure_does_not_log_output() {
+        let script = NamedTempFile::new().unwrap();
+        fs::write(
+            script.path(),
             "printf 'subprocess stdout'; printf 'subprocess stderr' >&2; exit 7",
-        );
-        let (result, logs) = run_with_logs(command, Level::DEBUG);
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                error::Error::SubprocessFailed { status, .. }
-                    if status.code() == Some(7)
-            ),
-            "{err:?}"
-        );
-        assert!(logs.contains("stdout=\"subprocess stdout\""), "{logs}");
-        assert!(logs.contains("stderr=\"subprocess stderr\""), "{logs}");
+        )
+        .unwrap();
+
+        for level in [Level::TRACE, Level::DEBUG] {
+            let mut command = Command::new("sh");
+            command.arg(script.path());
+            let (result, logs) = run_with_logs(command, level);
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    error::Error::SubprocessFailed { status, .. }
+                        if status.code() == Some(7)
+                ),
+                "{err:?}"
+            );
+            assert!(logs.contains("System program completed"), "{logs}");
+            assert!(!logs.contains("subprocess stdout"), "{logs}");
+            assert!(!logs.contains("subprocess stderr"), "{logs}");
+        }
     }
 
     #[test]
