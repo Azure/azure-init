@@ -4,7 +4,7 @@ use assert_cmd::prelude::*;
 use predicates::prelude::*;
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use tempfile::tempdir;
 
 // Assert help text includes the --groups flag
@@ -154,6 +154,105 @@ fn clean_removes_provision_and_log_files_with_log_arg(
         !log_file.exists(),
         "Expected azure-init.log file to be deleted"
     );
+
+    Ok(())
+}
+
+#[test]
+fn clean_succeeds_without_provisioning_state(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for missing_directory in [false, true] {
+        for logs in [false, true] {
+            let (_temp_dir, data_dir, log_file, config_path) =
+                setup_clean_test()?;
+            fs::remove_file(data_dir.join("vm-id.provisioned"))?;
+            if missing_directory {
+                fs::remove_dir(&data_dir)?;
+            }
+
+            let mut cmd =
+                Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
+            cmd.env("AZURE_INIT_LOG", "info")
+                .env_remove("AZURE_INIT_KVP_FILTER")
+                .args(["--config", config_path.to_str().unwrap(), "clean"]);
+            if logs {
+                cmd.arg("--logs");
+            }
+
+            let assertion = cmd.assert().success();
+            let stderr = std::str::from_utf8(&assertion.get_output().stderr)?;
+            let expected_message = if missing_directory {
+                "No provisioning state directory found; nothing to clean"
+            } else {
+                "No provisioning marker files (*.provisioned) found in"
+            };
+            let events = stderr
+                .lines()
+                .filter(|line| line.contains(expected_message))
+                .collect::<Vec<_>>();
+            assert_eq!(events.len(), 1, "{stderr}");
+            assert!(events[0].contains("INFO"), "{stderr}");
+            assert!(events[0].contains(data_dir.to_str().unwrap()), "{stderr}");
+            assert!(!stderr.contains("ERROR"), "{stderr}");
+            assert_eq!(data_dir.exists(), !missing_directory);
+            if !missing_directory {
+                assert!(fs::read_dir(&data_dir)?.next().is_none());
+            }
+
+            if logs {
+                assert!(!log_file.exists());
+            } else {
+                let log_contents = fs::read_to_string(&log_file)?;
+                assert!(log_contents.contains("fake log line"));
+                assert!(
+                    log_contents.contains(expected_message),
+                    "{log_contents}"
+                );
+                assert!(!log_contents.contains("ERROR"), "{log_contents}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn clean_reports_data_directory_errors(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_temp_dir, data_dir, log_file, config_path) = setup_clean_test()?;
+    fs::remove_file(data_dir.join("vm-id.provisioned"))?;
+    fs::remove_dir(&data_dir)?;
+    fs::write(&data_dir, "not a directory")?;
+
+    let expected_error = fs::read_dir(&data_dir).unwrap_err();
+    assert_eq!(expected_error.kind(), ErrorKind::NotADirectory);
+    let expected_error = expected_error.to_string();
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
+    cmd.env_remove("AZURE_INIT_LOG")
+        .env_remove("AZURE_INIT_KVP_FILTER")
+        .args(["--config", config_path.to_str().unwrap(), "clean", "--logs"]);
+
+    let assertion = cmd.assert().code(1);
+    let stderr = std::str::from_utf8(&assertion.get_output().stderr)?;
+    let log_contents = fs::read_to_string(&log_file)?;
+    for contents in [stderr, log_contents.as_str()] {
+        let errors = contents
+            .lines()
+            .filter(|line| line.contains("ERROR"))
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "{contents}");
+        let error = errors[0];
+        assert!(
+            error.contains("Failed to read provisioning state directory"),
+            "{error}"
+        );
+        assert!(error.contains(data_dir.to_str().unwrap()), "{error}");
+        assert!(error.contains(&expected_error), "{error}");
+    }
+
+    assert!(log_contents.contains("fake log line"));
+    assert_eq!(fs::read_to_string(&data_dir)?, "not a directory");
 
     Ok(())
 }

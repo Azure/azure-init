@@ -156,12 +156,34 @@ fn get_username(
 /// by `azure_init_data_dir` (typically `/var/lib/azure-init`). These marker files
 /// indicate that provisioning has completed. Removing them allows azure-init to
 /// re-run provisioning logic on the next boot.
+///
+/// If cleanup fails while reading the provisioning directory, its path and
+/// the original I/O error are logged before returning the error.
 #[instrument]
 fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
     let data_dir = &config.azure_init_data_dir.path;
     let mut found = false;
 
-    for entry in std::fs::read_dir(data_dir)? {
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                path = %data_dir.display(),
+                "No provisioning state directory found; nothing to clean"
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::error!(
+                path = %data_dir.display(),
+                %error,
+                "Failed to read provisioning state directory"
+            );
+            return Err(error);
+        }
+    };
+
+    for entry in entries {
         let path = match entry {
             Ok(e) => e.path(),
             Err(e) => {
