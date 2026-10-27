@@ -191,8 +191,8 @@ fn decode_diag_group(
         .with_timezone(&Utc);
     let result = match result {
         "" => None,
-        value if value == Outcome::Success.as_str() => Some(Outcome::Success),
-        value if value == Outcome::Fail.as_str() => Some(Outcome::Fail),
+        value if value == Outcome::Ok.as_str() => Some(Outcome::Ok),
+        value if value == Outcome::Error.as_str() => Some(Outcome::Error),
         _ => return Err(DecodeError::Malformed),
     };
     let duration = if duration.is_empty() {
@@ -697,16 +697,16 @@ mod tests {
                     && finish.key.event_id == EVENT_ID
                     && start.payload == DiagnosticPayload::Text("starting".into())
                     && finish.payload == DiagnosticPayload::Text("failed".into())
-                    && finish.result == Outcome::Fail
+                    && finish.result == Outcome::Error
                     && finish.duration == Duration::from_micros(312)
         ));
     }
 
     #[rstest]
     #[case::neither(None, None)]
-    #[case::result_only(Some(Outcome::Success), None)]
+    #[case::result_only(Some(Outcome::Ok), None)]
     #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Fail), Some(52))]
+    #[case::both(Some(Outcome::Error), Some(52))]
     fn event_result_and_duration_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_secs: Option<u64>,
@@ -730,8 +730,11 @@ mod tests {
     #[case("finish", "", "")]
     #[case("finish", "success", "")]
     #[case("finish", "", "0")]
+    #[case("finish", "ok", "52")]
     #[case("finish", "error", "52")]
     #[case("finish", "failure", "52")]
+    #[case("event", "ok", "")]
+    #[case("event", "error", "")]
     #[case("event", "failure", "")]
     fn invalid_kind_fields_are_malformed(
         #[case] kind: &str,

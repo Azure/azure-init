@@ -84,7 +84,7 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
         finish.key.vm_id.as_deref(),
         include_vm_id.then_some(CLOUD_INIT_VM_ID)
     );
-    assert_eq!(finish.result, Outcome::Success);
+    assert_eq!(finish.result, Outcome::Ok);
     assert_eq!(finish.duration, Duration::from_micros(645));
     assert_eq!(
         finish.payload,
@@ -94,7 +94,7 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
     );
     assert!(matches!(diagnostic(&entries[1]), Diagnostic::Start(_)));
     assert!(matches!(diagnostic(&entries[2]), Diagnostic::Finish(finish)
-        if finish.result == Outcome::Success
+        if finish.result == Outcome::Ok
             && finish.duration == Duration::from_micros(340712)));
 }
 
@@ -115,7 +115,7 @@ fn span_and_point_events_round_trip_with_a_report() {
             "imds",
             "ok",
             None,
-            Some(Outcome::Success),
+            Some(Outcome::Ok),
             Some(Duration::from_micros(17)),
         )
         .unwrap();
@@ -125,7 +125,7 @@ fn span_and_point_events_round_trip_with_a_report() {
             "provision:run",
             "finished",
             None,
-            Outcome::Success,
+            Outcome::Ok,
             Duration::from_micros(120),
         )
         .unwrap();
@@ -147,7 +147,7 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_eq!(start.payload, DiagnosticPayload::from("starting"));
     assert_eq!(event.key.name, "imds");
     assert_eq!(event.payload, DiagnosticPayload::from("ok"));
-    assert_eq!(event.result, Some(Outcome::Success));
+    assert_eq!(event.result, Some(Outcome::Ok));
     assert_eq!(event.duration, Some(Duration::from_micros(17)));
     assert_eq!(
         uuid::Uuid::parse_str(&event.key.event_id)
@@ -157,7 +157,7 @@ fn span_and_point_events_round_trip_with_a_report() {
     );
     assert_ne!(event.key.event_id, EVENT_ID);
     assert_eq!(finish.payload, DiagnosticPayload::from("finished"));
-    assert_eq!(finish.result, Outcome::Success);
+    assert_eq!(finish.result, Outcome::Ok);
     assert_eq!(finish.duration, Duration::from_micros(120));
     assert_eq!(decoded_report, &report);
 

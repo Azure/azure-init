@@ -113,7 +113,7 @@ impl DurationPrecision {
 /// let contents = std::fs::read_to_string("/etc/os-release")?;
 /// writer.emit_finish(
 ///     &event_id, "read:os-release", format!("read {} bytes", contents.len()),
-///     None, Outcome::Success, started.elapsed(),
+///     None, Outcome::Ok, started.elapsed(),
 /// )?;
 /// # Ok(())
 /// # }
@@ -306,7 +306,7 @@ fn prepare_records(
         .encoding
         .as_ref()
         .map_or_else(|| "none".to_owned(), ToString::to_string);
-    let result = result.map_or_else(String::new, |result| result.to_string());
+    let result = result.map_or("", Outcome::as_str);
     let base_key = format!(
         "{DIAGNOSTIC_VERSION_ID}|{}|{vm_id}|{kind}|{}|{}|{timestamp}|{encoding}|{result}|{duration}",
         key.agent, key.name, key.event_id,
@@ -692,8 +692,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case::success(Outcome::Success, "success", 312_000, "0.312000")]
-    #[case::failure(Outcome::Fail, "fail", 0, "0.000000")]
+    #[case::success(Outcome::Ok, "success", 312_000, "0.312000")]
+    #[case::failure(Outcome::Error, "fail", 0, "0.000000")]
     fn exact_finish_key_matches_diag_layout(
         #[case] result: Outcome,
         #[case] token: &str,
@@ -722,9 +722,9 @@ mod tests {
 
     #[rstest]
     #[case::neither(None, None, "")]
-    #[case::result_only(Some(Outcome::Success), None, "")]
+    #[case::result_only(Some(Outcome::Ok), None, "")]
     #[case::zero_duration(None, Some(0), "0.000000")]
-    #[case::both(Some(Outcome::Fail), Some(52), "0.000052")]
+    #[case::both(Some(Outcome::Error), Some(52), "0.000052")]
     fn event_optional_fields_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
@@ -767,7 +767,7 @@ mod tests {
                 "test",
                 "finished",
                 None,
-                Outcome::Fail,
+                Outcome::Error,
                 Duration::from_micros(17),
             )
             .unwrap();
@@ -1037,7 +1037,7 @@ mod tests {
                 ..key()
             },
             payload: "test".into(),
-            result: Outcome::Success,
+            result: Outcome::Ok,
             duration: Duration::from_millis(312),
         });
         let records = prepare_records(
@@ -1068,7 +1068,7 @@ mod tests {
                 &"n".repeat(DEFAULT_MAX_NAME_BYTES),
                 "message",
                 Some(Encoding::ZlibB64),
-                Outcome::Success,
+                Outcome::Ok,
                 Duration::MAX,
             )
         });
@@ -1097,7 +1097,7 @@ mod tests {
                 "bad|name",
                 "message",
                 None,
-                Outcome::Fail,
+                Outcome::Error,
                 Duration::ZERO,
             )
         });
@@ -1132,7 +1132,7 @@ mod tests {
                 "test",
                 payload,
                 None,
-                Outcome::Fail,
+                Outcome::Error,
                 Duration::ZERO,
             )
         });
