@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 mod logging;
+mod tracing_layer;
 
 use std::path::PathBuf;
 

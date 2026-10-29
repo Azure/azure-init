@@ -41,12 +41,12 @@ const INVALID_OUTCOME: &str =
 /// override. Invalid explicit outcomes drop the event or finish. Filtering,
 /// missing instrumentation and cancellation can hide failures.
 #[derive(Clone, Debug)]
-pub(super) struct DiagnosticsKvp {
+pub(crate) struct DiagnosticsKvp {
     writer: DiagnosticWriter,
 }
 
 impl DiagnosticsKvp {
-    pub(super) fn new(writer: DiagnosticWriter) -> Self {
+    pub(crate) fn new(writer: DiagnosticWriter) -> Self {
         Self { writer }
     }
 }
