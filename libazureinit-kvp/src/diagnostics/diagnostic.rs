@@ -72,22 +72,31 @@ impl Serialize for Encoding {
 }
 
 /// Reported result of an operation or observation.
+///
+/// This describes the reported operation, not whether reading or writing
+/// the diagnostic succeeded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     /// The operation succeeded.
-    Success,
-    /// The operation failed, represented as `fail` in serialized output.
-    #[serde(rename = "fail")]
-    Failure,
+    Ok,
+    /// The operation failed.
+    Error,
+}
+
+impl Outcome {
+    /// Returns the canonical DIAG wire token without allocating.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
 }
 
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Success => "success",
-            Self::Failure => "fail",
-        })
+        f.write_str(self.as_str())
     }
 }
 
@@ -429,9 +438,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Outcome::Success, "success")]
-    #[case(Outcome::Failure, "fail")]
+    #[case(Outcome::Ok, "ok")]
+    #[case(Outcome::Error, "error")]
     fn outcome_uses_wire_token(#[case] result: Outcome, #[case] token: &str) {
+        assert_eq!(result.as_str(), token);
         assert_eq!(result.to_string(), token);
         assert_eq!(serde_json::to_value(result).unwrap(), token);
     }
@@ -507,9 +517,9 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Outcome::Success, "success", Duration::from_micros(312), 0.000312)]
-    #[case(Outcome::Failure, "fail", Duration::ZERO, 0.0)]
-    #[case(Outcome::Success, "success", Duration::MAX, u64::MAX as f64)]
+    #[case(Outcome::Ok, "ok", Duration::from_micros(312), 0.000312)]
+    #[case(Outcome::Error, "error", Duration::ZERO, 0.0)]
+    #[case(Outcome::Ok, "ok", Duration::MAX, u64::MAX as f64)]
     fn finish_serializes_result_and_seconds(
         #[case] result: Outcome,
         #[case] token: &str,
@@ -530,9 +540,9 @@ mod tests {
 
     #[rstest]
     #[case::neither(None, None)]
-    #[case::result_only(Some(Outcome::Success), None)]
+    #[case::result_only(Some(Outcome::Ok), None)]
     #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Failure), Some(52))]
+    #[case::both(Some(Outcome::Error), Some(52))]
     fn event_serializes_only_measured_fields(
         #[case] result: Option<Outcome>,
         #[case] duration_us: Option<u64>,
@@ -638,7 +648,7 @@ mod tests {
             Kind::Finish => Diagnostic::Finish(DiagnosticFinish {
                 key: key.clone(),
                 payload: payload.clone(),
-                result: Outcome::Success,
+                result: Outcome::Ok,
                 duration: Duration::ZERO,
             }),
             Kind::Event => Diagnostic::Event(DiagnosticEvent {

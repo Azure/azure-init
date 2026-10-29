@@ -170,8 +170,8 @@ fn diagnostic(
         }
         "finish" => {
             let result = match metadata.get("result").and_then(Value::as_str) {
-                Some("SUCCESS") => Outcome::Success,
-                Some("FAIL") => Outcome::Failure,
+                Some("SUCCESS") => Outcome::Ok,
+                Some("FAIL") => Outcome::Error,
                 _ => return Err(DecodeError::Malformed),
             };
             let duration = metadata
@@ -421,7 +421,7 @@ mod tests {
             entries.as_slice(),
             [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))]
                 if start.key.event_id == finish.key.event_id
-                    && finish.result == Outcome::Failure
+                    && finish.result == Outcome::Error
                     && finish.duration == Duration::from_micros(123_400)
         ));
     }
@@ -434,19 +434,26 @@ mod tests {
         )];
         let diagnostic = only_diagnostic(entries(&records));
         assert!(matches!(&diagnostic, Diagnostic::Finish(finish)
-                if finish.result == Outcome::Success
+                if finish.result == Outcome::Ok
                     && finish.duration == Duration::from_micros(645)
                     && finish.key.name == "modules-final/config-scripts_user"));
     }
 
-    #[test]
-    fn warn_finish_is_preserved_without_reclassifying_it_as_an_event() {
-        let mut warning = value("finish", "completed with warnings");
-        warning["result"] = json!("WARN");
-        warning["duration"] = json!(1);
+    #[rstest]
+    #[case::warn("WARN")]
+    #[case::ok("OK")]
+    #[case::error("ERROR")]
+    #[case::lowercase_success("success")]
+    #[case::lowercase_fail("fail")]
+    #[case::lowercase_ok("ok")]
+    #[case::lowercase_error("error")]
+    fn unsupported_finish_result_remains_raw(#[case] result: &str) {
+        let mut finish = value("finish", "unsupported outcome");
+        finish["result"] = json!(result);
+        finish["duration"] = json!(1);
         let raw = RawKeyValue {
             key: key("finish", true, None),
-            value: warning.to_string(),
+            value: finish.to_string(),
             error: Some(DecodeError::Malformed),
         };
         let entries = entries(&[

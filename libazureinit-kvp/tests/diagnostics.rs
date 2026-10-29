@@ -84,7 +84,7 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
         finish.key.vm_id.as_deref(),
         include_vm_id.then_some(CLOUD_INIT_VM_ID)
     );
-    assert_eq!(finish.result, Outcome::Success);
+    assert_eq!(finish.result, Outcome::Ok);
     assert_eq!(finish.duration, Duration::from_micros(645));
     assert_eq!(
         finish.payload,
@@ -94,12 +94,17 @@ fn reads_real_cloud_init_pool_in_both_layouts(#[case] include_vm_id: bool) {
     );
     assert!(matches!(diagnostic(&entries[1]), Diagnostic::Start(_)));
     assert!(matches!(diagnostic(&entries[2]), Diagnostic::Finish(finish)
-        if finish.result == Outcome::Success
+        if finish.result == Outcome::Ok
             && finish.duration == Duration::from_micros(340712)));
 }
 
-#[test]
-fn span_and_point_events_round_trip_with_a_report() {
+#[rstest]
+#[case::ok(Outcome::Ok, "ok")]
+#[case::error(Outcome::Error, "error")]
+fn span_and_point_events_round_trip_with_a_report(
+    #[case] result: Outcome,
+    #[case] token: &str,
+) {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
     let writer = DiagnosticWriter::new(store.clone(), AGENT, VM_ID).unwrap();
@@ -115,7 +120,7 @@ fn span_and_point_events_round_trip_with_a_report() {
             "imds",
             "ok",
             None,
-            Some(Outcome::Success),
+            Some(result),
             Some(Duration::from_micros(17)),
         )
         .unwrap();
@@ -125,7 +130,7 @@ fn span_and_point_events_round_trip_with_a_report() {
             "provision:run",
             "finished",
             None,
-            Outcome::Success,
+            result,
             Duration::from_micros(120),
         )
         .unwrap();
@@ -147,7 +152,7 @@ fn span_and_point_events_round_trip_with_a_report() {
     assert_eq!(start.payload, DiagnosticPayload::from("starting"));
     assert_eq!(event.key.name, "imds");
     assert_eq!(event.payload, DiagnosticPayload::from("ok"));
-    assert_eq!(event.result, Some(Outcome::Success));
+    assert_eq!(event.result, Some(result));
     assert_eq!(event.duration, Some(Duration::from_micros(17)));
     assert_eq!(
         uuid::Uuid::parse_str(&event.key.event_id)
@@ -157,15 +162,26 @@ fn span_and_point_events_round_trip_with_a_report() {
     );
     assert_ne!(event.key.event_id, EVENT_ID);
     assert_eq!(finish.payload, DiagnosticPayload::from("finished"));
-    assert_eq!(finish.result, Outcome::Success);
+    assert_eq!(finish.result, result);
     assert_eq!(finish.duration, Duration::from_micros(120));
     assert_eq!(decoded_report, &report);
 
+    let parsed = serde_json::to_value(&entries).unwrap();
+    assert!(parsed[0].get("result").is_none());
+    assert_eq!(parsed[1]["result"], token);
+    assert_eq!(parsed[2]["result"], token);
+    assert_eq!(parsed[3]["result"], "success");
+
     let dumped = store.dump().unwrap();
-    for (key, _) in &dumped[..3] {
+    for ((key, _), expected_result) in
+        dumped[..3].iter().zip(["", token, token])
+    {
         assert!(key
             .starts_with(&format!("{DIAGNOSTIC_VERSION_ID}|{AGENT}|{VM_ID}|")));
         assert!(key.ends_with("|0"));
+        let fields: Vec<_> = key.split('|').collect();
+        assert_eq!(fields.len(), 11);
+        assert_eq!(fields[8], expected_result);
     }
 }
 
