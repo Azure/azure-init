@@ -19,7 +19,7 @@ clap = { version = "4.5.21", features = ["derive", "cargo", "env"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tokio-util = "0.7" 
 
-sysinfo = "0.38"
+sysinfo = "0.39"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
