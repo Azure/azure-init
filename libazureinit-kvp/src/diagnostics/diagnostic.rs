@@ -76,12 +76,11 @@ impl Serialize for Encoding {
 /// This describes the reported operation, not whether reading or writing
 /// the diagnostic succeeded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Outcome {
-    /// The operation succeeded, represented as `success` in serialized output.
-    #[serde(rename = "success")]
+    /// The operation succeeded.
     Ok,
-    /// The operation failed, represented as `fail` in serialized output.
-    #[serde(rename = "fail")]
+    /// The operation failed.
     Error,
 }
 
@@ -89,8 +88,8 @@ impl Outcome {
     /// Returns the canonical DIAG wire token without allocating.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Ok => "success",
-            Self::Error => "fail",
+            Self::Ok => "ok",
+            Self::Error => "error",
         }
     }
 }
@@ -439,8 +438,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Outcome::Ok, "success")]
-    #[case(Outcome::Error, "fail")]
+    #[case(Outcome::Ok, "ok")]
+    #[case(Outcome::Error, "error")]
     fn outcome_uses_wire_token(#[case] result: Outcome, #[case] token: &str) {
         assert_eq!(result.as_str(), token);
         assert_eq!(result.to_string(), token);
@@ -518,9 +517,9 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Outcome::Ok, "success", Duration::from_micros(312), 0.000312)]
-    #[case(Outcome::Error, "fail", Duration::ZERO, 0.0)]
-    #[case(Outcome::Ok, "success", Duration::MAX, u64::MAX as f64)]
+    #[case(Outcome::Ok, "ok", Duration::from_micros(312), 0.000312)]
+    #[case(Outcome::Error, "error", Duration::ZERO, 0.0)]
+    #[case(Outcome::Ok, "ok", Duration::MAX, u64::MAX as f64)]
     fn finish_serializes_result_and_seconds(
         #[case] result: Outcome,
         #[case] token: &str,

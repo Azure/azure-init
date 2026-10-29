@@ -730,8 +730,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case::success(Outcome::Ok, "success", 312_000, "0.312000")]
-    #[case::failure(Outcome::Error, "fail", 0, "0.000000")]
+    #[case::ok(Outcome::Ok, "ok", 312_000, "0.312000")]
+    #[case::error(Outcome::Error, "error", 0, "0.000000")]
     fn exact_finish_key_matches_diag_layout(
         #[case] result: Outcome,
         #[case] token: &str,
@@ -1065,8 +1065,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn default_name_limit_fits_with_four_digit_index() {
+    #[rstest]
+    #[case::ok(Outcome::Ok, 243)]
+    #[case::error(Outcome::Error, 246)]
+    fn default_name_limit_fits_with_four_digit_index(
+        #[case] result: Outcome,
+        #[case] expected_bytes: usize,
+    ) {
         let diagnostic = Diagnostic::Finish(DiagnosticFinish {
             key: DiagnosticKey {
                 agent: "a".repeat(MAX_AGENT_BYTES),
@@ -1075,7 +1080,7 @@ mod tests {
                 ..key()
             },
             payload: "test".into(),
-            result: Outcome::Ok,
+            result,
             duration: Duration::from_millis(312),
         });
         let records = prepare_records(
@@ -1087,12 +1092,17 @@ mod tests {
         .unwrap();
         let base = records[0].0.rsplit_once('|').unwrap().0;
         let longest = format!("{base}|1022");
-        assert_eq!(longest.len(), 248);
+        assert_eq!(longest.len(), expected_bytes);
         assert!(longest.len() <= MAX_KEY_BYTES);
     }
 
-    #[test]
-    fn name_allowance_does_not_override_full_key_limit() {
+    #[rstest]
+    #[case::ok(Outcome::Ok, 259)]
+    #[case::error(Outcome::Error, 262)]
+    fn name_allowance_does_not_override_full_key_limit(
+        #[case] result: Outcome,
+        #[case] expected_bytes: usize,
+    ) {
         let error = assert_rejected_without_writes(|writer| {
             DiagnosticWriter::new(
                 writer.store.clone(),
@@ -1106,7 +1116,7 @@ mod tests {
                 &"n".repeat(DEFAULT_MAX_NAME_BYTES),
                 "message",
                 Some(Encoding::ZlibB64),
-                Outcome::Ok,
+                result,
                 Duration::MAX,
             )
         });
@@ -1114,8 +1124,8 @@ mod tests {
             error,
             KvpError::KeyTooLarge {
                 max: MAX_KEY_BYTES,
-                actual: 264
-            }
+                actual
+            } if actual == expected_bytes
         ));
     }
 

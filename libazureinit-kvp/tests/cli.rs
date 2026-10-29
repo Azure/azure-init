@@ -426,8 +426,8 @@ fn parsed_dump_preserves_reader_pool_order() {
 }
 
 #[rstest]
-#[case::success("SUCCESS", "success")]
-#[case::failure("FAIL", "fail")]
+#[case::success("SUCCESS", "ok")]
+#[case::failure("FAIL", "error")]
 fn parsed_dump_normalizes_cloud_init_in_json_and_text(
     #[case] source_result: &str,
     #[case] result: &str,
@@ -523,7 +523,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 4);
     assert!(lines[0].contains(&format!(
-        "encoding={token} result=fail duration=0.000007s payload_b64=AP8="
+        "encoding={token} result=error duration=0.000007s payload_b64=AP8="
     )));
     assert_eq!(lines[1], "raw key=note value=raw value");
     assert_eq!(lines[2], "raw key=DIAG|bad value=junk error=malformed diagnostic or provisioning report");
@@ -537,7 +537,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
 
     let entries =
         assert_json(kvp(&with_dir(&dir, &["dump", "--parse", "--json"])));
-    assert_eq!(entries[0]["result"], "fail");
+    assert_eq!(entries[0]["result"], "error");
     assert_eq!(
         entries[0]["payload"],
         json!({"type": "bytes", "encoding": "base64", "data": "AP8="})
@@ -556,8 +556,10 @@ fn dump_name_requires_parse() {
         .contains("--parse"));
 }
 
-#[test]
-fn parsed_dump_filters_by_kind() {
+#[rstest]
+#[case::ok("ok")]
+#[case::error("error")]
+fn parsed_dump_filters_by_kind(#[case] result: &str) {
     let dir = TempDir::new().unwrap();
     let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
     let ts = "2026-08-31T00:00:00.000Z";
@@ -568,7 +570,7 @@ fn parsed_dump_filters_by_kind() {
     };
     for (key, value) in [
         (diag("start", "provision:run", "", ""), "starting"),
-        (diag("finish", "provision:run", "success", "312"), "done"),
+        (diag("finish", "provision:run", result, "312"), "done"),
         (diag("event", "imds", "", ""), "ok"),
         ("note".to_string(), "raw value"),
     ] {
@@ -588,6 +590,7 @@ fn parsed_dump_filters_by_kind() {
     assert_eq!(finish.len(), 3);
     assert_eq!(finish[0]["kind"], "finish");
     assert_eq!(finish[0]["name"], "provision:run");
+    assert_eq!(finish[0]["result"], result);
     assert_eq!(
         finish[1],
         json!({"type": "raw", "key": "note", "value": "raw value"})
