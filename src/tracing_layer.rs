@@ -366,20 +366,20 @@ mod tests {
             .as_millis();
 
         let entries = entries(&store);
-        let [Entry::Diagnostic(Diagnostic::Start(start)), Entry::Diagnostic(Diagnostic::Finish(finish))] =
-            entries.as_slice()
-        else {
-            panic!("expected start and finish, got {entries:?}");
-        };
-        for key in [&start.key, &finish.key] {
-            let timestamp =
-                u128::try_from(key.timestamp.timestamp_millis()).unwrap();
-            assert!((before..=after).contains(&timestamp));
-            assert_eq!(key.timestamp.timestamp_subsec_nanos() % 1_000_000, 0);
-        }
-        assert_eq!(start.key.event_id, finish.key.event_id);
-        assert!(finish.duration >= work);
-        assert!(finish.duration <= elapsed);
+        assert!(matches!(
+            entries.as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(start)),
+             Entry::Diagnostic(Diagnostic::Finish(finish))]
+                if [&start.key, &finish.key].iter().all(|key| {
+                    let timestamp =
+                        u128::try_from(key.timestamp.timestamp_millis()).unwrap();
+                    (before..=after).contains(&timestamp)
+                        && key.timestamp.timestamp_subsec_nanos() % 1_000_000 == 0
+                })
+                    && start.key.event_id == finish.key.event_id
+                    && finish.duration >= work
+                    && finish.duration <= elapsed
+        ));
     }
 
     #[test]
