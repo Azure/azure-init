@@ -27,7 +27,7 @@ using this layout. Agent versions identify the producer, not the schema.
 | `timestamp` | Emission time | RFC 3339 timestamp |
 | `encoding` | Stored value representation | `none`, `zlib+b64`, or `gz+b64` |
 | `result` | Reported outcome, when applicable | `ok`, `error`, or empty |
-| `duration` | Elapsed seconds, when measured | Finite nonnegative double-precision numeric text, or empty |
+| `duration` | Elapsed seconds, when measured | Finite nonnegative IEEE 754 double-precision numeric text, or empty |
 | `chunk_index` | Chunk position; zero for a single record | Unsigned decimal integer |
 
 All fields except `result` and `duration` are required and nonempty. Key fields
@@ -48,11 +48,11 @@ diagnostics.
 
 ### Timestamps and Durations
 
-Timestamps must conform to RFC 3339. The writer emits UTC `Z` form with
-second, millisecond (default), microsecond or nanosecond precision.
+The writer emits UTC `Z` timestamps with second, millisecond (default),
+microsecond or nanosecond precision.
 
-Durations are finite, nonnegative IEEE 754 double-precision seconds, in
-decimal or exponent notation. Empty means absent; zero is a measured duration.
+Durations use decimal or exponent notation. Empty means absent; zero is a
+measured duration.
 See [Implementation Notes](#implementation-notes) for reader limits and
 rounding.
 
@@ -162,9 +162,6 @@ reading.
 | `documentation_url` | Help link for a failure | URL text | No; optional for error reports |
 | Other fields | Supporting data | `key=value` text fields | No |
 
-Health reports retain `success`/`error` for the WireServer health-report
-contract; their successful result is not the diagnostic token `ok`.
-
 Other fields are ordered supporting data, including duplicate supporting-data
 keys. Required fields cannot be duplicated. On error reports, `reason` and
 `documentation_url` cannot be duplicated either. Empty text values remain
@@ -248,9 +245,6 @@ there is no decoded-size cap.
 Parsed JSON represents decoded binary payloads as base64 objects. Those bytes
 are already decompressed; do not send them to a decompressor again.
 
-Parsed diagnostic results use `ok`/`error`, including normalized cloud-init
-diagnostics. Parsed provisioning reports retain `success`/`error`.
-
 Timestamps normalize to UTC, discarding digits beyond nanoseconds. Durations
 are limited to unsigned 64-bit whole seconds plus nanoseconds. Unsigned decimals
 with up to nine fractional digits remain exact; other forms round to the nearest
@@ -261,17 +255,14 @@ Cloud-init durations round to microseconds; source encoding labels are preserved
 
 ### Writer Choices
 
-The writer requires UUID event IDs. The name limit defaults to 64 UTF-8 bytes
-and is configurable with `DiagnosticWriter::with_max_name_bytes`; oversized
-names are rejected, not truncated. Durations use fixed-point seconds with
-microsecond precision by default, independently of timestamp precision;
-finer digits are discarded.
+The writer requires UUID event IDs. The name limit is configurable with
+`DiagnosticWriter::with_max_name_bytes`; oversized names are rejected, not
+truncated. Durations use fixed-point seconds with microsecond precision by
+default, independently of timestamp precision; finer digits are discarded.
 
 Validation precedes writing, but I/O failure may leave a partial batch. Pool
-cleanup is explicit. The complete key, including each chunk index, must fit
-the [budget](#limits) regardless of the configured name limit.
+cleanup is explicit.
 
 Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,
-`pps_type`, `vm_id`, `timestamp`, then the optional documentation URL. Consumers
-must not depend on that order.
+`pps_type`, `vm_id`, `timestamp`, then the optional documentation URL.
