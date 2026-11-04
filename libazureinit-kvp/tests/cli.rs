@@ -425,16 +425,30 @@ fn parsed_dump_preserves_reader_pool_order() {
     assert_eq!(fs::read(store.path()).unwrap(), before);
 }
 
-#[test]
-fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
+#[rstest]
+#[case::success("SUCCESS", "ok")]
+#[case::failure("FAIL", "error")]
+fn parsed_dump_normalizes_cloud_init_in_json_and_text(
+    #[case] source_result: &str,
+    #[case] result: &str,
+) {
     let dir = TempDir::new().unwrap();
+    let finish = json!({
+        "name": "modules-final/config-scripts_user",
+        "type": "finish",
+        "ts": "2026-07-27T21:33:24.339006+00:00",
+        "result": source_result,
+        "duration": 0.5,
+        "msg": "scripts ran",
+    })
+    .to_string();
     assert_success(kvp(&with_dir(
         &dir,
         &[
             "write",
             "--append",
             "CLOUD_INIT|1785187982|finish|modules-final/config-scripts_user|0e5e179d-5341-478b-8456-fbb90621bdf8|e5f01809-a7a3-4279-aa64-1f18e21eda6e",
-            r#"{"name":"modules-final/config-scripts_user","type":"finish","ts":"2026-07-27T21:33:24.339006+00:00","result":"SUCCESS","duration":0.5,"msg":"scripts ran"}"#,
+            &finish,
         ],
     )));
     assert_success(kvp(&with_dir(
@@ -455,7 +469,7 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
             "name": "modules-final/config-scripts_user", "vm_id": VM_ID,
             "event_id": "e5f01809-a7a3-4279-aa64-1f18e21eda6e",
             "timestamp": "2026-07-27T21:33:24.339006Z", "encoding": "none",
-            "result": "success", "duration": 0.5, "payload": "scripts ran",
+            "result": result, "duration": 0.5, "payload": "scripts ran",
         })
     );
     assert_eq!(entries[1]["kind"], "start");
@@ -469,7 +483,7 @@ fn parsed_dump_normalizes_cloud_init_in_json_and_text() {
     assert!(!out.contains("boot_epoch"));
     assert!(out.contains("name=modules-final/config-scripts_user"));
     assert!(out.contains("vm_id=0e5e179d-5341-478b-8456-fbb90621bdf8"));
-    assert!(out.contains("result=success"));
+    assert!(out.contains(&format!("result={result}")));
     assert!(out.contains("timestamp=2026-07-27T21:33:24.339006Z"));
     assert!(out.contains("duration=0.5s"));
     assert!(out.contains("payload=scripts ran"));
@@ -494,7 +508,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
             "artifact",
             vec![0, 255],
             Some(encoding),
-            Some(Outcome::Failure),
+            Some(Outcome::Error),
             Some(Duration::from_micros(7)),
         )
         .unwrap();
@@ -509,7 +523,7 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), 4);
     assert!(lines[0].contains(&format!(
-        "encoding={token} result=fail duration=0.000007s payload_b64=AP8="
+        "encoding={token} result=error duration=0.000007s payload_b64=AP8="
     )));
     assert_eq!(lines[1], "raw key=note value=raw value");
     assert_eq!(lines[2], "raw key=DIAG|bad value=junk error=malformed diagnostic or provisioning report");
@@ -523,11 +537,13 @@ fn parsed_dump_renders_bytes_reports_and_raw_errors(
 
     let entries =
         assert_json(kvp(&with_dir(&dir, &["dump", "--parse", "--json"])));
+    assert_eq!(entries[0]["result"], "error");
     assert_eq!(
         entries[0]["payload"],
         json!({"type": "bytes", "encoding": "base64", "data": "AP8="})
     );
     assert_eq!(entries[2]["error"], "malformed");
+    assert_eq!(entries[3]["result"], "error");
     assert_eq!(entries[3]["reason"], "bad input");
 }
 
@@ -540,8 +556,10 @@ fn dump_name_requires_parse() {
         .contains("--parse"));
 }
 
-#[test]
-fn parsed_dump_filters_by_kind() {
+#[rstest]
+#[case::ok("ok")]
+#[case::error("error")]
+fn parsed_dump_filters_by_kind(#[case] result: &str) {
     let dir = TempDir::new().unwrap();
     let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
     let ts = "2026-08-31T00:00:00.000Z";
@@ -552,7 +570,7 @@ fn parsed_dump_filters_by_kind() {
     };
     for (key, value) in [
         (diag("start", "provision:run", "", ""), "starting"),
-        (diag("finish", "provision:run", "success", "312"), "done"),
+        (diag("finish", "provision:run", result, "312"), "done"),
         (diag("event", "imds", "", ""), "ok"),
         ("note".to_string(), "raw value"),
     ] {
@@ -572,6 +590,7 @@ fn parsed_dump_filters_by_kind() {
     assert_eq!(finish.len(), 3);
     assert_eq!(finish[0]["kind"], "finish");
     assert_eq!(finish[0]["name"], "provision:run");
+    assert_eq!(finish[0]["result"], result);
     assert_eq!(
         finish[1],
         json!({"type": "raw", "key": "note", "value": "raw value"})
