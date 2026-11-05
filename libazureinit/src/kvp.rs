@@ -536,7 +536,7 @@ pub fn decode_kvp_item(
 /// or no action was needed.
 fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
     let boot_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
-        - get_uptime().as_secs();
+        - get_uptime()?.as_secs();
 
     match kvp_file.metadata() {
         Ok(metadata) => {
@@ -568,13 +568,9 @@ fn truncate_guest_pool_file(kvp_file: &Path) -> Result<(), anyhow::Error> {
 /// Retrieves the system's uptime using the `sysinfo` crate, returning the duration
 /// since the system booted. This can be useful for time-based calculations or checks,
 /// such as determining whether data is stale or calculating the approximate boot time.
-fn get_uptime() -> Duration {
-    let mut system = System::new();
-    system.refresh_memory();
-    system.refresh_cpu_usage();
-
-    let uptime_seconds = System::uptime();
-    Duration::from_secs(uptime_seconds)
+fn get_uptime() -> Result<Duration, anyhow::Error> {
+    let uptime_seconds = System::uptime()?;
+    Ok(Duration::from_secs(uptime_seconds))
 }
 
 /// Given a span's metadata, this constructs a span name in the format
@@ -625,10 +621,6 @@ mod tests {
 
     #[instrument]
     async fn mock_provision(vm_id: &str) -> Result<(), anyhow::Error> {
-        let mut system = System::new();
-        system.refresh_memory();
-        system.refresh_cpu_usage();
-
         let kernel_version = System::kernel_version()
             .unwrap_or("Unknown Kernel Version".to_string());
         let os_version =
