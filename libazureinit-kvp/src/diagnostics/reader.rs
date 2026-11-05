@@ -191,8 +191,8 @@ fn decode_diag_group(
         .with_timezone(&Utc);
     let result = match result {
         "" => None,
-        "success" => Some(Outcome::Success),
-        "fail" => Some(Outcome::Failure),
+        value if value == Outcome::Ok.as_str() => Some(Outcome::Ok),
+        value if value == Outcome::Error.as_str() => Some(Outcome::Error),
         _ => return Err(DecodeError::Malformed),
     };
     let duration = if duration.is_empty() {
@@ -666,7 +666,8 @@ mod tests {
 
     #[rstest]
     #[case::unmatched_start("start", "", "")]
-    #[case::orphan_finish("finish", "fail", "0.000312")]
+    #[case::orphan_ok_finish("finish", "ok", "0.000312")]
+    #[case::orphan_error_finish("finish", "error", "0.000312")]
     fn isolated_span_endpoint_decodes(
         #[case] kind: &str,
         #[case] result: &str,
@@ -684,7 +685,7 @@ mod tests {
     fn span_endpoints_with_a_shared_id_decode_separately() {
         let start = with_field(&key(0), 3, "start");
         let finish = with_field(&key(0), 3, "finish");
-        let finish = with_field(&finish, 8, "fail");
+        let finish = with_field(&finish, 8, "error");
         let finish = with_field(&finish, 9, "0.000312");
         let entries = decode_entries(vec![
             (start, "starting".into()),
@@ -697,16 +698,16 @@ mod tests {
                     && finish.key.event_id == EVENT_ID
                     && start.payload == DiagnosticPayload::Text("starting".into())
                     && finish.payload == DiagnosticPayload::Text("failed".into())
-                    && finish.result == Outcome::Failure
+                    && finish.result == Outcome::Error
                     && finish.duration == Duration::from_micros(312)
         ));
     }
 
     #[rstest]
     #[case::neither(None, None)]
-    #[case::result_only(Some(Outcome::Success), None)]
+    #[case::result_only(Some(Outcome::Ok), None)]
     #[case::zero_duration(None, Some(0))]
-    #[case::both(Some(Outcome::Failure), Some(52))]
+    #[case::both(Some(Outcome::Error), Some(52))]
     fn event_result_and_duration_are_independent(
         #[case] result: Option<Outcome>,
         #[case] duration_secs: Option<u64>,
@@ -724,13 +725,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case("start", "success", "")]
+    #[case("start", "ok", "")]
     #[case("start", "", "0")]
-    #[case("start", "fail", "52")]
+    #[case("start", "error", "52")]
     #[case("finish", "", "")]
-    #[case("finish", "success", "")]
+    #[case("finish", "ok", "")]
     #[case("finish", "", "0")]
-    #[case("finish", "error", "52")]
+    #[case("finish", "success", "52")]
+    #[case("finish", "fail", "52")]
+    #[case("finish", "failure", "52")]
+    #[case("event", "success", "")]
+    #[case("event", "fail", "")]
+    #[case("event", "failure", "")]
     fn invalid_kind_fields_are_malformed(
         #[case] kind: &str,
         #[case] result: &str,
@@ -947,7 +953,7 @@ mod tests {
     #[case(5, "00000000-0000-0000-0000-000000000000")]
     #[case(6, "2026-08-31T12:34:56.790Z")]
     #[case(7, "gz+b64")]
-    #[case(8, "success")]
+    #[case(8, "ok")]
     #[case(9, "52")]
     fn grouping_does_not_combine_different_metadata(
         #[case] field: usize,

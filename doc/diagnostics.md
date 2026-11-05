@@ -26,8 +26,8 @@ using this layout. Agent versions identify the producer, not the schema.
 | `event_id` | Shared by an operation's start and finish; unique to a standalone event | UTF-8 identifier, typically UUID |
 | `timestamp` | Emission time | RFC 3339 timestamp |
 | `encoding` | Stored value representation | `none`, `zlib+b64`, or `gz+b64` |
-| `result` | Reported outcome, when applicable | `success`, `fail`, or empty |
-| `duration` | Elapsed seconds, when measured | Finite nonnegative double-precision numeric text, or empty |
+| `result` | Reported outcome, when applicable | `ok`, `error`, or empty |
+| `duration` | Elapsed seconds, when measured | Finite nonnegative IEEE 754 double-precision numeric text, or empty |
 | `chunk_index` | Chunk position; zero for a single record | Unsigned decimal integer |
 
 All fields except `result` and `duration` are required and nonempty. Key fields
@@ -48,11 +48,11 @@ diagnostics.
 
 ### Timestamps and Durations
 
-Timestamps must conform to RFC 3339. The writer emits UTC `Z` form with
-second, millisecond (default), microsecond or nanosecond precision.
+The writer emits UTC `Z` timestamps with second, millisecond (default),
+microsecond or nanosecond precision.
 
-Durations are finite, nonnegative IEEE 754 double-precision seconds, in
-decimal or exponent notation. Empty means absent; zero is a measured duration.
+Durations use decimal or exponent notation. Empty means absent; zero is a
+measured duration.
 See [Implementation Notes](#implementation-notes) for reader limits and
 rounding.
 
@@ -67,7 +67,7 @@ An operation and a compressed observation, shown as stored key/value records:
     "value": "starting"
   },
   {
-    "key": "DIAG|azure-init/0.1.1|3f2504e0-4f89-41d3-9a0c-0305e82c3301|finish|provision:run|8f3e9c4a-1b2c-4d5e-9f01-234567890abc|2026-08-31T12:34:57.101Z|none|success|0.312000|0",
+    "key": "DIAG|azure-init/0.1.1|3f2504e0-4f89-41d3-9a0c-0305e82c3301|finish|provision:run|8f3e9c4a-1b2c-4d5e-9f01-234567890abc|2026-08-31T12:34:57.101Z|none|ok|0.312000|0",
     "value": "provisioning succeeded"
   },
   {
@@ -118,15 +118,15 @@ a single chunk; they are illustrative, not measured production averages.
 | `event_id` | 36 | 36 | Hyphenated UUID in the example; writer UUID limit |
 | `timestamp` | 24 | 30 | UTC `Z` output: 20/24/27/30 for seconds/ms/us/ns |
 | `encoding` | 4 | 8 | `none`: 4; `gz+b64`: 6; `zlib+b64`: 8 |
-| `result` | 7 | 7 | Empty: 0; `fail`: 4; `success`: 7 |
+| `result` | 2 | 5 | Empty: 0; `ok`: 2; `error`: 5 |
 | `duration` | 8 | 30 | `0.312000`; up to 20 whole-second digits, a point and 9 fractional digits |
 | `chunk_index` | 1 | 4 | `0` through `1022` |
 | Ten pipe separators | 10 | 10 | One byte each |
-| **Total** | **165** | **267** | Sum of field widths |
-| **Space remaining** | **89** | **13 over limit** | Against the 254-byte limit |
+| **Total** | **160** | **265** | Sum of field widths |
+| **Space remaining** | **94** | **11 over limit** | Against the 254-byte limit |
 
 The start and compressed-event examples use 149 and 147 key bytes respectively.
-The field bounds total 258 bytes with both default precisions, so not every
+The field bounds total 256 bytes with both default precisions, so not every
 combination fits; oversized keys are rejected before writing. Widths count text
 bytes, not the in-memory size of a double. These are writer budgets, not
 universal widths for every RFC 3339 timestamp or numeric spelling.
@@ -153,7 +153,7 @@ reading.
 
 | Field | Description | Format | Required |
 |---|---|---|---|
-| `result` | Provisioning outcome | `success` or `error` (not diagnostic `fail`) | All reports |
+| `result` | Provisioning outcome | `success` or `error` | All reports |
 | `agent` | Reporting agent | UTF-8 text | All reports |
 | `vm_id` | VM identity | UTF-8 text, usually a UUID | All reports |
 | `pps_type` | Pre-provisioning type | `None`, `PreprovisionedOSDisk`, `Running`, `Savable`, or `Unknown` | All reports |
@@ -199,7 +199,7 @@ so individual chunks need not be valid standalone JSON.
 | VM identity | Key field when present; otherwise absent |
 | Event identity | Key event UUID |
 | Timestamp | `ts`, RFC 3339 with offsets allowed; convert to UTC |
-| Outcome | Finish `SUCCESS` becomes `success`; `FAIL` becomes `fail` |
+| Outcome | Finish `SUCCESS` becomes `ok`; `FAIL` becomes `error` |
 | Duration | Finish's numeric seconds |
 | Encoding | Embedded `msg` envelope, when present |
 
@@ -255,17 +255,14 @@ Cloud-init durations round to microseconds; source encoding labels are preserved
 
 ### Writer Choices
 
-The writer requires UUID event IDs. The name limit defaults to 64 UTF-8 bytes
-and is configurable with `DiagnosticWriter::with_max_name_bytes`; oversized
-names are rejected, not truncated. Durations use fixed-point seconds with
-microsecond precision by default, independently of timestamp precision;
-finer digits are discarded.
+The writer requires UUID event IDs. The name limit is configurable with
+`DiagnosticWriter::with_max_name_bytes`; oversized names are rejected, not
+truncated. Durations use fixed-point seconds with microsecond precision by
+default, independently of timestamp precision; finer digits are discarded.
 
 Validation precedes writing, but I/O failure may leave a partial batch. Pool
-cleanup is explicit. The complete key, including each chunk index, must fit
-the [budget](#limits) regardless of the configured name limit.
+cleanup is explicit.
 
 Report writers emit success fields as `result`, `agent`, `pps_type`, `vm_id`,
 `timestamp`, then extras. Failure order is `result`, `reason`, `agent`, extras,
-`pps_type`, `vm_id`, `timestamp`, then the optional documentation URL. Consumers
-must not depend on that order.
+`pps_type`, `vm_id`, `timestamp`, then the optional documentation URL.

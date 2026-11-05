@@ -531,7 +531,7 @@ mod tests {
              Entry::Diagnostic(Diagnostic::Finish(finish))]
                 if start.key.event_id == finish.key.event_id
                     && start.key.event_id != event.key.event_id
-                    && finish.result == Outcome::Success
+                    && finish.result == Outcome::Ok
                     && matches!(&event.payload, DiagnosticPayload::Text(payload)
                         if payload.contains("\"health_report\":\"result=success\""))
         ));

@@ -28,7 +28,7 @@ assert_cmd = "2.0.16"
 predicates = "3.1.2"
 predicates-core = "1.0.8"
 predicates-tree = "1.0.11"
-rstest = { version = "0.27", default-features = false }
+rstest = { version = "0.28", default-features = false }
 tempfile = "3.3.0"
 
 [dependencies.libazureinit]

@@ -36,10 +36,11 @@ const INVALID_OUTCOME: &str =
 ///
 /// A span's start and finish share a UUID; events, including unspanned events,
 /// receive independent UUIDs. Finishes use `diagnostic.result` (`success` or
-/// `fail`) when recorded, otherwise an observed ERROR implies failure and no
-/// observed ERROR implies success. Unwinding implies failure regardless of an
-/// override. Invalid explicit outcomes drop the event or finish. Filtering,
-/// missing instrumentation and cancellation can hide failures.
+/// `fail`) when recorded, mapped to DIAG `ok` and `error` respectively.
+/// Otherwise, an observed ERROR implies failure and no observed ERROR implies
+/// success. Unwinding implies failure regardless of an override. Invalid
+/// explicit outcomes drop the event or finish. Filtering, missing
+/// instrumentation and cancellation can hide failures.
 #[derive(Clone, Debug)]
 pub(crate) struct DiagnosticsKvp {
     writer: DiagnosticWriter,
@@ -153,7 +154,7 @@ where
         // If this thread is already unwinding from a panic, record failure
         // regardless of the explicit outcome.
         let result = if std::thread::panicking() {
-            Outcome::Failure
+            Outcome::Error
         } else {
             let explicit = match state.fields.outcome() {
                 Ok(result) => result,
@@ -163,9 +164,9 @@ where
                 }
             };
             explicit.unwrap_or(if state.saw_error {
-                Outcome::Failure
+                Outcome::Error
             } else {
-                Outcome::Success
+                Outcome::Ok
             })
         };
         report_write_error(self.writer.emit_finish(
@@ -192,10 +193,10 @@ impl Fields {
         match self.0.get(OUTCOME_FIELD) {
             None => Ok(None),
             Some(Value::String(value)) if value == "success" => {
-                Ok(Some(Outcome::Success))
+                Ok(Some(Outcome::Ok))
             }
             Some(Value::String(value)) if value == "fail" => {
-                Ok(Some(Outcome::Failure))
+                Ok(Some(Outcome::Error))
             }
             _ => Err(INVALID_OUTCOME),
         }
@@ -318,7 +319,7 @@ mod tests {
                     && finish.key.name == "provision"
                     && start.key.event_id == finish.key.event_id
                     && start.key.event_id != event.key.event_id
-                    && finish.result == Outcome::Success
+                    && finish.result == Outcome::Ok
                     && event.key.name == "provision"
                     && matches!(&event.payload, DiagnosticPayload::Text(text)
                         if text.contains("\"records\":3")
@@ -393,7 +394,7 @@ mod tests {
             });
         });
 
-        assert_eq!(finish(&entries(&store)).result, Outcome::Failure);
+        assert_eq!(finish(&entries(&store)).result, Outcome::Error);
     }
 
     #[test]
@@ -409,14 +410,14 @@ mod tests {
             });
         });
 
-        assert_eq!(finish(&entries(&store)).result, Outcome::Success);
+        assert_eq!(finish(&entries(&store)).result, Outcome::Ok);
     }
 
     #[test]
-    fn outcome_field_accepts_only_canonical_wire_tokens() {
+    fn outcome_field_accepts_only_supported_tokens() {
         assert_eq!(Fields::default().outcome(), Ok(None));
         for (token, outcome) in
-            [("success", Outcome::Success), ("fail", Outcome::Failure)]
+            [("success", Outcome::Ok), ("fail", Outcome::Error)]
         {
             let fields = Fields(Map::from_iter([(
                 OUTCOME_FIELD.to_owned(),
@@ -436,6 +437,38 @@ mod tests {
                 Fields(Map::from_iter([(OUTCOME_FIELD.to_owned(), value)]));
             assert_eq!(fields.outcome(), Err(INVALID_OUTCOME));
         }
+    }
+
+    #[rstest::rstest]
+    #[case::success("success", Outcome::Ok, "ok")]
+    #[case::fail("fail", Outcome::Error, "error")]
+    fn explicit_results_use_canonical_wire_tokens(
+        #[case] result: &str,
+        #[case] expected: Outcome,
+        #[case] wire_token: &str,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let (kvp, store) = bridge(&dir);
+        let subscriber = tracing_subscriber::registry().with(kvp);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!("op", diagnostic.result = result).in_scope(
+                || tracing::info!(diagnostic.result = result, "observation"),
+            );
+        });
+
+        assert!(matches!(
+            entries(&store).as_slice(),
+            [Entry::Diagnostic(Diagnostic::Start(_)),
+             Entry::Diagnostic(Diagnostic::Event(event)),
+             Entry::Diagnostic(Diagnostic::Finish(finish))]
+                if event.result == Some(expected) && finish.result == expected
+        ));
+        let records = store.dump().unwrap();
+        let results: Vec<_> = records
+            .iter()
+            .map(|(key, _)| key.split('|').nth(8).unwrap())
+            .collect();
+        assert_eq!(results, ["", wire_token, wire_token]);
     }
 
     #[test]
@@ -506,7 +539,7 @@ mod tests {
         let entries = entries(&store);
         assert!(
             matches!(entries.as_slice(), [Entry::Diagnostic(Diagnostic::Event(event))]
-                if event.result == Some(Outcome::Failure) && event.payload == expected)
+                if event.result == Some(Outcome::Error) && event.payload == expected)
         );
     }
 
@@ -641,7 +674,7 @@ mod tests {
             );
         };
         assert_eq!(start.key.event_id, finish.key.event_id);
-        assert_eq!(finish.result, Outcome::Failure);
+        assert_eq!(finish.result, Outcome::Error);
     }
 
     #[test]
