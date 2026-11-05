@@ -10,8 +10,6 @@ pub mod error;
 pub mod health;
 pub(crate) mod http;
 pub mod imds;
-mod kvp;
-pub mod logging;
 pub mod media;
 
 mod provision;
