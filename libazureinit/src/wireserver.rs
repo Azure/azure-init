@@ -1,6 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! HTTP-only provisioning-health reporting to the Azure wireserver.
+//!
+//! Callers publish KVP reports independently. Failure delivery uses the
+//! supplied report's encoding without changing its timestamp or context.
+
+use libazureinit_kvp::ProvisioningReport;
 use reqwest::{
     header::{HeaderMap, HeaderValue, USER_AGENT},
     Client,
@@ -8,11 +14,10 @@ use reqwest::{
 use std::time::Duration;
 use tracing::instrument;
 
-use chrono::Utc;
 use reqwest::StatusCode;
 use serde_json::json;
 
-use crate::config::Config;
+use crate::config::Wireserver;
 use crate::error::Error;
 use crate::http;
 
@@ -48,70 +53,30 @@ impl std::fmt::Display for ProvisioningSubStatus {
     }
 }
 
-/// Constructs a KVP entry representing a successful provisioning event.
-pub fn encoded_success_report(
-    vm_id: &str,
-    optional_key_value: Option<(&str, &str)>,
-) -> String {
-    let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-    let timestamp = Utc::now().to_rfc3339();
-
-    let mut data = vec![
-        "result=success".to_string(),
-        format!("agent={}", agent),
-        "pps_type=None".to_string(),
-        format!("vm_id={}", vm_id),
-        format!("timestamp={}", timestamp),
-    ];
-    if let Some((k, v)) = optional_key_value {
-        data.push(format!("{k}={v}"));
-    }
-    encode_report(&data)
-}
-
-/// Serializes a slice of key-value strings as a single pipe-delimited entry.
-pub fn encode_report(data: &[String]) -> String {
-    let mut wtr = csv::WriterBuilder::new()
-        .delimiter(b'|')
-        .quote_style(csv::QuoteStyle::Necessary)
-        .from_writer(vec![]);
-    wtr.write_record(data).expect("CSV write failed");
-    let mut bytes = wtr.into_inner().unwrap();
-    if let Some(b'\n') = bytes.last() {
-        bytes.pop();
-    }
-    String::from_utf8(bytes).expect("CSV was not utf-8")
-}
-
-/// Reports provisioning as successfully completed to the wireserver and/or KVP.
+/// Reports successful provisioning to the wireserver with a state-only request.
 #[instrument(skip_all)]
-pub async fn report_ready(
-    config: &Config,
-    vm_id: &str,
-    optional_key_value: Option<(&str, &str)>,
-) -> Result<(), Error> {
+pub async fn report_ready(config: &Wireserver) -> Result<(), Error> {
     tracing::info!("Reporting provisioning complete");
-    let desc = encoded_success_report(vm_id, optional_key_value);
-    _report(ProvisioningState::Ready, None, Some(desc), config).await
+    _report(ProvisioningState::Ready, None, None, config).await
 }
 
-/// Reports provisioning failure to the wireserver and/or KVP.
+/// Reports provisioning failure using the supplied report's exact encoding.
 pub async fn report_failure(
-    report_str: String,
-    config: &Config,
+    report: &ProvisioningReport,
+    config: &Wireserver,
 ) -> Result<(), Error> {
     _report(
         ProvisioningState::NotReady,
         Some(ProvisioningSubStatus::ProvisioningFailed),
-        Some(report_str),
+        Some(report.encode()),
         config,
     )
     .await
 }
 
-/// Reports provisioning as still in progress to the wireserver and/or KVP.
+/// Reports provisioning as still in progress over HTTP, without publishing KVP.
 pub async fn report_in_progress(
-    config: &Config,
+    config: &Wireserver,
     vm_id: &str,
 ) -> Result<(), Error> {
     let desc = format!("Provisioning is still in progress for vm_id={vm_id}.");
@@ -132,21 +97,13 @@ async fn _report(
     state: ProvisioningState,
     substatus: Option<ProvisioningSubStatus>,
     description: Option<String>,
-    config: &Config,
+    config: &Wireserver,
 ) -> Result<(), Error> {
     tracing::info!(
         target: "libazureinit::health::status",
         "Initiating health report to wireserver: {}",
         state
     );
-
-    if let Some(description_str) = &description {
-        tracing::info!(
-            target: "libazureinit::health::report",
-            health_report = %description_str,
-            "Provisioning report: {}", description_str
-        );
-    }
 
     let body = if let Some(sub) = substatus {
         json!({
@@ -179,11 +136,9 @@ async fn _report(
     tracing::debug!(?headers, "Prepared HTTP headers");
 
     let connect_timeout =
-        Duration::from_secs_f64(config.wireserver.connection_timeout_secs);
-    let read_timeout =
-        Duration::from_secs_f64(config.wireserver.read_timeout_secs);
-    let retry_for =
-        Duration::from_secs_f64(config.wireserver.total_retry_timeout_secs);
+        Duration::from_secs_f64(config.connection_timeout_secs);
+    let read_timeout = Duration::from_secs_f64(config.read_timeout_secs);
+    let retry_for = Duration::from_secs_f64(config.total_retry_timeout_secs);
 
     let client = Client::builder()
         .connect_timeout(connect_timeout)
@@ -199,7 +154,7 @@ async fn _report(
             read_timeout,
             connect_timeout,
             remaining,
-            &config.wireserver.health_endpoint,
+            &config.health_endpoint,
         )
         .await?;
 
@@ -241,7 +196,7 @@ async fn _report(
                 status
             );
             return Err(Error::HttpStatus {
-                endpoint: config.wireserver.health_endpoint.clone(),
+                endpoint: config.health_endpoint.clone(),
                 status,
             });
         }
@@ -256,22 +211,19 @@ async fn _report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Wireserver};
     use crate::unittest::{get_http_response_payload, serve_requests};
     use reqwest::StatusCode;
     use rstest::rstest;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    fn fast_config(mock_url: String) -> Config {
-        let mut cfg = Config::default();
-        cfg.wireserver = Wireserver {
+    fn fast_config(mock_url: String) -> Wireserver {
+        Wireserver {
             connection_timeout_secs: 0.1,
             read_timeout_secs: 0.1,
             total_retry_timeout_secs: 0.5,
             health_endpoint: mock_url,
-        };
-        cfg
+        }
     }
 
     /// Verifies that `_report` times out after multiple attempts
@@ -298,8 +250,8 @@ mod tests {
         let err = Error::UnhandledError {
             details: "test_failure_retryable".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id);
-        let result = report_failure(report_str, &cfg).await;
+        let report = err.as_provisioning_report(test_vm_id);
+        let result = report_failure(&report, &cfg).await;
         cancel.cancel();
         let requests = server.await.unwrap();
         assert!(
@@ -326,8 +278,7 @@ mod tests {
                 tokio::spawn(serve_requests(listener, payload, cancel.clone()));
 
             let cfg = fast_config(mock_url);
-            let test_vm_id = "00000000-0000-0000-0000-000000000000";
-            let result = report_ready(&cfg, test_vm_id, None).await;
+            let result = report_ready(&cfg).await;
 
             cancel.cancel();
             assert_eq!(server.await.unwrap(), 1);
@@ -359,8 +310,8 @@ mod tests {
         let err = Error::UnhandledError {
             details: "test_report_non_retryable_codes".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id);
-        let result = report_failure(report_str, &cfg).await;
+        let report = err.as_provisioning_report(test_vm_id);
+        let result = report_failure(&report, &cfg).await;
         cancel.cancel();
         let requests = server.await.unwrap();
         assert_eq!(requests, 1, "HTTP {status} should not be retried");
@@ -406,20 +357,20 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let mut cfg = fast_config(format!("http://{addr}"));
-        cfg.wireserver = Wireserver {
+        cfg = Wireserver {
             connection_timeout_secs: 0.01,
             read_timeout_secs: 0.01,
             total_retry_timeout_secs: 0.01,
-            ..cfg.wireserver
+            ..cfg
         };
 
         let test_vm_id = "00000000-0000-0000-0000-000000000000";
-        let r1 = report_ready(&cfg, test_vm_id, None).await;
+        let r1 = report_ready(&cfg).await;
         let err = Error::UnhandledError {
             details: "no config".to_string(),
         };
-        let report_str = err.as_encoded_report(test_vm_id);
-        let r2 = report_failure(report_str, &cfg).await;
+        let report = err.as_provisioning_report(test_vm_id);
+        let r2 = report_failure(&report, &cfg).await;
         assert!(
             matches!(&r1, Err(Error::Timeout)),
             "report_ready should time out against an unresponsive server, got {r1:?}"
@@ -428,23 +379,5 @@ mod tests {
             matches!(&r2, Err(Error::Timeout)),
             "report_failure should time out against an unresponsive server, got {r2:?}"
         );
-    }
-
-    // Verifies encoded_success_report() creates the correct
-    // success KVP string format, including optional custom key-value pairs.
-    #[test]
-    fn test_encoded_success_report_format() {
-        let vm_id = "00000000-0000-0000-0000-000000000abc";
-        let encoded =
-            encoded_success_report(vm_id, Some(("build", "test-123")));
-
-        assert!(encoded.contains("result=success"));
-        assert!(encoded.contains("agent=Azure-Init/"));
-        assert!(encoded.contains("vm_id=00000000-0000-0000-0000-000000000abc"));
-        assert!(encoded.contains("build=test-123"));
-        assert!(encoded.contains("pps_type=None"));
-        assert!(encoded.contains("timestamp="));
-        assert!(encoded.contains("|"));
-        assert!(!encoded.contains(","));
     }
 }
