@@ -323,8 +323,11 @@ fn validate_report_quoting(value: &str) -> Result<(), DecodeError> {
 }
 
 impl ProvisioningReport {
-    /// Encodes the report for storage.
-    pub(crate) fn encode(&self) -> String {
+    /// Returns the report's pipe-delimited CSV representation without I/O.
+    ///
+    /// Preserves the report's timestamp. Encoding does not validate storage
+    /// limits; [`write_report`] applies the store's size and validation policy.
+    pub fn encode(&self) -> String {
         let mut data = Vec::with_capacity(7 + self.extra.len());
 
         data.push(format!("result={}", self.result));
@@ -624,6 +627,66 @@ mod tests {
         write_report(&store, &report).unwrap();
 
         assert_eq!(store.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn full_pool_rejects_new_reports_without_appending() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        store
+            .append_multiple(
+                (0..1024).map(|i| (format!("diagnostic-{i}"), "keep")),
+            )
+            .unwrap();
+        let before = store.dump().unwrap();
+        for report in [
+            ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None),
+            ProvisioningReport::failure(
+                AGENT,
+                VM_ID,
+                "failed",
+                ReportPpsType::None,
+            ),
+        ] {
+            assert!(matches!(
+                write_report(&store, &report),
+                Err(KvpError::MaxUniqueKeysExceeded { max: 1024 })
+            ));
+            assert_eq!(store.dump().unwrap(), before);
+        }
+    }
+
+    #[rstest]
+    #[case::ascii("x")]
+    #[case::multibyte("\u{20ac}")]
+    fn report_enforces_exact_encoded_value_budget(#[case] suffix: &str) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        let mut report = ProvisioningReport::failure(
+            AGENT,
+            VM_ID,
+            "failed",
+            ReportPpsType::None,
+        )
+        .with_extra("context", "");
+        let padding =
+            store.max_value_size() - report.encode().len() - suffix.len();
+        report.extra[0].1 = format!("{}{suffix}", "x".repeat(padding));
+        let encoded = report.encode();
+        assert_eq!(encoded.len(), 1022);
+        write_report(&store, &report).unwrap();
+        assert_eq!(encoded.parse::<ProvisioningReport>().unwrap(), report);
+
+        report.extra[0].1.push('x');
+        assert_eq!(report.encode().len(), 1023);
+        assert!(matches!(
+            write_report(&store, &report),
+            Err(KvpError::ValueTooLarge {
+                max: 1022,
+                actual: 1023
+            })
+        ));
+        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), Some(encoded));
     }
 
     #[test]
