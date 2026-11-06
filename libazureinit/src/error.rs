@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::health::encode_report;
+use libazureinit_kvp::{ProvisioningReport, ReportPpsType};
 use std::collections::HashMap;
 
 /// Set of error codes that can be used by libazureinit.
@@ -156,27 +156,22 @@ impl Error {
         map
     }
 
-    /// Formats the error and its context as a pipe-delimited key-value string suitable for health endpoint reporting.
+    /// Constructs a failure report with the error's reason and supporting data.
     ///
-    /// Includes the result, reason, agent, supporting data, and standard fields such as
-    /// `vm_id`, `timestamp`, and documentation URL.
-    pub fn as_encoded_report(&self, vm_id: &str) -> String {
-        let agent = format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"));
-        let timestamp = chrono::Utc::now();
-
-        let mut data = vec![
-            "result=error".to_string(),
-            format!("reason={}", self.reason()),
-            format!("agent={agent}"),
-        ];
-        for (k, v) in self.supporting_data() {
-            data.push(format!("{k}={v}"));
+    /// Construct once and reuse for KVP and HTTP delivery to preserve the same
+    /// timestamp and context in both transports.
+    pub fn as_provisioning_report(&self, vm_id: &str) -> ProvisioningReport {
+        let mut report = ProvisioningReport::failure(
+            format!("Azure-Init/{}", env!("CARGO_PKG_VERSION")),
+            vm_id,
+            self.reason(),
+            ReportPpsType::None,
+        )
+        .with_documentation_url(Self::DOCUMENTATION_URL);
+        for (key, value) in self.supporting_data() {
+            report = report.with_extra(key, value);
         }
-        data.push("pps_type=None".to_string());
-        data.push(format!("vm_id={vm_id}"));
-        data.push(format!("timestamp={}", timestamp.to_rfc3339()));
-        data.push(format!("documentation_url={}", Self::DOCUMENTATION_URL));
-        encode_report(&data)
+        report
     }
 }
 
@@ -185,12 +180,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_load_sshd_config_failure_as_encoded_report() {
+    fn test_load_sshd_config_failure_as_provisioning_report() {
         let vm_id = "00000000-0000-0000-0000-000000000000";
         let err = Error::LoadSshdConfig {
             details: "bad config".to_string(),
         };
-        let encoded = err.as_encoded_report(vm_id);
+        let encoded = err.as_provisioning_report(vm_id).encode();
         assert!(encoded.contains("reason=failed to load sshd config"));
         assert!(encoded.contains("details=bad config"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
@@ -210,19 +205,19 @@ mod tests {
             endpoint: "http://example.com".to_string(),
             status: reqwest::StatusCode::NOT_FOUND,
         };
-        let encoded = err.as_encoded_report(vm_id);
+        let encoded = err.as_provisioning_report(vm_id).encode();
         assert!(encoded.contains("endpoint=http://example.com"));
         assert!(encoded.contains("status=404"));
         assert!(encoded.contains(&format!("vm_id={}", vm_id)));
     }
 
     #[test]
-    fn test_as_encoded_report_for_unhandled_error() {
+    fn test_as_provisioning_report_for_unhandled_error() {
         let vm_id = "00000000-0000-0000-0000-000000000000";
         let err = Error::UnhandledError {
             details: "test_unhandled_exception".to_string(),
         };
-        let encoded = err.as_encoded_report(vm_id);
+        let encoded = err.as_provisioning_report(vm_id).encode();
 
         assert!(encoded.contains("reason=unhandled error"));
         assert!(encoded.contains("error=unhandled error"));

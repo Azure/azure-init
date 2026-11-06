@@ -7,8 +7,8 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use libazureinit_kvp::{
-    DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome, PoolMode,
-    PROVISIONING_REPORT_KEY,
+    write_report, DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome,
+    PoolMode, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
 };
 use rstest::rstest;
 use serde_json::{json, Value};
@@ -377,6 +377,19 @@ fn parsed_dump_reassembles_and_filters_without_dropping_other_entries() {
         Value::Array(entries.as_array().unwrap()[1..].to_vec())
     );
     assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn parsed_dump_reads_in_progress_report() {
+    let dir = TempDir::new().unwrap();
+    let report =
+        ProvisioningReport::in_progress("agent", VM_ID, ReportPpsType::None);
+    write_report(&store_at(&dir), &report).unwrap();
+
+    let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(entries.as_array().unwrap().len(), 1);
+    assert_eq!(entries[0]["type"], "PROVISIONING_REPORT");
+    assert_eq!(entries[0]["result"], "in_progress");
 }
 
 #[test]
