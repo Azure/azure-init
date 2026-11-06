@@ -16,10 +16,12 @@ fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }
 
-/// Outcome of a provisioning attempt.
+/// State of a provisioning attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 enum ReportResult {
+    /// No final result has been published for this attempt.
+    InProgress,
     /// Provisioning completed successfully.
     Success,
     /// Provisioning failed.
@@ -30,6 +32,7 @@ impl ReportResult {
     /// The wire string used in the `result` KVP field.
     fn as_str(self) -> &'static str {
         match self {
+            Self::InProgress => "in_progress",
             Self::Success => "success",
             Self::Error => "error",
         }
@@ -90,10 +93,11 @@ impl std::fmt::Display for ReportPpsType {
 
 /// A provisioning result for host telemetry.
 ///
-/// [`success`](Self::success) and [`failure`](Self::failure) capture the current
-/// time. Add optional context with the builder methods, then call
-/// [`write_report`] to persist it. Existing stored reports can be parsed with
-/// [`str::parse`]; parsing preserves their timestamps.
+/// [`in_progress`](Self::in_progress), [`success`](Self::success), and
+/// [`failure`](Self::failure) capture the current time. Add optional context
+/// with the builder methods, then call [`write_report`] to persist it. Existing
+/// stored reports can be parsed with [`str::parse`]; parsing preserves their
+/// timestamps.
 ///
 /// See the [provisioning report contract] for the stored format.
 ///
@@ -122,7 +126,7 @@ impl std::fmt::Display for ReportPpsType {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ProvisioningReport {
-    /// Provisioning outcome.
+    /// Provisioning state.
     result: ReportResult,
     /// Reporting agent identifier.
     agent: String,
@@ -144,6 +148,26 @@ pub struct ProvisioningReport {
 }
 
 impl ProvisioningReport {
+    /// Creates a report marking the start of a new provisioning attempt.
+    ///
+    /// Starts with a fresh timestamp and no prior failure context.
+    pub fn in_progress(
+        agent: impl Into<String>,
+        vm_id: impl Into<String>,
+        pps_type: ReportPpsType,
+    ) -> Self {
+        Self {
+            result: ReportResult::InProgress,
+            agent: agent.into(),
+            vm_id: vm_id.into(),
+            timestamp: now_rfc3339(),
+            pps_type,
+            reason: None,
+            documentation_url: None,
+            extra: Vec::new(),
+        }
+    }
+
     /// Creates a successful provisioning report.
     pub fn success(
         agent: impl Into<String>,
@@ -236,6 +260,7 @@ impl FromStr for ProvisioningReport {
             .ok_or(DecodeError::Malformed)?
             .as_str()
         {
+            "in_progress" => ReportResult::InProgress,
             "success" => ReportResult::Success,
             "error" => ReportResult::Error,
             _ => return Err(DecodeError::Malformed),
@@ -253,7 +278,7 @@ impl FromStr for ProvisioningReport {
                 .ok_or(DecodeError::Malformed)?,
         )?;
         let (reason, documentation_url) = match result {
-            ReportResult::Success => (None, None),
+            ReportResult::InProgress | ReportResult::Success => (None, None),
             ReportResult::Error => (
                 Some(
                     take_field(&mut fields, "reason")?
@@ -329,7 +354,7 @@ impl ProvisioningReport {
 
         data.push(format!("result={}", self.result));
         match self.result {
-            ReportResult::Success => {
+            ReportResult::InProgress | ReportResult::Success => {
                 data.push(format!("agent={}", self.agent));
                 data.push(format!("pps_type={}", self.pps_type));
                 data.push(format!("vm_id={}", self.vm_id));
@@ -417,6 +442,10 @@ mod tests {
     }
 
     #[rstest]
+    #[case::in_progress(
+        with_ts(ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None)),
+        "result=in_progress|agent=Azure-Init/0.0.0|pps_type=None|vm_id=00000000-0000-0000-0000-000000000abc|timestamp=2026-06-17T00:00:00+00:00",
+    )]
     #[case::success(
         with_ts(ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None)),
         "result=success|agent=Azure-Init/0.0.0|pps_type=None|vm_id=00000000-0000-0000-0000-000000000abc|timestamp=2026-06-17T00:00:00+00:00",
@@ -482,17 +511,23 @@ mod tests {
         assert_eq!(ReportPpsType::from_wire(expected).unwrap(), pps_type);
     }
 
-    #[test]
-    fn success_serializes_without_absent_fields() {
-        let report = with_ts(ProvisioningReport::success(
-            AGENT,
-            VM_ID,
-            ReportPpsType::None,
-        ));
+    #[rstest]
+    #[case::in_progress(
+        ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None),
+        "in_progress"
+    )]
+    #[case::success(
+        ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None),
+        "success"
+    )]
+    fn non_failure_serializes_without_absent_fields(
+        #[case] report: ProvisioningReport,
+        #[case] result: &str,
+    ) {
         assert_eq!(
-            serde_json::to_value(report).unwrap(),
+            serde_json::to_value(with_ts(report)).unwrap(),
             serde_json::json!({
-                "result": "success",
+                "result": result,
                 "agent": AGENT,
                 "vm_id": VM_ID,
                 "timestamp": TS,
@@ -624,6 +659,138 @@ mod tests {
         write_report(&store, &report).unwrap();
 
         assert_eq!(store.len().unwrap(), 1);
+    }
+
+    #[rstest]
+    #[case::success(ProvisioningReport::success(
+        AGENT,
+        VM_ID,
+        ReportPpsType::None
+    ))]
+    #[case::failure(ProvisioningReport::failure(
+        AGENT,
+        VM_ID,
+        "new failure",
+        ReportPpsType::None
+    ))]
+    fn report_replacement_clears_previous_attempt(
+        #[case] final_report: ProvisioningReport,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        let previous = with_ts(
+            ProvisioningReport::failure(
+                AGENT,
+                VM_ID,
+                "old failure",
+                ReportPpsType::None,
+            )
+            .with_extra("old_context", "old value")
+            .with_documentation_url("https://example.invalid/old"),
+        );
+        store.append("before", "keep before").unwrap();
+        write_report(&store, &previous).unwrap();
+        store.append("after", "keep after").unwrap();
+
+        let reserved =
+            ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None);
+        assert_ne!(reserved.timestamp, previous.timestamp);
+        assert!(reserved.reason.is_none());
+        assert!(reserved.documentation_url.is_none());
+        assert!(reserved.extra.is_empty());
+        for report in [&reserved, &final_report] {
+            write_report(&store, report).unwrap();
+            assert_eq!(
+                store.dump().unwrap(),
+                vec![
+                    ("before".into(), "keep before".into()),
+                    (PROVISIONING_REPORT_KEY.into(), report.encode()),
+                    ("after".into(), "keep after".into()),
+                ]
+            );
+            assert_eq!(
+                store
+                    .read(PROVISIONING_REPORT_KEY)
+                    .unwrap()
+                    .unwrap()
+                    .parse::<ProvisioningReport>()
+                    .unwrap(),
+                *report
+            );
+        }
+    }
+
+    #[rstest]
+    #[case::success(ProvisioningReport::success(
+        AGENT,
+        VM_ID,
+        ReportPpsType::None
+    ))]
+    #[case::failure(ProvisioningReport::failure(
+        AGENT,
+        VM_ID,
+        "failed",
+        ReportPpsType::None
+    ))]
+    fn reserved_report_updates_at_and_above_key_limit(
+        #[case] final_report: ProvisioningReport,
+        #[values(1023, 1024)] diagnostic_count: usize,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        write_report(
+            &store,
+            &ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None),
+        )
+        .unwrap();
+        store
+            .append_multiple(
+                (0..diagnostic_count)
+                    .map(|i| (format!("diagnostic-{i}"), "keep")),
+            )
+            .unwrap();
+
+        write_report(&store, &final_report).unwrap();
+
+        let records = store.dump().unwrap();
+        assert_eq!(records.len(), diagnostic_count + 1);
+        assert_eq!(
+            records[0],
+            (PROVISIONING_REPORT_KEY.into(), final_report.encode())
+        );
+        assert!(records[1..]
+            .iter()
+            .enumerate()
+            .all(|(i, (key, value))| key == &format!("diagnostic-{i}")
+                && value == "keep"));
+    }
+
+    #[test]
+    fn full_pool_rejects_new_reports_without_appending() {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        store
+            .append_multiple(
+                (0..1024).map(|i| (format!("diagnostic-{i}"), "keep")),
+            )
+            .unwrap();
+        let before = store.dump().unwrap();
+        for report in [
+            ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None),
+            ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None),
+            ProvisioningReport::failure(
+                AGENT,
+                VM_ID,
+                "failed",
+                ReportPpsType::None,
+            ),
+        ] {
+            assert!(matches!(
+                write_report(&store, &report),
+                Err(KvpError::MaxUniqueKeysExceeded { max: 1024 })
+            ));
+            assert_eq!(store.dump().unwrap(), before);
+        }
     }
 
     #[test]
