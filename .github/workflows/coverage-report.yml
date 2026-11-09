@@ -45,8 +45,24 @@ jobs:
           tool: cargo-llvm-cov
           fallback: none
 
-      - name: Generate code coverage
-        run: cargo llvm-cov --locked --all-features --workspace --lcov --output-path lcov.info
+      - name: Test the isolated provisioning runner
+        run: python3 -m unittest discover -s tests/support -p test_container_provisioning.py -v
+
+      - name: Build the isolated provisioning image
+        run: |
+          . /etc/os-release
+          docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" -t azure-init-main-tests:local tests/support
+
+      - name: Collect unit and CLI coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --locked --all-features --workspace --no-clean --no-report
+
+      - name: Collect real entrypoint coverage
+        run: cargo llvm-cov --locked --all-features --package azure-init --test cli --no-clean --no-report -- --ignored agent_provisioning_in_container
+
+      - name: Generate combined code coverage
+        run: cargo llvm-cov report --package azure-init --package libazureinit --package libazureinit-kvp --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
