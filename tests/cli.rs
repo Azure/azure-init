@@ -2,10 +2,143 @@ use std::process::Command;
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
+use rstest::rstest;
 
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::time::Duration;
 use tempfile::tempdir;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio::time::timeout;
+
+#[rstest]
+#[case::delivered("200 OK", false)]
+#[case::delivery_failed("403 Forbidden", true)]
+#[tokio::test]
+async fn invalid_configuration_reports_and_surfaces_http_failures(
+    #[case] status: &str,
+    #[case] delivery_failed: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let config_path = dir.path().join("invalid.toml");
+    let log_path = dir.path().join("azure-init.log");
+    let data_dir = dir.path().join("data");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+        [ssh]
+        query_sshd_config = "invalid"
+        [azure_init_log_path]
+        path = "{}"
+        [azure_init_data_dir]
+        path = "{}"
+        [telemetry]
+        kvp_diagnostics = false
+        "#,
+            log_path.display(),
+            data_dir.display()
+        ),
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy = format!("http://{}", listener.local_addr()?);
+    let mut command = tokio::process::Command::new(
+        assert_cmd::cargo::cargo_bin!("azure-init"),
+    );
+    command
+        .arg("--config")
+        .arg(&config_path)
+        .env("HTTP_PROXY", &proxy)
+        .env("http_proxy", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("all_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .kill_on_drop(true);
+
+    let capture = async {
+        let (mut stream, _) = listener.accept().await?;
+        let mut reader = BufReader::new(&mut stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).await?;
+        assert_eq!(
+            request_line.trim_end(),
+            "POST http://168.63.129.16/provisioning/health HTTP/1.1"
+        );
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).await? == 0 {
+                return Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "incomplete HTTP headers",
+                ));
+            }
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = Some(
+                        value.trim().parse::<usize>().map_err(|error| {
+                            std::io::Error::new(ErrorKind::InvalidData, error)
+                        })?,
+                    );
+                }
+            }
+        }
+        let length = content_length.ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::InvalidData,
+                "missing content length",
+            )
+        })?;
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await?;
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|error| {
+                std::io::Error::new(ErrorKind::InvalidData, error)
+            })?;
+        drop(reader);
+        stream.write_all(
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes(),
+        ).await?;
+        Ok::<_, std::io::Error>(body)
+    };
+    let (body, output) = timeout(Duration::from_secs(5), async {
+        tokio::try_join!(capture, command.output())
+    })
+    .await??;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("Failed to load configuration:"), "{stderr}");
+    assert_eq!(
+        stderr.contains("Failed to send provisioning failure report:"),
+        delivery_failed,
+        "{stderr}"
+    );
+    assert_eq!(body["state"], "NotReady");
+    assert_eq!(body["details"]["subStatus"], "ProvisioningFailed");
+    let report: libazureinit_kvp::ProvisioningReport =
+        body["details"]["description"].as_str().unwrap().parse()?;
+    let report = serde_json::to_value(report)?;
+    assert_eq!(report["result"], "error");
+    assert_eq!(report["reason"], "failed to load sshd config");
+    assert_eq!(
+        report["agent"],
+        format!("Azure-Init/{}", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(report["extra"][0][0], "details");
+    assert!(report["extra"][0][1]
+        .as_str()
+        .unwrap()
+        .contains("query_sshd_config"));
+    assert!(!log_path.exists());
+    assert!(!data_dir.exists());
+    Ok(())
+}
 
 // Assert help text includes the --groups flag
 #[test]
@@ -98,6 +231,43 @@ fn setup_clean_test() -> Result<
     fs::write(&config_path, config_contents)?;
 
     Ok((temp_dir, data_dir, log_file, config_path))
+}
+
+#[rstest]
+#[case::clean(true)]
+#[case::already_provisioned(false)]
+fn non_provisioning_paths_do_not_send_health(
+    #[case] clean: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, data_dir, _log_file, config_path) = setup_clean_test()?;
+    let vm_id = libazureinit::get_vm_id()
+        .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".into());
+    let marker = data_dir.join(format!("{vm_id}.provisioned"));
+    fs::write(&marker, "already provisioned")?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&config_path)?,
+        "\n[wireserver]\nhealth_endpoint = \"http://{}/provisioning/health\"\n\
+         connection_timeout_secs = 0.1\nread_timeout_secs = 0.1\n\
+         total_retry_timeout_secs = 0.5",
+        listener.local_addr()?
+    )?;
+    let mut command =
+        assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("azure-init"));
+    command
+        .arg("--config")
+        .arg(&config_path)
+        .env("NO_PROXY", "*")
+        .env("no_proxy", "*")
+        .timeout(Duration::from_secs(5));
+    if clean {
+        command.arg("clean");
+    }
+    command.assert().success();
+    assert_eq!(listener.accept().unwrap_err().kind(), ErrorKind::WouldBlock);
+    assert_eq!(marker.exists(), !clean);
+    Ok(())
 }
 
 // Ensures that the `clean` command removes only the provisioned file

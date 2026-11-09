@@ -3,20 +3,22 @@
 mod logging;
 mod tracing_layer;
 
-use std::path::PathBuf;
+use std::{future::Future, path::PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use libazureinit::{
-    config::Config,
+    config::{Config, Wireserver},
     error::Error as LibError,
     get_vm_id,
-    health::{report_failure, report_ready},
     imds::{query, InstanceMetadata},
     is_provisioning_complete, mark_provisioning_complete,
     media::{get_mount_device, mount_parse_ovf_env, Environment},
     reqwest::{header, Client},
-    Provision, User,
+    wireserver, Provision, User,
+};
+use libazureinit_kvp::{
+    write_report, KvpPoolStore, ProvisioningReport, ReportPpsType,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -25,6 +27,7 @@ use tracing::instrument;
 use tracing_subscriber::{prelude::*, Layer};
 
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+const REPORT_AGENT: &str = concat!("Azure-Init/", env!("CARGO_PKG_VERSION"));
 
 fn version_string() -> String {
     if let Some(v) = option_env!("AZURE_INIT_VERSION") {
@@ -260,6 +263,74 @@ fn clean_log_file(config: &Config) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+fn failure_report(error: &anyhow::Error, vm_id: &str) -> ProvisioningReport {
+    error
+        .downcast_ref::<LibError>()
+        .map(|error| error.as_provisioning_report(vm_id))
+        .unwrap_or_else(|| {
+            LibError::UnhandledError {
+                details: format!("{error:?}"),
+            }
+            .as_provisioning_report(vm_id)
+        })
+}
+
+async fn write_kvp_report(
+    store: &KvpPoolStore,
+    report: &ProvisioningReport,
+) -> Result<(), anyhow::Error> {
+    let store = store.clone();
+    let report = report.clone();
+    tokio::task::spawn_blocking(move || write_report(&store, &report))
+        .await??;
+    Ok(())
+}
+
+/// Reporting failures never replace the actual provisioning result.
+async fn provision_with_reporting(
+    config: &Wireserver,
+    store: Option<&KvpPoolStore>,
+    vm_id: &str,
+    provisioning: impl Future<Output = Result<(), anyhow::Error>>,
+) -> Result<(), anyhow::Error> {
+    let result = provisioning.await;
+    let report = match &result {
+        Ok(()) => ProvisioningReport::success(
+            REPORT_AGENT,
+            vm_id,
+            ReportPpsType::None,
+        ),
+        Err(error) => {
+            eprintln!("{error:?}");
+            failure_report(error, vm_id)
+        }
+    };
+    let kvp = async {
+        if let Some(store) = store {
+            if let Err(error) = write_kvp_report(store, &report).await {
+                // Avoid sending a write failure back into the failing KVP sink.
+                eprintln!(
+                    "Failed to write provisioning report to KVP: {error:#}"
+                );
+            }
+        }
+    };
+    let http = async {
+        let sent = if result.is_ok() {
+            wireserver::report_ready(config).await
+        } else {
+            wireserver::report_failure(&report, config).await
+        };
+        if let Err(error) = sent {
+            tracing::warn!(
+                "Failed to send provisioning report to wireserver: {error:?}"
+            );
+        }
+    };
+    tokio::join!(kvp, http);
+    result
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let vm_id: String = get_vm_id()
@@ -284,34 +355,35 @@ async fn main() -> ExitCode {
     let setup_result =
         tracing::subscriber::with_default(temp_subscriber, || {
             let config = Config::load(opts.config.clone())?;
-            let logging::LoggingSetup { subscriber } =
-                logging::setup_layers(&vm_id, &config);
+            let logging::LoggingSetup {
+                subscriber,
+                report_store,
+            } = logging::setup_layers(&vm_id, &config);
             if let Err(e) = tracing::subscriber::set_global_default(subscriber)
             {
                 eprintln!("Failed to set global default subscriber: {e}");
             }
-            Ok::<_, anyhow::Error>(config)
+            Ok::<_, anyhow::Error>((config, report_store))
         });
 
-    let config = match setup_result {
+    let (config, report_store) = match setup_result {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Failed to load configuration: {error:?}");
             eprintln!("Example configuration:\n\n{}", Config::default());
 
-            // Build temporary config to pass in wireserver defaults for report_failure
-            let cfg = Config::default();
+            let cfg = Wireserver::default();
 
             let err = LibError::LoadSshdConfig {
                 details: format!("{error:?}"),
             };
 
             // Report the failure to the health endpoint
-            let report_str = err.as_encoded_report(&vm_id);
-            let report_result = report_failure(report_str, &cfg).await;
+            let report = err.as_provisioning_report(&vm_id);
+            let report_result = wireserver::report_failure(&report, &cfg).await;
 
             if let Err(report_error) = report_result {
-                tracing::warn!(
+                eprintln!(
                     "Failed to send provisioning failure report: {:?}",
                     report_error
                 );
@@ -337,45 +409,21 @@ async fn main() -> ExitCode {
         );
         ExitCode::SUCCESS
     } else {
-        let clone_config = config.clone();
-        match provision(config, &vm_id, opts).await {
+        let wireserver = config.wireserver.clone();
+        match provision_with_reporting(
+            &wireserver,
+            report_store.as_ref(),
+            &vm_id,
+            provision(config, &vm_id, opts),
+        )
+        .await
+        {
             Ok(_) => {
-                let report_result =
-                    report_ready(&clone_config, &vm_id, None).await;
-
-                if let Err(report_error) = report_result {
-                    tracing::warn!(
-                        "Failed to send provisioning success report: {:?}",
-                        report_error
-                    );
-                }
-
                 tracing::info!("Provisioning completed successfully");
 
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("{e:?}");
-
-                let report_str = e
-                    .downcast_ref::<LibError>()
-                    .map(|lib_error| lib_error.as_encoded_report(&vm_id))
-                    .unwrap_or_else(|| {
-                        LibError::UnhandledError {
-                            details: format!("{e:?}"),
-                        }
-                        .as_encoded_report(&vm_id)
-                    });
-                let report_result =
-                    report_failure(report_str, &clone_config).await;
-
-                if let Err(report_error) = report_result {
-                    tracing::warn!(
-                        "Failed to send provisioning failure report: {:?}",
-                        report_error
-                    );
-                }
-
                 tracing::error!("Provisioning failed with error: {e:?}");
 
                 let config: u8 = exitcode::CONFIG
@@ -477,4 +525,679 @@ async fn provision(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libazureinit::reqwest::StatusCode;
+    use libazureinit_kvp::{
+        DiagnosticReader, DiagnosticWriter, Entry, KvpPool, Outcome, PoolMode,
+        PROVISIONING_REPORT_KEY,
+    };
+    use rstest::rstest;
+    use serde_json::{json, Value};
+    use std::io;
+    use tempfile::TempDir;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+
+    const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    #[test]
+    fn clean_reports_subscriber_conflict() {
+        const CHILD: &str = "AZURE_INIT_TEST_MAIN_SUBSCRIBER_CONFLICT";
+        if std::env::var_os(CHILD).is_some() {
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::registry(),
+            )
+            .unwrap();
+            assert_eq!(
+                format!("{:?}", main()),
+                format!("{:?}", ExitCode::SUCCESS)
+            );
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.telemetry.kvp_diagnostics = false;
+        config.azure_init_log_path.path = dir.path().join("azure-init.log");
+        config.azure_init_data_dir.path = dir.path().join("state");
+        std::fs::create_dir(&config.azure_init_data_dir.path).unwrap();
+        let marker = config.azure_init_data_dir.path.join("test.provisioned");
+        std::fs::write(&marker, "").unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, config.to_string()).unwrap();
+
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", proxy.local_addr().unwrap());
+        // "clean" is both a libtest filter and a valid argument to the real CLI.
+        assert_cmd::Command::new(std::env::current_exe().unwrap())
+            .arg("clean")
+            .env(CHILD, "1")
+            .env("AZURE_INIT_CONFIG", &config_path)
+            .env("AZURE_INIT_LOG", "off")
+            .env("RUST_TEST_NOCAPTURE", "1")
+            .env("RUST_TEST_THREADS", "1")
+            .env("HTTP_PROXY", &endpoint)
+            .env("http_proxy", &endpoint)
+            .env("ALL_PROXY", &endpoint)
+            .env("all_proxy", &endpoint)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stderr(predicates::str::contains(
+                "Failed to set global default subscriber:",
+            ));
+        assert!(!marker.exists(), "subscriber failure must not skip cleanup");
+        assert_eq!(
+            proxy.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "clean must not send a health report"
+        );
+    }
+
+    struct CapturedRequest {
+        request_line: String,
+        headers: header::HeaderMap,
+        body: Value,
+    }
+
+    async fn capture_request(
+        stream: &mut TcpStream,
+    ) -> io::Result<CapturedRequest> {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).await?;
+        let mut headers = header::HeaderMap::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).await? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "incomplete HTTP headers",
+                ));
+            }
+            if line == "\r\n" {
+                break;
+            }
+            let (name, value) = line.split_once(':').ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid HTTP header",
+                )
+            })?;
+            headers.append(
+                header::HeaderName::from_bytes(name.as_bytes()).map_err(
+                    |error| io::Error::new(io::ErrorKind::InvalidData, error),
+                )?,
+                header::HeaderValue::from_str(value.trim()).map_err(
+                    |error| io::Error::new(io::ErrorKind::InvalidData, error),
+                )?,
+            );
+        }
+        let length = headers
+            .get(header::CONTENT_LENGTH)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing content length",
+                )
+            })?
+            .to_str()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .parse::<usize>()
+            .map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidData, error)
+            })?;
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await?;
+        Ok(CapturedRequest {
+            request_line: request_line.trim_end().into(),
+            headers,
+            body: serde_json::from_slice(&body).map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidData, error)
+            })?,
+        })
+    }
+
+    #[rstest]
+    #[case::incomplete_headers(
+        b"POST / HTTP/1.1\r\nHost: test\r\n",
+        io::ErrorKind::UnexpectedEof,
+        |error: &io::Error| error.to_string() == "incomplete HTTP headers"
+    )]
+    #[case::malformed_header(
+        b"POST / HTTP/1.1\r\nnot-a-header\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.to_string() == "invalid HTTP header"
+    )]
+    #[case::invalid_header_name(
+        b"POST / HTTP/1.1\r\nbad name: value\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::InvalidHeaderName>()
+    )]
+    #[case::invalid_header_value(
+        b"POST / HTTP/1.1\r\nX-Test: bad\0value\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::InvalidHeaderValue>()
+    )]
+    #[case::missing_length(
+        b"POST / HTTP/1.1\r\nHost: test\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.to_string() == "missing content length"
+    )]
+    #[case::non_ascii_length(
+        b"POST / HTTP/1.1\r\nContent-Length: \xc3\xa9\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::ToStrError>()
+    )]
+    #[case::invalid_length(
+        b"POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<std::num::ParseIntError>()
+    )]
+    #[case::invalid_json(
+        b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n{",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<serde_json::Error>()
+    )]
+    #[tokio::test]
+    async fn capture_request_rejects_invalid_requests(
+        #[case] request: &[u8],
+        #[case] kind: io::ErrorKind,
+        #[case] matches_error: fn(&io::Error) -> bool,
+    ) {
+        let error = timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            client.write_all(request).await.unwrap();
+            client.shutdown().await.unwrap();
+            capture_request(&mut server).await
+        })
+        .await
+        .expect("request capture hung")
+        .err()
+        .expect("invalid request was accepted");
+        assert_eq!(error.kind(), kind);
+        assert!(matches_error(&error), "unexpected error: {error:?}");
+    }
+
+    fn wireserver_config(listener: &TcpListener) -> Wireserver {
+        Wireserver {
+            connection_timeout_secs: 0.1,
+            read_timeout_secs: 1.0,
+            total_retry_timeout_secs: 2.0,
+            health_endpoint: format!(
+                "http://{}/provisioning/health",
+                listener.local_addr().unwrap()
+            ),
+        }
+    }
+
+    async fn respond(stream: &mut TcpStream, status: StatusCode) {
+        stream.write_all(
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes(),
+        ).await.unwrap();
+    }
+
+    async fn mock_wireserver(
+        statuses: Vec<StatusCode>,
+    ) -> (Wireserver, JoinHandle<Vec<CapturedRequest>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = wireserver_config(&listener);
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for status in statuses {
+                let request = timeout(Duration::from_secs(5), async {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = capture_request(&mut stream).await.unwrap();
+                    respond(&mut stream, status).await;
+                    request
+                })
+                .await
+                .expect("health request did not complete");
+                requests.push(request);
+            }
+            requests
+        });
+        (config, server)
+    }
+
+    fn store_at(dir: &TempDir) -> KvpPoolStore {
+        KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)
+            .unwrap()
+    }
+
+    fn stored_report(store: &KvpPoolStore) -> ProvisioningReport {
+        store
+            .read(PROVISIONING_REPORT_KEY)
+            .unwrap()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn assert_request(request: &CapturedRequest, body: Value) {
+        assert_eq!(request.request_line, "POST /provisioning/health HTTP/1.1");
+        let agent = format!("azure-init v{}", libazureinit::VERSION);
+        assert_eq!(request.headers[header::USER_AGENT], agent);
+        assert_eq!(request.headers["x-ms-guest-agent-name"], agent);
+        assert_eq!(request.headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(request.body, body);
+    }
+
+    #[rstest]
+    #[case::success(false)]
+    #[case::failure(true)]
+    #[tokio::test]
+    async fn health_lifecycle_publishes_actual_result(#[case] failed: bool) {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let previous = LibError::UnhandledError {
+            details: "old context".into(),
+        }
+        .as_provisioning_report(VM_ID);
+        write_report(&store, &previous).unwrap();
+        let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
+        let result =
+            provision_with_reporting(&config, Some(&store), VM_ID, async {
+                if failed {
+                    Err(LibError::UserMissing {
+                        user: "new|\"user\"".into(),
+                    })
+                    .context("provisioning context")
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let report = stored_report(&store);
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(store.len().unwrap(), 1);
+        assert_eq!(value["agent"], REPORT_AGENT);
+        assert_eq!(value["vm_id"], VM_ID);
+        assert_eq!(value["pps_type"], "None");
+        if failed {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<LibError>(),
+                Some(LibError::UserMissing { .. })
+            ));
+            assert_eq!(error.to_string(), "provisioning context");
+            assert_eq!(value["result"], "error");
+            assert_eq!(value["extra"], json!([["user", "new|\"user\""]]));
+            assert_request(
+                &requests[0],
+                json!({
+                    "state": "NotReady",
+                    "details": {
+                        "subStatus": "ProvisioningFailed",
+                        "description": report.encode(),
+                    },
+                }),
+            );
+        } else {
+            result.unwrap();
+            assert_eq!(value["result"], "success");
+            assert!(value.get("extra").is_none());
+            assert_request(&requests[0], json!({"state": "Ready"}));
+        }
+    }
+
+    #[rstest]
+    #[case::http_failure(true, false, StatusCode::FORBIDDEN)]
+    #[case::kvp_failure(true, true, StatusCode::OK)]
+    #[case::both_failed(true, true, StatusCode::FORBIDDEN)]
+    #[case::kvp_disabled(false, false, StatusCode::OK)]
+    #[tokio::test]
+    async fn health_delivery_failures_preserve_provisioning_result(
+        #[case] enabled: bool,
+        #[case] broken: bool,
+        #[case] status: StatusCode,
+        #[values(false, true)] failed: bool,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        if broken {
+            std::fs::create_dir(store.path()).unwrap();
+        }
+        let (config, server) = mock_wireserver(vec![status]).await;
+        let result = provision_with_reporting(
+            &config,
+            enabled.then_some(&store),
+            VM_ID,
+            async {
+                if failed {
+                    Err(LibError::NonEmptyPassword.into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        let requests = server.await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "HTTP must be attempted despite KVP failure/disablement"
+        );
+        assert_eq!(
+            requests[0].body["state"],
+            if failed { "NotReady" } else { "Ready" }
+        );
+        if failed {
+            assert!(matches!(
+                result.unwrap_err().root_cause().downcast_ref::<LibError>(),
+                Some(LibError::NonEmptyPassword)
+            ));
+        } else {
+            result.unwrap();
+        }
+        if enabled && !broken {
+            let report = serde_json::to_value(stored_report(&store)).unwrap();
+            assert_eq!(
+                report["result"],
+                if failed { "error" } else { "success" }
+            );
+        } else if broken {
+            assert!(store.path().is_dir());
+        } else {
+            assert!(!store.path().exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn health_report_survives_diagnostic_errors() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
+        provision_with_reporting(&config, Some(&store), VM_ID, async {
+            let writer = DiagnosticWriter::new(store.clone(), "agent", VM_ID).unwrap();
+            let subscriber = tracing_subscriber::registry()
+                .with(crate::tracing_layer::DiagnosticsKvp::new(writer));
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info_span!("recovered_attempt").in_scope(|| {
+                    tracing::error!("A recovered diagnostic failure is not the final outcome");
+                });
+            });
+            Ok(())
+        }).await.unwrap();
+        server.await.unwrap();
+        let records = store.dump().unwrap();
+        assert_eq!(records.len(), 4);
+        assert_eq!(
+            serde_json::to_value(stored_report(&store)).unwrap()["result"],
+            "success"
+        );
+        assert!(DiagnosticReader::new(store).entries().unwrap().iter().any(|entry| {
+            matches!(entry, Entry::Diagnostic(libazureinit_kvp::Diagnostic::Finish(finish))
+                if finish.result == Outcome::Error)
+        }));
+    }
+
+    #[tokio::test]
+    async fn full_pool_does_not_prevent_provisioning_or_http() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        store
+            .append_multiple((0..1024).map(|i| (format!("key-{i}"), "keep")))
+            .unwrap();
+        let before = store.dump().unwrap();
+        let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
+        provision_with_reporting(&config, Some(&store), VM_ID, async {
+            assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let requests = server.await.unwrap();
+        assert_request(&requests[0], json!({"state": "Ready"}));
+        assert_eq!(store.dump().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn oversized_failure_reaches_http_without_truncating_kvp() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let details = "large | \"quoted\"\u{20ac}".repeat(100);
+        let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
+        let result =
+            provision_with_reporting(&config, Some(&store), VM_ID, async {
+                Err(LibError::UnhandledError {
+                    details: details.clone(),
+                }
+                .into())
+            })
+            .await;
+        assert!(result.is_err());
+        let requests = server.await.unwrap();
+        let description =
+            requests[0].body["details"]["description"].as_str().unwrap();
+        assert!(description.len() > store.max_value_size());
+        let report: ProvisioningReport = description.parse().unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["result"], "error");
+        assert_eq!(
+            value["extra"],
+            json!([["error", format!("unhandled error: {details}")]])
+        );
+        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
+        assert_eq!(store.len().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_retries_reuse_the_final_kvp_report() {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        let (config, server) = mock_wireserver(vec![
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::CREATED,
+        ])
+        .await;
+        let result =
+            provision_with_reporting(&config, Some(&store), VM_ID, async {
+                Err(LibError::UnhandledError {
+                    details: "retry | \"context\"".into(),
+                }
+                .into())
+            })
+            .await;
+        assert!(result.is_err());
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let encoded = stored_report(&store).encode();
+        for request in &requests {
+            assert_request(
+                request,
+                json!({
+                    "state": "NotReady",
+                    "details": {"subStatus": "ProvisioningFailed", "description": encoded},
+                }),
+            );
+        }
+    }
+
+    #[rstest]
+    #[case::missing_report(false)]
+    #[case::previous_failure(true)]
+    #[tokio::test]
+    async fn final_kvp_report_does_not_wait_for_http_response(
+        #[case] previous_failure: bool,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = store_at(&dir);
+        if previous_failure {
+            write_report(
+                &store,
+                &ProvisioningReport::failure(
+                    REPORT_AGENT,
+                    VM_ID,
+                    "previous failure",
+                    ReportPpsType::None,
+                ),
+            )
+            .unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = Wireserver {
+            read_timeout_secs: 10.0,
+            total_retry_timeout_secs: 10.0,
+            ..wireserver_config(&listener)
+        };
+        let mut waiting = std::pin::pin!(async {
+            loop {
+                if let Some(value) =
+                    store.read(PROVISIONING_REPORT_KEY).unwrap()
+                {
+                    let report: ProvisioningReport = value.parse().unwrap();
+                    if serde_json::to_value(report).unwrap()["result"]
+                        == "success"
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        std::future::poll_fn(|context| {
+            assert!(waiting.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+
+        let report_store = store.clone();
+        let reporting = tokio::spawn(async move {
+            provision_with_reporting(
+                &config,
+                Some(&report_store),
+                VM_ID,
+                async { Ok(()) },
+            )
+            .await
+        });
+        let (mut stream, _) =
+            timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let request = capture_request(&mut stream).await.unwrap();
+        timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("KVP publication waited for the held HTTP response");
+        assert!(!reporting.is_finished());
+        assert_request(&request, json!({"state": "Ready"}));
+        respond(&mut stream, StatusCode::OK).await;
+        reporting.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn progress_http_preserves_its_contract() {
+        let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
+        wireserver::report_in_progress(&config, VM_ID)
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+        assert_request(
+            &requests[0],
+            json!({
+                "state": "NotReady",
+                "details": {
+                    "subStatus": "Provisioning",
+                    "description": format!("Provisioning is still in progress for vm_id={VM_ID}."),
+                },
+            }),
+        );
+    }
+
+    #[test]
+    fn failure_report_preserves_typed_errors_and_falls_back_to_unhandled() {
+        for (error, reason) in [
+            (
+                anyhow::Error::from(LibError::UserMissing {
+                    user: "user".into(),
+                })
+                .context("outer context"),
+                "user not found",
+            ),
+            (
+                anyhow::anyhow!("unexpected failure").context("outer context"),
+                "unhandled error",
+            ),
+        ] {
+            let report = failure_report(&error, VM_ID);
+            assert_eq!(
+                report.encode().parse::<ProvisioningReport>().unwrap(),
+                report
+            );
+            let json = serde_json::to_value(report).unwrap();
+            assert_eq!(json["reason"], reason);
+            if reason == "unhandled error" {
+                assert_eq!(
+                    json["extra"],
+                    json!([["error", format!("unhandled error: {error:?}")]])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kvp_errors_are_visible_and_do_not_stop_reporting() {
+        const CHILD: &str = "AZURE_INIT_TEST_REPORT_ERRORS";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().unwrap(),
+            )
+            .args([
+                "--exact",
+                "tests::kvp_errors_are_visible_and_do_not_stop_reporting",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            for message in [
+                "Failed to write provisioning report to KVP:",
+                "Failed to send provisioning report to wireserver:",
+            ] {
+                assert_eq!(stderr.matches(message).count(), 1, "{stderr}");
+            }
+            return;
+        }
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::stderr)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = TempDir::new().unwrap();
+                let store = store_at(&dir);
+                std::fs::create_dir(store.path()).unwrap();
+                let (config, server) =
+                    mock_wireserver(vec![StatusCode::FORBIDDEN]).await;
+                provision_with_reporting(&config, Some(&store), VM_ID, async {
+                    Ok(())
+                })
+                .await
+                .unwrap();
+                assert_eq!(server.await.unwrap().len(), 1);
+            });
+    }
 }
