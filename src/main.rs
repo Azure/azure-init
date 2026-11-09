@@ -546,6 +546,63 @@ mod tests {
 
     const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
 
+    #[test]
+    fn clean_reports_subscriber_conflict() {
+        const CHILD: &str = "AZURE_INIT_TEST_MAIN_SUBSCRIBER_CONFLICT";
+        if std::env::var_os(CHILD).is_some() {
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::registry(),
+            )
+            .unwrap();
+            assert_eq!(
+                format!("{:?}", main()),
+                format!("{:?}", ExitCode::SUCCESS)
+            );
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.telemetry.kvp_diagnostics = false;
+        config.azure_init_log_path.path = dir.path().join("azure-init.log");
+        config.azure_init_data_dir.path = dir.path().join("state");
+        std::fs::create_dir(&config.azure_init_data_dir.path).unwrap();
+        let marker = config.azure_init_data_dir.path.join("test.provisioned");
+        std::fs::write(&marker, "").unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, config.to_string()).unwrap();
+
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", proxy.local_addr().unwrap());
+        // "clean" is both a libtest filter and a valid argument to the real CLI.
+        assert_cmd::Command::new(std::env::current_exe().unwrap())
+            .arg("clean")
+            .env(CHILD, "1")
+            .env("AZURE_INIT_CONFIG", &config_path)
+            .env("AZURE_INIT_LOG", "off")
+            .env("RUST_TEST_NOCAPTURE", "1")
+            .env("RUST_TEST_THREADS", "1")
+            .env("HTTP_PROXY", &endpoint)
+            .env("http_proxy", &endpoint)
+            .env("ALL_PROXY", &endpoint)
+            .env("all_proxy", &endpoint)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stderr(predicates::str::contains(
+                "Failed to set global default subscriber:",
+            ));
+        assert!(!marker.exists(), "subscriber failure must not skip cleanup");
+        assert_eq!(
+            proxy.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "clean must not send a health report"
+        );
+    }
+
     struct CapturedRequest {
         request_line: String,
         headers: header::HeaderMap,
@@ -608,6 +665,71 @@ mod tests {
                 io::Error::new(io::ErrorKind::InvalidData, error)
             })?,
         })
+    }
+
+    #[rstest]
+    #[case::incomplete_headers(
+        b"POST / HTTP/1.1\r\nHost: test\r\n",
+        io::ErrorKind::UnexpectedEof,
+        |error: &io::Error| error.to_string() == "incomplete HTTP headers"
+    )]
+    #[case::malformed_header(
+        b"POST / HTTP/1.1\r\nnot-a-header\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.to_string() == "invalid HTTP header"
+    )]
+    #[case::invalid_header_name(
+        b"POST / HTTP/1.1\r\nbad name: value\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::InvalidHeaderName>()
+    )]
+    #[case::invalid_header_value(
+        b"POST / HTTP/1.1\r\nX-Test: bad\0value\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::InvalidHeaderValue>()
+    )]
+    #[case::missing_length(
+        b"POST / HTTP/1.1\r\nHost: test\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.to_string() == "missing content length"
+    )]
+    #[case::non_ascii_length(
+        b"POST / HTTP/1.1\r\nContent-Length: \xc3\xa9\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<header::ToStrError>()
+    )]
+    #[case::invalid_length(
+        b"POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<std::num::ParseIntError>()
+    )]
+    #[case::invalid_json(
+        b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n{",
+        io::ErrorKind::InvalidData,
+        |error: &io::Error| error.get_ref().unwrap().is::<serde_json::Error>()
+    )]
+    #[tokio::test]
+    async fn capture_request_rejects_invalid_requests(
+        #[case] request: &[u8],
+        #[case] kind: io::ErrorKind,
+        #[case] matches_error: fn(&io::Error) -> bool,
+    ) {
+        let error = timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            client.write_all(request).await.unwrap();
+            client.shutdown().await.unwrap();
+            capture_request(&mut server).await
+        })
+        .await
+        .expect("request capture hung")
+        .err()
+        .expect("invalid request was accepted");
+        assert_eq!(error.kind(), kind);
+        assert!(matches_error(&error), "unexpected error: {error:?}");
     }
 
     fn wireserver_config(listener: &TcpListener) -> Wireserver {
@@ -907,16 +1029,54 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case::missing_report(false)]
+    #[case::previous_failure(true)]
     #[tokio::test]
-    async fn final_kvp_report_does_not_wait_for_http_response() {
+    async fn final_kvp_report_does_not_wait_for_http_response(
+        #[case] previous_failure: bool,
+    ) {
         let dir = TempDir::new().unwrap();
         let store = store_at(&dir);
+        if previous_failure {
+            write_report(
+                &store,
+                &ProvisioningReport::failure(
+                    REPORT_AGENT,
+                    VM_ID,
+                    "previous failure",
+                    ReportPpsType::None,
+                ),
+            )
+            .unwrap();
+        }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = Wireserver {
             read_timeout_secs: 10.0,
             total_retry_timeout_secs: 10.0,
             ..wireserver_config(&listener)
         };
+        let mut waiting = std::pin::pin!(async {
+            loop {
+                if let Some(value) =
+                    store.read(PROVISIONING_REPORT_KEY).unwrap()
+                {
+                    let report: ProvisioningReport = value.parse().unwrap();
+                    if serde_json::to_value(report).unwrap()["result"]
+                        == "success"
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        std::future::poll_fn(|context| {
+            assert!(waiting.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+
         let report_store = store.clone();
         let reporting = tokio::spawn(async move {
             provision_with_reporting(
@@ -933,23 +1093,9 @@ mod tests {
                 .unwrap()
                 .unwrap();
         let request = capture_request(&mut stream).await.unwrap();
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(value) =
-                    store.read(PROVISIONING_REPORT_KEY).unwrap()
-                {
-                    let report: ProvisioningReport = value.parse().unwrap();
-                    if serde_json::to_value(report).unwrap()["result"]
-                        == "success"
-                    {
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("KVP publication waited for the held HTTP response");
+        timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("KVP publication waited for the held HTTP response");
         assert!(!reporting.is_finished());
         assert_request(&request, json!({"state": "Ready"}));
         respond(&mut stream, StatusCode::OK).await;
