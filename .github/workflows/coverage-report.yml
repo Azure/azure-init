@@ -56,10 +56,10 @@ jobs:
       - name: Collect unit and CLI coverage
         run: |
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --locked --all-features --workspace --no-clean --no-report
+          cargo llvm-cov --locked --all-features --workspace --no-report
 
       - name: Collect real entrypoint coverage
-        run: cargo llvm-cov --locked --all-features --package azure-init --test cli --no-clean --no-report -- --ignored agent_provisioning_in_container
+        run: cargo llvm-cov --locked --all-features --package azure-init --test cli --no-report -- --ignored agent_provisioning_in_container
 
       - name: Generate combined code coverage
         run: cargo llvm-cov report --package azure-init --package libazureinit --package libazureinit-kvp --lcov --output-path lcov.info
