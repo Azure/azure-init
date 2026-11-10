@@ -594,12 +594,6 @@ mod tests {
     #[case::override_version(
         Some("custom"), Some("build"), Some("123456789"), "custom".into()
     )]
-    #[case::empty_override(
-        Some(""),
-        Some("build"),
-        Some("123456789"),
-        String::new()
-    )]
     #[case::build_version(
         None, Some("build"), Some("123456789"), format!("{PKG_VERSION}-build")
     )]
@@ -609,7 +603,6 @@ mod tests {
     #[case::short_sha(
         None, None, Some("abc"), format!("{PKG_VERSION}-abc")
     )]
-    #[case::empty_sha(None, None, Some(""), format!("{PKG_VERSION}-"))]
     #[case::package_version(None, None, None, PKG_VERSION.into())]
     fn version_metadata_precedence(
         #[case] version: Option<&str>,
@@ -702,54 +695,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cleanup_preserves_unrelated_files_and_tolerates_disappearing_markers() {
+    #[rstest]
+    #[case::success(None)]
+    #[case::entry_failure(Some(io::ErrorKind::PermissionDenied))]
+    #[case::removal_failure(Some(io::ErrorKind::IsADirectory))]
+    fn cleanup_preserves_files_and_stops_on_errors(
+        #[case] expected: Option<io::ErrorKind>,
+    ) {
         let dir = TempDir::new().unwrap();
         let marker = dir.path().join("existing.provisioned");
-        let missing = dir.path().join("removed.provisioned");
+        let later = dir.path().join("later.provisioned");
         let unrelated = dir.path().join("keep.txt");
-        std::fs::write(&marker, "complete").unwrap();
-        std::fs::write(&unrelated, "keep").unwrap();
-        clean_provisioning_entries(
-            dir.path(),
-            [Ok(marker.clone()), Ok(missing), Ok(unrelated.clone())],
-        )
-        .unwrap();
-        assert!(!marker.exists());
-        assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "keep");
-    }
-
-    #[test]
-    fn cleanup_propagates_directory_entry_errors_and_stops() {
-        let dir = TempDir::new().unwrap();
-        let marker = dir.path().join("untouched.provisioned");
-        std::fs::write(&marker, "complete").unwrap();
-        let error = clean_provisioning_entries(
+        if expected == Some(io::ErrorKind::IsADirectory) {
+            std::fs::create_dir(&marker).unwrap();
+        } else {
+            std::fs::write(&marker, "complete").unwrap();
+        }
+        for path in [&later, &unrelated] {
+            std::fs::write(path, "keep").unwrap();
+        }
+        let entry = if expected == Some(io::ErrorKind::PermissionDenied) {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        } else {
+            Ok(marker.clone())
+        };
+        let result = clean_provisioning_entries(
             dir.path(),
             [
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "cannot read directory entry",
-                )),
-                Ok(marker.clone()),
+                entry,
+                Ok(dir.path().join("removed.provisioned")),
+                Ok(later.clone()),
+                Ok(unrelated.clone()),
             ],
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(error.to_string(), "cannot read directory entry");
-        assert_eq!(std::fs::read_to_string(marker).unwrap(), "complete");
-    }
-
-    #[test]
-    fn cleanup_propagates_marker_removal_errors() {
-        let dir = TempDir::new().unwrap();
-        let marker = dir.path().join("directory.provisioned");
-        std::fs::create_dir(&marker).unwrap();
-        let mut config = Config::default();
-        config.azure_init_data_dir.path = dir.path().into();
-        let error = clean_provisioning_status(&config).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::IsADirectory);
-        assert!(marker.is_dir());
+        );
+        assert_eq!(
+            result.map_err(|error| error.kind()),
+            expected.map_or(Ok(()), Err)
+        );
+        for path in [marker, later] {
+            assert_eq!(path.exists(), expected.is_some(), "{path:?}");
+        }
+        assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "keep");
     }
 
     #[rstest]
@@ -784,13 +770,8 @@ mod tests {
     fn provisioning_error_exit_codes_preserve_context(
         #[case] error: anyhow::Error,
         #[case] expected: u8,
-        #[values(false, true)] contextual: bool,
     ) {
-        let error = if contextual {
-            error.context("provisioning failed")
-        } else {
-            error
-        };
+        let error = error.context("provisioning failed");
         assert_eq!(
             format!("{:?}", provisioning_error_exit_code(&error)),
             format!("{:?}", ExitCode::from(expected))

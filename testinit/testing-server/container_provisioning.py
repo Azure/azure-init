@@ -22,7 +22,12 @@ from wireserver_handler import WireServerHandler
 IMAGE = "azure-init-main-tests:local"
 VM_ID = "00000000-0000-0000-0000-000000000000"
 USERNAME = "coverage-user"
-SCENARIOS = ("success", "failure", "config-error", "marker-error")
+SCENARIOS = {
+    "success": (0, None),
+    "failure": (1, "failed to provision hostname"),
+    "config-error": (78, "user not found"),
+    "marker-error": (1, "I/O error"),
+}
 
 
 def check_mount_table(mtab):
@@ -178,9 +183,7 @@ def inside_container(scenario):
             (artifacts / "stdout").write_text(result.stdout)
             (artifacts / "stderr").write_text(result.stderr)
             assert not service_errors, service_errors
-            expected_status = {
-                "success": 0, "failure": 1, "config-error": 78, "marker-error": 1,
-            }[scenario]
+            expected_status, reason = SCENARIOS[scenario]
             assert result.returncode == expected_status, result
             assert [kind for kind, _ in requests] == ["imds", "report"], requests
             report = requests[1][1]
@@ -202,11 +205,6 @@ def inside_container(scenario):
             else:
                 assert report["state"] == "NotReady", report
                 assert report["details"]["subStatus"] == "ProvisioningFailed", report
-                reason = {
-                    "failure": "failed to provision hostname",
-                    "config-error": "user not found",
-                    "marker-error": "I/O error",
-                }[scenario]
                 assert f"reason={reason}" in report["details"]["description"], report
                 assert not marker.exists()
             log = (work / "azure-init.log").read_text()

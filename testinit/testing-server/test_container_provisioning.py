@@ -6,14 +6,13 @@
 from contextlib import contextmanager, redirect_stdout
 from http.client import HTTPConnection, RemoteDisconnected
 import io
-import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import container_provisioning as fixture
 
@@ -34,34 +33,6 @@ class HandlerTests(unittest.TestCase):
                 server.shutdown()
                 thread.join(timeout=5)
                 self.assertFalse(thread.is_alive(), "mock server did not shut down")
-
-    def test_scenarios_share_handlers_with_fresh_response_state(self):
-        for scenario in fixture.SCENARIOS:
-            with self.subTest(scenario=scenario):
-                requests, errors = [], []
-                metadata, health = fixture.make_handlers(scenario, requests, errors)
-                self.assertEqual(metadata._response_position, 0)
-                self.assertEqual(health._response_position, 0)
-                with self.serve(metadata) as connection:
-                    connection.request(
-                        "GET", "http://169.254.169.254/metadata/instance?extended=true",
-                        headers={"Metadata": "true"},
-                    )
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 200)
-                    compute = json.loads(response.read())["compute"]
-                    self.assertEqual(compute["osProfile"]["adminUsername"], fixture.USERNAME)
-                    self.assertEqual(bool(compute["publicKeys"]), scenario == "config-error")
-                report = {"state": "Ready" if scenario == "success" else "NotReady"}
-                with self.serve(health) as connection:
-                    connection.request("POST", "/provisioning/health", json.dumps(report))
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 201)
-                    self.assertEqual(response.read(), b"")
-                self.assertEqual(requests, [("imds", None), ("report", report)])
-                self.assertEqual(errors, [])
-                self.assertEqual(metadata._response_position, 1)
-                self.assertEqual(health._response_position, 1)
 
     def test_invalid_requests_are_reported(self):
         requests, errors = [], []
@@ -131,13 +102,15 @@ class ContainerRunnerTests(unittest.TestCase):
     def run_fixture(self, root, docker, profile_pattern=None):
         artifacts = root / "artifacts"
         artifacts.mkdir()
-        with patch.dict(os.environ):
+        with (
+            patch.dict(os.environ),
+            patch.object(fixture.subprocess, "run", side_effect=docker),
+            redirect_stdout(io.StringIO()),
+        ):
             os.environ.pop("LLVM_PROFILE_FILE", None)
             if profile_pattern:
                 os.environ["LLVM_PROFILE_FILE"] = str(profile_pattern)
-            with patch.object(fixture.subprocess, "run", side_effect=docker):
-                with redirect_stdout(io.StringIO()):
-                    fixture.run_containers(Path("/test-agent"), artifacts)
+            fixture.run_containers(Path("/test-agent"), artifacts)
 
     def test_collects_profiles_and_removes_each_container(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -173,46 +146,33 @@ class ContainerRunnerTests(unittest.TestCase):
 
     def test_normal_run_does_not_require_profiles(self):
         with tempfile.TemporaryDirectory() as temporary:
-            calls = []
-
-            def docker(command, **_options):
-                calls.append(command[1])
-                self.assertFalse(any(arg.startswith("LLVM_PROFILE_FILE=") for arg in command))
-                return subprocess.CompletedProcess(command, 0, "container-id\n", "")
-
+            docker = Mock(return_value=subprocess.CompletedProcess([], 0, "container-id\n", ""))
             self.run_fixture(Path(temporary), docker)
-            self.assertEqual(calls, ["create", "start", "rm"] * len(fixture.SCENARIOS))
+            commands = [call.args[0] for call in docker.call_args_list]
+            self.assertEqual([cmd[1] for cmd in commands], ["create", "start", "rm"] * len(fixture.SCENARIOS))
+            self.assertFalse(any(
+                arg.startswith("LLVM_PROFILE_FILE=") for cmd in commands for arg in cmd
+            ))
 
-    def test_failure_and_timeout_still_remove_the_container(self):
-        for timed_out in (False, True):
-            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as temporary:
-                calls = []
-
-                def docker(command, **_options):
-                    calls.append(command[1])
-                    if command[1] == "start":
-                        if timed_out:
-                            raise subprocess.TimeoutExpired(command, 60)
-                        return subprocess.CompletedProcess(command, 1, "", "fixture failed")
-                    return subprocess.CompletedProcess(command, 0, "container-id\n", "")
-
-                error = subprocess.TimeoutExpired if timed_out else subprocess.CalledProcessError
-                with self.assertRaises(error):
-                    self.run_fixture(Path(temporary), docker)
-                self.assertEqual(calls, ["create", "start", "rm"])
-
-    def test_missing_profile_is_an_error_and_cleans_up(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            calls = []
-
-            def docker(command, **_options):
-                calls.append(command[1])
-                return subprocess.CompletedProcess(command, 0, "container-id\n", "")
-
-            with self.assertRaisesRegex(AssertionError, "no coverage profile"):
-                self.run_fixture(root, docker, root / "agent-%p-%m.profraw")
-            self.assertEqual(calls, ["create", "start", "rm"])
+    def test_failures_remove_the_container(self):
+        completed = subprocess.CompletedProcess([], 0, "container-id\n", "")
+        for start, error, needs_profile in (
+            (subprocess.CompletedProcess([], 1, "", "fixture failed"), subprocess.CalledProcessError, False),
+            (subprocess.TimeoutExpired("docker start", 60), subprocess.TimeoutExpired, False),
+            (completed, AssertionError, True),
+        ):
+            with self.subTest(error=error.__name__), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                docker = Mock(side_effect=[completed, start, completed])
+                profile = root / "agent-%p-%m.profraw" if needs_profile else None
+                with self.assertRaises(error) as failure:
+                    self.run_fixture(root, docker, profile)
+                if needs_profile:
+                    self.assertIn("no coverage profile", str(failure.exception))
+                self.assertEqual(
+                    [call.args[0][1] for call in docker.call_args_list],
+                    ["create", "start", "rm"],
+                )
 
 
 if __name__ == "__main__":

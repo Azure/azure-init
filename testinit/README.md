@@ -43,14 +43,9 @@ cargo test --locked --all-features --package azure-init --test testinit \
   -- --ignored agent_provisioning_in_container
 ```
 
-Ordinary `cargo test` skips this Docker-dependent test. The
-[coverage workflow](../.github/workflows/coverage-report.yml) runs it through
-`cargo llvm-cov`, collects the agent's profiles, and uploads combined coverage
-to Codecov.
-
-Scenarios cover success, hostname failure, missing-user failure, and
-provisioning-marker write failure. [Codecov](../codecov.yml) targets 100%
-coverage of the full [entrypoint file](../src/main.rs), not just changed lines.
+This Docker-dependent test is ignored by default. The
+[coverage workflow](../.github/workflows/coverage-report.yml) runs it and
+uploads combined coverage to Codecov.
 
 ## Systemd E2E Quick Start
 
