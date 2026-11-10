@@ -33,21 +33,49 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Test startup script
+        run: python3 -B -m unittest discover -s testinit/tests -v
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver-opts: |
             network=host
-      
+
       - name: Make start-all.sh executable
         run: chmod +x testinit/start-all.sh testinit/stop-all.sh
+
+      - name: Build testing server
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: testinit/testing-server
+          tags: testinit-testing-server
+          load: true
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: type=gha,scope=testinit-testing-server
+          # All matrix jobs use the same mock image; only one exports its cache.
+          cache-to: ${{ matrix.container == 'ubuntu:24.04' && 'type=gha,scope=testinit-testing-server,mode=max' || '' }}
+
+      - name: Build provisioning agent
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: testinit/Dockerfile
+          build-args: BASE_IMAGE=${{ matrix.container }}
+          tags: testinit-provisioning-agent
+          load: true
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: type=gha,scope=testinit-agent-${{ matrix.container }}
+          cache-to: type=gha,scope=testinit-agent-${{ matrix.container }},mode=max
       
       - name: Run E2E tests
         run: |
           pushd testinit
           echo "Starting E2E test environment with base image: ${{ matrix.container }}"
-          ./start-all.sh "${{ matrix.container }}"
+          ./start-all.sh "${{ matrix.container }}" --no-build
         
       - name: Check service health
         run: |

@@ -1,5 +1,6 @@
 services:
   testing-server:
+    image: testinit-testing-server
     build:
       context: .
       dockerfile: Dockerfile

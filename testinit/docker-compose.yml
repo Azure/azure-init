@@ -1,5 +1,6 @@
 services:
   provisioning-agent:
+    image: testinit-provisioning-agent
     build:
       context: ../
       dockerfile: ./testinit/Dockerfile

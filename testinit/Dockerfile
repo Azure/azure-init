@@ -8,8 +8,9 @@ VOLUME [ "/sys/fs/cgroup" ]
 
 RUN if command -v apt-get >/dev/null 2>&1; then \
     # Debian/Ubuntu (apt-based) \
-    apt-get -o Acquire::Retries=3 update \
-    && apt-get -o Acquire::Retries=3 install -y \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+    -o APT::Update::Error-Mode=any update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y \
     systemd \
     dbus \
     curl \

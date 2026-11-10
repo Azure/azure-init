@@ -1,32 +1,45 @@
 #!/bin/bash
 
-mkdir -p /tmp/testinit
+set -e
 
 # Accept base image as first argument, default to ubuntu:24.04 if not provided
 BASE_IMAGE=${1:-ubuntu:24.04}
 
+if [[ $# -gt 2 || ( $# -eq 2 && $2 != --no-build ) ]]; then
+  echo "Usage: $0 [base-image] [--no-build]" >&2
+  exit 1
+fi
+
+BUILD_ARGS=(--build)
+if [[ ${2:-} == --no-build ]]; then
+  BUILD_ARGS=(--no-build --pull never)
+fi
+
+mkdir -p /tmp/testinit
+
 echo "Using base image: $BASE_IMAGE"
 echo "Starting testing-server first (creates networks with Azure IP addresses)..."
 pushd testing-server
-docker compose up -d --build
+docker compose up -d "${BUILD_ARGS[@]}"
 
 popd
 
 echo "Starting azureinit-provisioning-agent (connects to existing networks)..."
-BASE_IMAGE=$BASE_IMAGE docker compose up -d --build
+BASE_IMAGE=$BASE_IMAGE docker compose up -d "${BUILD_ARGS[@]}"
 
 TIMEOUT=1200  # 20 minutes in seconds
 ELAPSED=0
 
 while true; do
   # Check journal logs for either a success or a failure to ensure the completion of the service
-  if docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager | grep -q "Finished azure-init.service"; then
+  SERVICE_LOGS=$(docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager)
+  if grep -q "Finished azure-init.service" <<< "$SERVICE_LOGS"; then
     echo "azure-init.service has finished"
     break
   fi
-  if  docker exec azureinit-provisioning-agent journalctl -u azure-init.service --no-pager | grep -i 'azure-init' | grep -Eiq 'failed|failure'; then
-    echo "azure-init.service has failed."
-    break
+  if grep -i 'azure-init' <<< "$SERVICE_LOGS" | grep -Eiq 'failed|failure'; then
+    echo "azure-init.service has failed." >&2
+    exit 1
   fi
   if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
     echo "ERROR: Timed out after 20 minutes waiting for azure-init.service to complete."

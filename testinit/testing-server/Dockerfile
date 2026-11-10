@@ -1,6 +1,8 @@
 FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+    -o APT::Update::Error-Mode=any update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y \
     python3 \
     python3-pip \
     python3-venv \
