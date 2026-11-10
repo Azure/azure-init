@@ -132,10 +132,23 @@ class ContainerRunnerTests(unittest.TestCase):
                     self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
                     self.assertIn("no-new-privileges", command)
                     self.assertIn("--read-only", command)
+                    self.assertIn("type=volume,dst=/etc", command)
                     self.assertIn("/work:exec,mode=0700", command)
+                    self.assertIn("/run/azure-init/media:mode=0700", command)
+                    for mount in command:
+                        if mount.endswith("dst=/sys,readonly"):
+                            source = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
+                            self.assertEqual(list(source.iterdir()), [])
+                        if mount.endswith("dst=/test/mtab,readonly"):
+                            source = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
+                            contents = source.read_text()
+                            self.assertEqual("iso9660" in contents, command[-1].startswith("ovf-"))
+                            self.assertEqual("/test/ovf-good" in contents, command[-1] == "ovf-fallback")
                     return subprocess.CompletedProcess(command, 0, "container-id\n", "")
                 if command[1] == "start":
                     (output / "agent-1-123.profraw").write_bytes(b"synthetic profile")
+                if command[1] == "rm":
+                    self.assertIn("--volumes", command)
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             self.run_fixture(root, docker, profiles / "agent-%p-%m.profraw")

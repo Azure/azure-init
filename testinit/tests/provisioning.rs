@@ -26,16 +26,26 @@ fn agent_provisioning_in_container() {
         .success();
 
     for (scenario, result) in [
-        ("success", "success"),
-        ("failure", "error"),
-        ("config-error", "error"),
-        ("marker-error", "error"),
+        ("success", Some("success")),
+        ("failure", Some("error")),
+        ("config-error", Some("error")),
+        ("marker-error", Some("error")),
+        ("ovf-fallback", Some("error")),
+        ("ovf-missing", Some("error")),
+        ("clean-read-error", None),
+        ("clean-marker-error", None),
+        ("clean-race", None),
     ] {
         let directory = artifacts.path().join(scenario);
         let store =
             KvpPoolStore::new_in(KvpPool::Guest, &directory, PoolMode::Safe)
                 .unwrap();
-        let encoded = store.read(PROVISIONING_REPORT_KEY).unwrap().unwrap();
+        let encoded = store.read(PROVISIONING_REPORT_KEY).unwrap();
+        let Some(result) = result else {
+            assert_eq!(encoded, None, "cleanup must not report provisioning");
+            continue;
+        };
+        let encoded = encoded.unwrap();
         let report: ProvisioningReport = encoded.parse().unwrap();
         let report = serde_json::to_value(report).unwrap();
         assert_eq!(report["result"], result);

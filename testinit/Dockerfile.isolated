@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 libudev1 \
     && rm -rf /var/lib/apt/lists \
-    && mkdir -p /test /work /var/lib/hyperv /etc/sudoers.d \
+    && mkdir -p /test /work /var/lib/hyperv /etc/sudoers.d /run/azure-init/media \
     && touch /test/isolated-provisioning
 
 COPY testing-server/container_provisioning.py testing-server/imds_handler.py \

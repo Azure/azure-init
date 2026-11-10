@@ -27,7 +27,25 @@ SCENARIOS = {
     "failure": (1, "failed to provision hostname"),
     "config-error": (78, "user not found"),
     "marker-error": (1, "I/O error"),
+    "ovf-fallback": (1, "failed to retrieve instance metadata"),
+    "ovf-missing": (1, "failed to determine username"),
+    "clean-read-error": (1, "Failed to read directory entry"),
+    "clean-marker-error": (1, "Failed to clean provisioning marker"),
+    "clean-race": (0, "No provisioning marker found"),
 }
+OVF_ENV = """<Environment xmlns="http://schemas.dmtf.org/ovf/environment/1"
+    xmlns:wa="http://schemas.microsoft.com/windowsazure">
+  <wa:ProvisioningSection>
+    <wa:Version>1.0</wa:Version>
+    <LinuxProvisioningConfigurationSet xmlns="http://schemas.microsoft.com/windowsazure">
+      <UserName>ovf-user</UserName><HostName>coverage-host</HostName>
+    </LinuxProvisioningConfigurationSet>
+  </wa:ProvisioningSection>
+  <wa:PlatformSettingsSection>
+    <wa:Version>1.0</wa:Version>
+    <PlatformSettings xmlns="http://schemas.microsoft.com/windowsazure"/>
+  </wa:PlatformSettingsSection>
+</Environment>"""
 
 
 def check_mount_table(mtab):
@@ -56,7 +74,7 @@ def make_handlers(scenario, requests, service_errors):
     class MetadataHandler(CheckedHandler, IMDSHandler):
         _response_position = 0
         _responses = [{
-            "status_code": 200,
+            "status_code": 403 if scenario.startswith("ovf-") else 200,
             "headers": {"Content-Type": "application/json"},
             "response": {
                 "compute": {
@@ -104,7 +122,10 @@ def inside_container(scenario):
         raise RuntimeError("fixture requires an isolated, empty /sys")
     if any(user.pw_name == USERNAME for user in pwd.getpwall()):
         raise RuntimeError(f"fixture requires a nonexistent account: {USERNAME}")
-    check_mount_table(Path("/etc/mtab"))
+    check_mount_table(Path("/proc/mounts"))
+    mtab = Path("/etc/mtab")
+    mtab.unlink(missing_ok=True)
+    mtab.write_text(Path("/test/mtab").read_text())
 
     requests = []
     service_errors = []
@@ -112,28 +133,42 @@ def inside_container(scenario):
 
     artifacts = Path("/artifacts")
     work = Path("/work")
+    cleaning = scenario.startswith("clean-")
     if scenario == "marker-error":
         (work / "state").write_text("not a directory")
+    if cleaning:
+        (work / "state").mkdir()
+        marker = work / "state" / "vanished.provisioned"
+        if scenario == "clean-marker-error":
+            marker.mkdir()
+        else:
+            marker.write_text("complete")
+        (work / "state" / "keep.txt").write_text("keep")
+    (work / "ovf-env.xml").write_text(OVF_ENV)
     commands = work / "commands.jsonl"
     stubs = work / "bin"
     stubs.mkdir()
     stub = stubs / "command-stub"
     stub.write_text(
         "#!/usr/bin/python3\n"
-        "import json, os, sys\n"
+        "import json, os, shutil, sys\n"
         "name = os.path.basename(sys.argv[0])\n"
         "with open('/work/commands.jsonl', 'a') as output:\n"
         "    output.write(json.dumps([name, *sys.argv[1:]]) + '\\n')\n"
         "if name == 'getent':\n"
         "    sys.exit(1)\n"
+        "if name == 'mount':\n"
+        "    if sys.argv[-2] != '/test/ovf-good':\n"
+        "        sys.exit(17)\n"
+        "    shutil.copyfile('/work/ovf-env.xml', os.path.join(sys.argv[-1], 'ovf-env.xml'))\n"
         "if name == 'hostnamectl' and os.environ['TEST_SCENARIO'] == 'failure':\n"
         "    print('expected hostname failure', file=sys.stderr)\n"
         "    sys.exit(17)\n"
-        "if name not in ('hostnamectl', 'useradd', 'usermod', 'passwd'):\n"
+        "if name not in ('hostnamectl', 'useradd', 'usermod', 'passwd', 'mount', 'umount', 'eject'):\n"
         "    raise RuntimeError('unexpected command: ' + name)\n"
     )
     stub.chmod(0o755)
-    for name in ("hostnamectl", "getent", "useradd", "usermod", "passwd"):
+    for name in ("hostnamectl", "getent", "useradd", "usermod", "passwd", "mount", "umount", "eject"):
         (stubs / name).symlink_to(stub)
 
     with (
@@ -165,6 +200,8 @@ def inside_container(scenario):
             no_proxy="127.0.0.1,localhost",
             AZURE_INIT_LOG="info",
         )
+        if scenario in ("clean-read-error", "clean-race"):
+            environment["LD_PRELOAD"] = "/test/fs_faults.so"
         servers = (imds_server, health_server)
         threads = [
             threading.Thread(target=server.serve_forever, daemon=True)
@@ -174,7 +211,7 @@ def inside_container(scenario):
             thread.start()
         try:
             result = subprocess.run(
-                ["/test/azure-init", "--config", str(config)],
+                ["/test/azure-init", "--config", str(config), *(["clean"] if cleaning else [])],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -185,40 +222,53 @@ def inside_container(scenario):
             assert not service_errors, service_errors
             expected_status, reason = SCENARIOS[scenario]
             assert result.returncode == expected_status, result
-            assert [kind for kind, _ in requests] == ["imds", "report"], requests
-            report = requests[1][1]
-            (artifacts / "http-report.json").write_text(json.dumps(report))
-            marker = work / "state" / f"{VM_ID}.provisioned"
-            calls = [json.loads(line) for line in commands.read_text().splitlines()]
-            expected_commands = (
-                ["hostnamectl"]
-                if scenario == "failure"
-                else ["hostnamectl", "getent", "useradd", "passwd"]
-            )
-            assert [call[0] for call in calls] == expected_commands, calls
-            if scenario == "success":
-                assert report == {"state": "Ready"}, report
-                assert marker.is_file()
-                assert Path("/etc/sudoers.d/azure-init-user").read_text() == (
-                    f"{USERNAME} ALL=(ALL) NOPASSWD: ALL\n"
-                )
-            else:
-                assert report["state"] == "NotReady", report
-                assert report["details"]["subStatus"] == "ProvisioningFailed", report
-                assert f"reason={reason}" in report["details"]["description"], report
-                assert not marker.exists()
             log = (work / "azure-init.log").read_text()
-            if scenario == "marker-error":
-                assert (work / "state").read_text() == "not a directory"
-                assert "Failed to mark provisioning complete." in log, log
-            expected_log = (
-                "Provisioning completed successfully"
-                if scenario == "success"
-                else "Provisioning failed with error:"
-            )
-            assert expected_log in log, log
+            if cleaning:
+                assert requests == [], requests
+                assert not commands.exists()
+                assert marker.exists() == (scenario != "clean-race")
+                assert (work / "state" / "keep.txt").read_text() == "keep"
+                assert reason in log, log
+            else:
+                assert [kind for kind, _ in requests] == ["imds", "report"], requests
+                report = requests[1][1]
+                (artifacts / "http-report.json").write_text(json.dumps(report))
+                marker = work / "state" / f"{VM_ID}.provisioned"
+                calls = [json.loads(line) for line in commands.read_text().splitlines()]
+                if scenario == "ovf-fallback":
+                    expected_commands = ["mount", "mount", "umount", "eject", "mount"]
+                    assert log.count("Successfully parsed OVF environment.") == 1, log
+                elif scenario == "ovf-missing":
+                    expected_commands = ["mount", "mount"]
+                else:
+                    expected_commands = (
+                        ["hostnamectl"]
+                        if scenario == "failure"
+                        else ["hostnamectl", "getent", "useradd", "passwd"]
+                    )
+                assert [call[0] for call in calls] == expected_commands, calls
+                if scenario == "success":
+                    assert report == {"state": "Ready"}, report
+                    assert marker.is_file()
+                    assert Path("/etc/sudoers.d/azure-init-user").read_text() == (
+                        f"{USERNAME} ALL=(ALL) NOPASSWD: ALL\n"
+                    )
+                else:
+                    assert report["state"] == "NotReady", report
+                    assert report["details"]["subStatus"] == "ProvisioningFailed", report
+                    assert f"reason={reason}" in report["details"]["description"], report
+                    assert not marker.exists()
+                if scenario == "marker-error":
+                    assert (work / "state").read_text() == "not a directory"
+                    assert "Failed to mark provisioning complete." in log, log
+                expected_log = (
+                    "Provisioning completed successfully"
+                    if scenario == "success"
+                    else "Provisioning failed with error:"
+                )
+                assert expected_log in log, log
             shutil.copyfile("/var/lib/hyperv/.kvp_pool_1", artifacts / ".kvp_pool_1")
-            print(f"Verified {scenario}: actual agent exit {result.returncode} and health report")
+            print(f"Verified {scenario}: actual agent exit {result.returncode}")
         finally:
             for server in servers:
                 server.shutdown()
@@ -239,17 +289,30 @@ def run_containers(agent, artifacts):
         output.mkdir()
         # Container root lacks DAC_OVERRIDE; only this disposable output is writable.
         output.chmod(0o777)
-        with tempfile.TemporaryDirectory(prefix="azure-init-empty-sys-") as empty_sys:
-            Path(empty_sys).chmod(0o755)
+        with tempfile.TemporaryDirectory(prefix="azure-init-fixture-") as temporary:
+            empty_sys = Path(temporary) / "sys"
+            empty_sys.mkdir(mode=0o755)
+            mtab = Path(temporary) / "mtab"
+            devices = []
+            if scenario.startswith("ovf-"):
+                devices = ["/test/missing-before", "/test/missing-after"]
+                if scenario == "ovf-fallback":
+                    devices.insert(1, "/test/ovf-good")
+            mtab.write_text("".join(f"{device} /media iso9660 ro 0 0\n" for device in devices))
+            mtab.chmod(0o644)
             command = [
                 "docker", "create", "--name", f"azure-init-test-{uuid.uuid4().hex}",
                 "--network", "none", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--read-only",
+                "--mount", "type=volume,dst=/etc",
                 "--tmpfs", "/work:exec,mode=0700",
                 "--tmpfs", "/var/lib/hyperv:mode=0700",
                 "--tmpfs", "/etc/sudoers.d:mode=0700",
+                "--tmpfs", "/run/azure-init/media:mode=0700",
                 "--mount", f"type=bind,src={agent},dst=/test/azure-init,readonly",
                 "--mount", f"type=bind,src={empty_sys},dst=/sys,readonly",
+                "--mount", f"type=bind,src={mtab},dst=/test/mtab,readonly",
+                "--mount", f"type=bind,src={artifacts / 'fs_faults.so'},dst=/test/fs_faults.so,readonly",
                 "--mount", f"type=bind,src={output},dst=/artifacts",
             ]
             if profile_pattern:
@@ -281,7 +344,7 @@ def run_containers(agent, artifacts):
                         )
             finally:
                 subprocess.run(
-                    ["docker", "rm", "--force", container],
+                    ["docker", "rm", "--force", "--volumes", container],
                     check=True, capture_output=True, text=True, timeout=15,
                 )
 
@@ -295,6 +358,14 @@ if __name__ == "__main__":
     if args.inside:
         inside_container(args.inside)
     elif args.agent and args.artifacts:
-        run_containers(args.agent.resolve(strict=True), args.artifacts.resolve(strict=True))
+        artifacts = args.artifacts.resolve(strict=True)
+        faults = artifacts / "fs_faults.so"
+        subprocess.run(
+            ["cc", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+             str(Path(__file__).with_name("fs_faults.c")), "-o", str(faults), "-ldl"],
+            check=True, timeout=30,
+        )
+        faults.chmod(0o644)
+        run_containers(args.agent.resolve(strict=True), artifacts)
     else:
         parser.error("supply --inside or both --agent and --artifacts")
