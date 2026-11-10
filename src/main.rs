@@ -45,6 +45,11 @@ fn version_string() -> String {
     PKG_VERSION.to_string()
 }
 
+// Temporary executable sample for verifying changed-line coverage.
+fn hello() {
+    tracing::info!("Hello from the main entrypoint coverage sample");
+}
+
 /// Minimal provisioning agent for Azure
 ///
 /// Create a user, add SSH public keys, and set the hostname.
@@ -405,6 +410,7 @@ async fn main() -> ExitCode {
     };
 
     tracing::info!("Final configuration: {:#?}", config);
+    hello();
 
     let exit_code = if let Some(Command::Clean { logs }) = opts.command {
         if clean_provisioning_status(&config).is_err()
