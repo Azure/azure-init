@@ -3,7 +3,10 @@
 mod logging;
 mod tracing_layer;
 
-use std::{future::Future, path::PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -30,24 +33,31 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPORT_AGENT: &str = concat!("Azure-Init/", env!("CARGO_PKG_VERSION"));
 
 fn version_string() -> String {
-    if let Some(v) = option_env!("AZURE_INIT_VERSION") {
+    format_version(
+        option_env!("AZURE_INIT_VERSION"),
+        option_env!("AZURE_INIT_BUILD_VERSION"),
+        option_env!("AZURE_INIT_BUILD_SHA"),
+    )
+}
+
+fn format_version(
+    version: Option<&str>,
+    build: Option<&str>,
+    sha: Option<&str>,
+) -> String {
+    if let Some(v) = version {
         return v.to_string();
     }
 
-    if let Some(build) = option_env!("AZURE_INIT_BUILD_VERSION") {
+    if let Some(build) = build {
         return format!("{PKG_VERSION}-{build}");
     }
-    if let Some(sha) = option_env!("AZURE_INIT_BUILD_SHA") {
+    if let Some(sha) = sha {
         let short = &sha[..std::cmp::min(7, sha.len())];
         return format!("{PKG_VERSION}-{short}");
     }
 
     PKG_VERSION.to_string()
-}
-
-// Temporary executable sample for verifying changed-line coverage.
-fn hello() {
-    tracing::info!("Hello from the main entrypoint coverage sample");
 }
 
 /// Minimal provisioning agent for Azure
@@ -110,12 +120,18 @@ enum Command {
 #[instrument]
 fn get_environment() -> Result<Environment, anyhow::Error> {
     tracing::debug!("Searching for OVF environment on local block devices.");
-    let ovf_devices = get_mount_device(None)?;
+    get_environment_from_devices(get_mount_device(None)?, mount_parse_ovf_env)
+}
+
+fn get_environment_from_devices(
+    ovf_devices: impl IntoIterator<Item = String>,
+    mut load: impl FnMut(String) -> Result<Environment, LibError>,
+) -> Result<Environment, anyhow::Error> {
     let mut environment: Option<Environment> = None;
 
     // loop until it finds a correct device.
     for dev in ovf_devices {
-        environment = match mount_parse_ovf_env(dev) {
+        environment = match load(dev) {
             Ok(env) => {
                 tracing::info!(
                     target = "libazureinit::media::success",
@@ -171,7 +187,6 @@ fn get_username(
 #[instrument]
 fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
     let data_dir = &config.azure_init_data_dir.path;
-    let mut found = false;
 
     let entries = match std::fs::read_dir(data_dir) {
         Ok(entries) => entries,
@@ -192,9 +207,21 @@ fn clean_provisioning_status(config: &Config) -> Result<(), std::io::Error> {
         }
     };
 
+    clean_provisioning_entries(
+        data_dir,
+        entries.map(|entry| entry.map(|entry| entry.path())),
+    )
+}
+
+fn clean_provisioning_entries(
+    data_dir: &Path,
+    entries: impl IntoIterator<Item = std::io::Result<PathBuf>>,
+) -> Result<(), std::io::Error> {
+    let mut found = false;
+
     for entry in entries {
         let path = match entry {
-            Ok(e) => e.path(),
+            Ok(path) => path,
             Err(e) => {
                 tracing::error!(
                     "Failed to read directory entry in {:?}: {:?}",
@@ -278,6 +305,17 @@ fn failure_report(error: &anyhow::Error, vm_id: &str) -> ProvisioningReport {
             }
             .as_provisioning_report(vm_id)
         })
+}
+
+fn provisioning_error_exit_code(error: &anyhow::Error) -> ExitCode {
+    let config: u8 = exitcode::CONFIG
+        .try_into()
+        .expect("Error code must be less than 256");
+    match error.root_cause().downcast_ref::<LibError>() {
+        Some(LibError::UserMissing { user: _ }) => ExitCode::from(config),
+        Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+        Some(_) | None => ExitCode::FAILURE,
+    }
 }
 
 async fn write_kvp_report(
@@ -410,7 +448,6 @@ async fn main() -> ExitCode {
     };
 
     tracing::info!("Final configuration: {:#?}", config);
-    hello();
 
     let exit_code = if let Some(Command::Clean { logs }) = opts.command {
         if clean_provisioning_status(&config).is_err()
@@ -442,17 +479,7 @@ async fn main() -> ExitCode {
             }
             Err(e) => {
                 tracing::error!("Provisioning failed with error: {e:?}");
-
-                let config: u8 = exitcode::CONFIG
-                    .try_into()
-                    .expect("Error code must be less than 256");
-                match e.root_cause().downcast_ref::<LibError>() {
-                    Some(LibError::UserMissing { user: _ }) => {
-                        ExitCode::from(config)
-                    }
-                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                    Some(_) | None => ExitCode::FAILURE,
-                }
+                provisioning_error_exit_code(&e)
             }
         }
     };
@@ -562,6 +589,213 @@ mod tests {
     use tokio::time::timeout;
 
     const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    #[rstest]
+    #[case::override_version(
+        Some("custom"), Some("build"), Some("123456789"), "custom".into()
+    )]
+    #[case::empty_override(
+        Some(""),
+        Some("build"),
+        Some("123456789"),
+        String::new()
+    )]
+    #[case::build_version(
+        None, Some("build"), Some("123456789"), format!("{PKG_VERSION}-build")
+    )]
+    #[case::long_sha(
+        None, None, Some("123456789"), format!("{PKG_VERSION}-1234567")
+    )]
+    #[case::short_sha(
+        None, None, Some("abc"), format!("{PKG_VERSION}-abc")
+    )]
+    #[case::empty_sha(None, None, Some(""), format!("{PKG_VERSION}-"))]
+    #[case::package_version(None, None, None, PKG_VERSION.into())]
+    fn version_metadata_precedence(
+        #[case] version: Option<&str>,
+        #[case] build: Option<&str>,
+        #[case] sha: Option<&str>,
+        #[case] expected: String,
+    ) {
+        assert_eq!(format_version(version, build, sha), expected);
+    }
+
+    #[rstest]
+    #[case::no_devices(vec![], None)]
+    #[case::unreadable_devices(vec!["failed"], None)]
+    #[case::last_valid_environment(
+        vec!["failed", "first", "failed", "last", "failed"], Some("last")
+    )]
+    fn environment_selection_preserves_success_after_failed_devices(
+        #[case] devices: Vec<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let mut attempted = Vec::new();
+        let result = get_environment_from_devices(
+            devices.iter().map(|device| device.to_string()),
+            |device| {
+                attempted.push(device.clone());
+                if device == "failed" {
+                    return Err(io::Error::other("unreadable media").into());
+                }
+                let mut environment = Environment::default();
+                environment
+                    .provisioning_section
+                    .linux_prov_conf_set
+                    .username = device;
+                Ok(environment)
+            },
+        );
+        assert_eq!(attempted, devices);
+        match expected {
+            Some(username) => assert_eq!(
+                result
+                    .unwrap()
+                    .provisioning_section
+                    .linux_prov_conf_set
+                    .username,
+                username
+            ),
+            None => assert_eq!(
+                result.unwrap_err().to_string(),
+                "Unable to get list of block devices"
+            ),
+        }
+    }
+
+    #[rstest]
+    #[case::imds_preferred(true, true, Some("imds-user"))]
+    #[case::imds_only(true, false, Some("imds-user"))]
+    #[case::ovf_fallback(false, true, Some("ovf-user"))]
+    #[case::missing_sources(false, false, None)]
+    fn username_source_precedence(
+        #[case] imds_available: bool,
+        #[case] ovf_available: bool,
+        #[case] expected: Option<&str>,
+    ) {
+        let metadata: InstanceMetadata = serde_json::from_value(json!({
+            "compute": {
+                "osProfile": {
+                    "adminUsername": "imds-user",
+                    "computerName": "test-host",
+                    "disablePasswordAuthentication": "true"
+                },
+                "publicKeys": []
+            }
+        }))
+        .unwrap();
+        let mut environment = Environment::default();
+        environment
+            .provisioning_section
+            .linux_prov_conf_set
+            .username = "ovf-user".into();
+        let result = get_username(
+            imds_available.then_some(&metadata),
+            ovf_available.then_some(&environment),
+        );
+        match expected {
+            Some(username) => assert_eq!(result.unwrap(), username),
+            None => assert!(matches!(
+                result.unwrap_err().downcast_ref::<LibError>(),
+                Some(LibError::UsernameFailure)
+            )),
+        }
+    }
+
+    #[test]
+    fn cleanup_preserves_unrelated_files_and_tolerates_disappearing_markers() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("existing.provisioned");
+        let missing = dir.path().join("removed.provisioned");
+        let unrelated = dir.path().join("keep.txt");
+        std::fs::write(&marker, "complete").unwrap();
+        std::fs::write(&unrelated, "keep").unwrap();
+        clean_provisioning_entries(
+            dir.path(),
+            [Ok(marker.clone()), Ok(missing), Ok(unrelated.clone())],
+        )
+        .unwrap();
+        assert!(!marker.exists());
+        assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "keep");
+    }
+
+    #[test]
+    fn cleanup_propagates_directory_entry_errors_and_stops() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("untouched.provisioned");
+        std::fs::write(&marker, "complete").unwrap();
+        let error = clean_provisioning_entries(
+            dir.path(),
+            [
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "cannot read directory entry",
+                )),
+                Ok(marker.clone()),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "cannot read directory entry");
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "complete");
+    }
+
+    #[test]
+    fn cleanup_propagates_marker_removal_errors() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("directory.provisioned");
+        std::fs::create_dir(&marker).unwrap();
+        let mut config = Config::default();
+        config.azure_init_data_dir.path = dir.path().into();
+        let error = clean_provisioning_status(&config).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::IsADirectory);
+        assert!(marker.is_dir());
+    }
+
+    #[rstest]
+    #[case::existing("file", Ok(()))]
+    #[case::missing("missing", Ok(()))]
+    #[case::directory("directory", Err(io::ErrorKind::IsADirectory))]
+    fn log_cleanup_preserves_io_results(
+        #[case] entry: &str,
+        #[case] expected: Result<(), io::ErrorKind>,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("azure-init.log");
+        match entry {
+            "file" => std::fs::write(&log, "log").unwrap(),
+            "directory" => std::fs::create_dir(&log).unwrap(),
+            _ => {}
+        }
+        let mut config = Config::default();
+        config.azure_init_log_path.path = log.clone();
+        assert_eq!(
+            clean_log_file(&config).map_err(|error| error.kind()),
+            expected
+        );
+        assert_eq!(log.exists(), expected.is_err());
+    }
+
+    #[rstest]
+    #[case::missing_user(LibError::UserMissing { user: "missing".into() }.into(), 78)]
+    #[case::nonempty_password(LibError::NonEmptyPassword.into(), 78)]
+    #[case::other_typed_error(LibError::UsernameFailure.into(), 1)]
+    #[case::untyped_error(anyhow::anyhow!("unexpected failure"), 1)]
+    fn provisioning_error_exit_codes_preserve_context(
+        #[case] error: anyhow::Error,
+        #[case] expected: u8,
+        #[values(false, true)] contextual: bool,
+    ) {
+        let error = if contextual {
+            error.context("provisioning failed")
+        } else {
+            error
+        };
+        assert_eq!(
+            format!("{:?}", provisioning_error_exit_code(&error)),
+            format!("{:?}", ExitCode::from(expected))
+        );
+    }
 
     #[test]
     fn clean_reports_subscriber_conflict() {

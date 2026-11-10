@@ -29,6 +29,7 @@ fn agent_provisioning_in_container() {
         ("success", "success"),
         ("failure", "error"),
         ("config-error", "error"),
+        ("marker-error", "error"),
     ] {
         let directory = artifacts.path().join(scenario);
         let store =

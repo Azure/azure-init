@@ -22,7 +22,7 @@ from wireserver_handler import WireServerHandler
 IMAGE = "azure-init-main-tests:local"
 VM_ID = "00000000-0000-0000-0000-000000000000"
 USERNAME = "coverage-user"
-SCENARIOS = ("success", "failure", "config-error")
+SCENARIOS = ("success", "failure", "config-error", "marker-error")
 
 
 def check_mount_table(mtab):
@@ -107,6 +107,8 @@ def inside_container(scenario):
 
     artifacts = Path("/artifacts")
     work = Path("/work")
+    if scenario == "marker-error":
+        (work / "state").write_text("not a directory")
     commands = work / "commands.jsonl"
     stubs = work / "bin"
     stubs.mkdir()
@@ -176,7 +178,9 @@ def inside_container(scenario):
             (artifacts / "stdout").write_text(result.stdout)
             (artifacts / "stderr").write_text(result.stderr)
             assert not service_errors, service_errors
-            expected_status = {"success": 0, "failure": 1, "config-error": 78}[scenario]
+            expected_status = {
+                "success": 0, "failure": 1, "config-error": 78, "marker-error": 1,
+            }[scenario]
             assert result.returncode == expected_status, result
             assert [kind for kind, _ in requests] == ["imds", "report"], requests
             report = requests[1][1]
@@ -198,14 +202,17 @@ def inside_container(scenario):
             else:
                 assert report["state"] == "NotReady", report
                 assert report["details"]["subStatus"] == "ProvisioningFailed", report
-                reason = (
-                    "failed to provision hostname"
-                    if scenario == "failure"
-                    else "user not found"
-                )
+                reason = {
+                    "failure": "failed to provision hostname",
+                    "config-error": "user not found",
+                    "marker-error": "I/O error",
+                }[scenario]
                 assert f"reason={reason}" in report["details"]["description"], report
                 assert not marker.exists()
             log = (work / "azure-init.log").read_text()
+            if scenario == "marker-error":
+                assert (work / "state").read_text() == "not a directory"
+                assert "Failed to mark provisioning complete." in log, log
             expected_log = (
                 "Provisioning completed successfully"
                 if scenario == "success"

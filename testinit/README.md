@@ -48,6 +48,10 @@ Ordinary `cargo test` skips this Docker-dependent test. The
 `cargo llvm-cov`, collects the agent's profiles, and uploads combined coverage
 to Codecov.
 
+Scenarios cover success, hostname failure, missing-user failure, and
+provisioning-marker write failure. [Codecov](../codecov.yml) targets 100%
+coverage of the full [entrypoint file](../src/main.rs), not just changed lines.
+
 ## Systemd E2E Quick Start
 
 ### Starting Services
