@@ -9,82 +9,17 @@ use std::path::Path;
 
 use crate::tracing_layer::DiagnosticsKvp;
 use libazureinit::config::Config;
-use libazureinit_kvp::{
-    DiagnosticWriter, KvpError, KvpPool, KvpPoolStore, PoolMode,
-    PROVISIONING_REPORT_KEY,
-};
-use tracing::{field::Visit, Event, Level, Subscriber};
+use libazureinit_kvp::{DiagnosticWriter, KvpPool, KvpPoolStore, PoolMode};
+use tracing::Subscriber;
 use tracing_subscriber::{
-    filter::Targets, fmt, fmt::format::FmtSpan, layer::Context,
-    layer::SubscriberExt, EnvFilter, Layer, Registry,
+    fmt, fmt::format::FmtSpan, layer::SubscriberExt, EnvFilter, Layer, Registry,
 };
 
 const AZURE_INIT_KVP_FILTER: &str = "AZURE_INIT_KVP_FILTER";
 
-/// Target of the `health_report` event emitted by `libazureinit::health`.
-const HEALTH_REPORT_TARGET: &str = "libazureinit::health::report";
-const HEALTH_REPORT_FIELD: &str = "health_report";
-
-/// Stores `health_report` events as `PROVISIONING_REPORT`, as the legacy KVP
-/// layer did. Temporary until the provisioning report follow-up replaces it.
-struct ProvisioningReportKvp {
-    store: KvpPoolStore,
-}
-
-impl<S: Subscriber> Layer<S> for ProvisioningReportKvp {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let mut report = HealthReport(None);
-        event.record(&mut report);
-        if let Some(report) = report.0 {
-            if let Err(error) = write_provisioning_report(&self.store, &report)
-            {
-                eprintln!("Failed to write KVP provisioning report: {error}");
-            }
-        }
-    }
-}
-
-struct HealthReport(Option<String>);
-
-impl Visit for HealthReport {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == HEALTH_REPORT_FIELD {
-            self.0 = Some(value.to_owned());
-        }
-    }
-
-    fn record_debug(
-        &mut self,
-        field: &tracing::field::Field,
-        value: &dyn std::fmt::Debug,
-    ) {
-        if field.name() == HEALTH_REPORT_FIELD {
-            self.0 = Some(format!("{value:?}"));
-        }
-    }
-}
-
-/// Replaces the pool's report, truncated to one value like the legacy
-/// writer's first chunk. Appends when the pool has no room for a new key.
-fn write_provisioning_report(
-    store: &KvpPoolStore,
-    report: &str,
-) -> Result<(), KvpError> {
-    let mut end = report.len().min(store.max_value_size());
-    while !report.is_char_boundary(end) {
-        end -= 1;
-    }
-    let report = &report[..end];
-    match store.insert(PROVISIONING_REPORT_KEY, report) {
-        Err(KvpError::MaxUniqueKeysExceeded { .. }) => {
-            store.append(PROVISIONING_REPORT_KEY, report)
-        }
-        result => result,
-    }
-}
-
 pub(crate) struct LoggingSetup {
     pub(crate) subscriber: Box<dyn Subscriber + Send + Sync>,
+    pub(crate) report_store: Option<KvpPoolStore>,
 }
 
 /// The console/file filter, honoring `AZURE_INIT_LOG` with the given default.
@@ -110,7 +45,6 @@ fn default_kvp_filter() -> EnvFilter {
                 "libazureinit::status::success",
                 "libazureinit::status::retrieved_vm_id",
                 "libazureinit::health::status",
-                "libazureinit::health::report",
                 "libazureinit::password::status",
             ]
             .join(","),
@@ -217,22 +151,14 @@ fn setup_layers_in(
         }
     });
 
-    // The report bypasses the configurable KVP filter, which only governs
-    // diagnostic history.
-    let report_layer = kvp_store.map(|store| {
-        ProvisioningReportKvp { store }.with_filter(
-            Targets::new().with_target(HEALTH_REPORT_TARGET, Level::INFO),
-        )
-    });
-
     let subscriber = Registry::default()
         .with(stderr_layer)
         .with(file_layer)
-        .with(kvp_layer)
-        .with(report_layer);
+        .with(kvp_layer);
 
     LoggingSetup {
         subscriber: Box::new(subscriber),
+        report_store: kvp_store,
     }
 }
 
@@ -240,9 +166,10 @@ fn setup_layers_in(
 mod tests {
     use super::*;
     use libazureinit_kvp::{
-        Diagnostic, DiagnosticPayload, DiagnosticReader, Entry, Outcome,
-        PROVISIONING_REPORT_KEY,
+        write_report, Diagnostic, DiagnosticPayload, DiagnosticReader, Entry,
+        Outcome, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
     };
+    use rstest::rstest;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -386,6 +313,7 @@ mod tests {
                 .set_modified(std::time::UNIX_EPOCH)
                 .unwrap();
             let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
+            assert!(setup.report_store.is_none());
             assert_eq!(
                 std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
                 0o600
@@ -428,87 +356,34 @@ mod tests {
     }
 
     #[test]
-    fn kvp_setup_writes_health_reports_as_provisioning_report() {
+    fn kvp_setup_keeps_reports_independent_of_diagnostic_filter() {
         let dir = TempDir::new().unwrap();
         let (mut config, kvp_dir) = kvp_config(&dir);
-        // The report is written even when the diagnostic filter excludes it.
         config.telemetry.kvp_filter = Some("off".to_owned());
         let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
-        let store =
-            KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
-                .unwrap();
+        let store = setup.report_store.unwrap();
+        let report =
+            ProvisioningReport::success("agent", VM_ID, ReportPpsType::None);
         tracing::subscriber::with_default(setup.subscriber, || {
-            // Covers string and `%` (Display) values, and events without one.
+            write_report(&store, &report).unwrap();
             tracing::info!(
                 target: "libazureinit::health::report",
-                health_report = "result=error|reason=first",
-                "Provisioning report"
-            );
-            tracing::info!(
-                target: "libazureinit::health::report",
-                "No report field"
-            );
-            let report = "result=success".to_owned();
-            tracing::info!(
-                target: "libazureinit::health::report",
-                health_report = %report,
-                "Provisioning report: {report}"
+                health_report = "result=error",
+                "An event must not replace the report"
             );
         });
         assert_eq!(
             store.dump().unwrap(),
-            vec![(
-                PROVISIONING_REPORT_KEY.to_owned(),
-                "result=success".to_owned()
-            )]
+            vec![(PROVISIONING_REPORT_KEY.to_owned(), report.encode())]
         );
     }
 
-    #[test]
-    fn provisioning_report_is_truncated_and_survives_a_full_pool() {
-        let dir = TempDir::new().unwrap();
-        let store =
-            KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe)
-                .unwrap();
-        // A multibyte character straddles the value limit.
-        let report =
-            format!("{}\u{20ac}tail", "x".repeat(store.max_value_size() - 1));
-        write_provisioning_report(&store, &report).unwrap();
-        assert_eq!(
-            store.read(PROVISIONING_REPORT_KEY).unwrap().unwrap(),
-            "x".repeat(store.max_value_size() - 1)
-        );
-
-        store.clear().unwrap();
-        store
-            .append_multiple((0..1024).map(|i| (format!("key-{i}"), "v")))
-            .unwrap();
-        write_provisioning_report(&store, "result=success").unwrap();
-        assert_eq!(
-            store.read(PROVISIONING_REPORT_KEY).unwrap().as_deref(),
-            Some("result=success")
-        );
-    }
-
-    #[test]
-    fn provisioning_report_write_failure_does_not_panic() {
-        let dir = TempDir::new().unwrap();
-        let (config, kvp_dir) = kvp_config(&dir);
-        let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
-        let pool = kvp_dir.join(KvpPool::Guest.file_name());
-        std::fs::create_dir(&pool).unwrap();
-        tracing::subscriber::with_default(setup.subscriber, || {
-            tracing::info!(
-                target: "libazureinit::health::report",
-                health_report = "result=success",
-                "Provisioning report"
-            );
-        });
-        assert!(pool.is_dir());
-    }
-
-    #[test]
-    fn other_health_report_fields_stay_ordinary_diagnostics() {
+    #[rstest]
+    #[case::ordinary(false)]
+    #[case::former_health_target(true)]
+    fn health_report_fields_stay_ordinary_diagnostics(
+        #[case] former_target: bool,
+    ) {
         let dir = TempDir::new().unwrap();
         let (config, kvp_dir) = kvp_config(&dir);
         let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
@@ -517,10 +392,18 @@ mod tests {
                 .unwrap();
         tracing::subscriber::with_default(setup.subscriber, || {
             tracing::info_span!("operation").in_scope(|| {
-                tracing::info!(
-                    health_report = "result=success",
-                    "An ordinary diagnostic event"
-                );
+                if former_target {
+                    tracing::info!(
+                        target: "libazureinit::health::report",
+                        health_report = "result=success",
+                        "A former health event"
+                    );
+                } else {
+                    tracing::info!(
+                        health_report = "result=success",
+                        "An ordinary diagnostic event"
+                    );
+                }
             });
         });
         let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
@@ -539,17 +422,25 @@ mod tests {
     }
 
     #[test]
-    fn kvp_setup_with_invalid_vm_id_preserves_local_logging() {
+    fn kvp_setup_with_invalid_vm_id_preserves_logging_and_reports() {
         let dir = TempDir::new().unwrap();
         let (config, kvp_dir) = kvp_config(&dir);
         let setup = setup_layers_in("not-a-uuid", &config, &kvp_dir);
+        let store = setup.report_store.unwrap();
         tracing::subscriber::with_default(setup.subscriber, || {
             tracing::info!("Local logging still works with an invalid VM ID");
         });
-        let store =
-            KvpPoolStore::new_in(KvpPool::Guest, &kvp_dir, PoolMode::Safe)
-                .unwrap();
         assert!(store.dump().unwrap().is_empty());
+        let report = ProvisioningReport::success(
+            "agent",
+            "not-a-uuid",
+            ReportPpsType::None,
+        );
+        write_report(&store, &report).unwrap();
+        assert_eq!(
+            DiagnosticReader::new(store).entries().unwrap(),
+            vec![Entry::Report(report)]
+        );
         assert!(std::fs::read_to_string(&config.azure_init_log_path.path)
             .unwrap()
             .contains("Local logging still works with an invalid VM ID"));
@@ -562,6 +453,7 @@ mod tests {
         let pool_path = kvp_dir.join(KvpPool::Guest.file_name());
         std::fs::create_dir(&pool_path).unwrap();
         let setup = setup_layers_in(VM_ID, &config, &kvp_dir);
+        assert!(setup.report_store.is_none());
         tracing::subscriber::with_default(setup.subscriber, || {
             tracing::info!("Local logging still works with an unusable pool");
         });

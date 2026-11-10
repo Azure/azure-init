@@ -324,7 +324,7 @@ fn validate_report_quoting(value: &str) -> Result<(), DecodeError> {
 
 impl ProvisioningReport {
     /// Encodes the report for storage.
-    pub(crate) fn encode(&self) -> String {
+    pub fn encode(&self) -> String {
         let mut data = Vec::with_capacity(7 + self.extra.len());
 
         data.push(format!("result={}", self.result));
