@@ -1,6 +1,6 @@
 # Azure-Init - Testinit Project
 
-A containerized Azure provisioning agent that simulates Azure Instance Metadata Service (IMDS) and WireServer for testing and development environments.
+Testinit provides isolated provisioning tests and systemd-based E2E tests. Both use shared mock Azure Instance Metadata Service (IMDS) and WireServer handlers.
 
 > [!WARNING]
 >
@@ -11,11 +11,12 @@ A containerized Azure provisioning agent that simulates Azure Instance Metadata 
 
 ## Overview
 
-This project consists of two main components:
-- **Provisioning Agent**: A systemd-based service running `azure-init` binary in a container
+This project consists of:
+- **Isolated Tests**: The real Cargo-built agent running with stubbed OS commands in disposable, unprivileged containers
+- **Provisioning Agent**: A systemd-based service running the `azure-init` binary in a privileged container
 - **Testing Server**: A mock Azure service providing IMDS and WireServer endpoints
 
-## Architecture
+## Systemd Architecture
 
 The setup creates two Docker networks with Azure-like IP addresses:
 - `imds-network` (169.254.0.0/16) - For IMDS communication
@@ -25,9 +26,29 @@ The setup creates two Docker networks with Azure-like IP addresses:
 
 - Docker and Docker Compose
 - WSL2 or Linux environment
-- The `azure-init` binary and service file
+- Python 3, Rust, and libudev development headers for isolated tests
 
-## Quick Start
+## Isolated Provisioning Tests
+
+The [Cargo test](tests/provisioning.rs) runs the real agent with stubbed OS
+commands and shared mock services, without the privileged Compose setup.
+From the repository root on Ubuntu:
+
+```bash
+python3 -B -m unittest discover -s testinit/testing-server -p 'test_*.py' -v
+. /etc/os-release
+docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" \
+  -f testinit/Dockerfile.isolated -t azure-init-main-tests:local testinit
+cargo test --locked --all-features --package azure-init --test testinit \
+  -- --ignored agent_provisioning_in_container
+```
+
+Ordinary `cargo test` skips this Docker-dependent test. The
+[coverage workflow](../.github/workflows/coverage-report.yml) runs it through
+`cargo llvm-cov`, collects the agent's profiles, and uploads combined coverage
+to Codecov.
+
+## Systemd E2E Quick Start
 
 ### Starting Services
 
@@ -104,6 +125,7 @@ docker compose logs -f testing-server
 
 ### Building
 
-The Dockerfile expects:
-- `azure-init/target/debug/azure-init` - The main binary (compiled via `cargo build`)
-- `azure-init/config/azure-init.service` - The systemd service file
+The systemd [Dockerfile](Dockerfile) builds the repository source with
+`cargo build` and installs [azure-init.service](../config/azure-init.service).
+The isolated [Dockerfile](Dockerfile.isolated) contains only the fixture runtime
+and shared mock handlers; its agent binary is mounted by the Cargo test.

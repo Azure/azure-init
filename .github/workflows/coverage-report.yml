@@ -46,12 +46,12 @@ jobs:
           fallback: none
 
       - name: Test the isolated provisioning runner
-        run: python3 -m unittest discover -s tests/support -p test_container_provisioning.py -v
+        run: python3 -B -m unittest discover -s testinit/testing-server -p 'test_*.py' -v
 
       - name: Build the isolated provisioning image
         run: |
           . /etc/os-release
-          docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" -t azure-init-main-tests:local tests/support
+          docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" -f testinit/Dockerfile.isolated -t azure-init-main-tests:local testinit
 
       - name: Collect unit and CLI coverage
         run: |
@@ -59,7 +59,7 @@ jobs:
           cargo llvm-cov --locked --all-features --workspace --no-report
 
       - name: Collect real entrypoint coverage
-        run: cargo llvm-cov --locked --all-features --package azure-init --test cli --no-report -- --ignored agent_provisioning_in_container
+        run: cargo llvm-cov --locked --all-features --package azure-init --test testinit --no-report -- --ignored agent_provisioning_in_container
 
       - name: Generate combined code coverage
         run: cargo llvm-cov report --package azure-init --package libazureinit --package libazureinit-kvp --lcov --output-path lcov.info

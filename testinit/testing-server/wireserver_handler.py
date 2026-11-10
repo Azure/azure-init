@@ -116,15 +116,15 @@ class WireServerHandler(BaseHTTPRequestHandler):
         self.wfile.write(response.encode())
         return
 
+    def record_report(self, post_data):
+        logger.info(f"WireServer POST request: {self.path}")
+        logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
+        self.store_kvp_file()
+
     def do_POST(self):
         """Handle POST requests to WireServer endpoints."""
         content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length)
-
-        logger.info(f"WireServer POST request: {self.path}")
-        logger.info(f"POST data: {post_data.decode('utf-8', errors='ignore')}")
-
-        self.store_kvp_file()
+        self.record_report(self.rfile.read(content_length))
 
         if self._responses is not None:
             self.write_custom_response()

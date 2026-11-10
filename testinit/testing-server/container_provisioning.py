@@ -4,7 +4,7 @@
 """Exercise the real agent against controlled services in a disposable container."""
 
 import argparse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import HTTPServer
 import json
 import os
 from pathlib import Path
@@ -14,6 +14,9 @@ import subprocess
 import tempfile
 import threading
 import uuid
+
+from imds_handler import IMDSHandler
+from wireserver_handler import WireServerHandler
 
 
 IMAGE = "azure-init-main-tests:local"
@@ -33,6 +36,62 @@ def check_mount_table(mtab):
             raise RuntimeError(f"fixture must not expose mounted {fields[2]} media")
 
 
+def make_handlers(scenario, requests, service_errors):
+    class CheckedHandler:
+        def log_message(self, *_args):
+            pass
+
+        def handle(self):
+            try:
+                super().handle()
+            except (AssertionError, ValueError) as error:
+                service_errors.append(str(error))
+                raise
+
+    class MetadataHandler(CheckedHandler, IMDSHandler):
+        _response_position = 0
+        _responses = [{
+            "status_code": 200,
+            "headers": {"Content-Type": "application/json"},
+            "response": {
+                "compute": {
+                    "osProfile": {
+                        "adminUsername": USERNAME,
+                        "computerName": "coverage-host",
+                        "disablePasswordAuthentication": "true",
+                    },
+                    "publicKeys": (
+                        [{"keyData": "ssh-ed25519 test-key", "path": "/unused"}]
+                        if scenario == "config-error"
+                        else []
+                    ),
+                }
+            },
+        }]
+
+        def do_GET(self):
+            assert self.path.startswith(
+                "http://169.254.169.254/metadata/instance?"
+            ), self.path
+            assert self.headers["Metadata"] == "true"
+            requests.append(("imds", None))
+            super().do_GET()
+
+    class HealthHandler(CheckedHandler, WireServerHandler):
+        _response_position = 0
+        _responses = [{
+            "status_code": 201,
+            "headers": {"Content-Length": "0"},
+            "response": "",
+        }]
+
+        def record_report(self, post_data):
+            assert self.path == "/provisioning/health", self.path
+            requests.append(("report", json.loads(post_data)))
+
+    return MetadataHandler, HealthHandler
+
+
 def inside_container(scenario):
     if not Path("/test/isolated-provisioning").is_file():
         raise RuntimeError("provisioning fixture must only run in its isolated image")
@@ -44,52 +103,7 @@ def inside_container(scenario):
 
     requests = []
     service_errors = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):
-            pass
-
-        def handle(self):
-            try:
-                super().handle()
-            except (AssertionError, ValueError) as error:
-                service_errors.append(str(error))
-                raise
-
-        def do_GET(self):
-            assert self.path.startswith(
-                "http://169.254.169.254/metadata/instance?"
-            ), self.path
-            assert self.headers["Metadata"] == "true"
-            requests.append(("imds", None))
-            keys = (
-                [{"keyData": "ssh-ed25519 test-key", "path": "/unused"}]
-                if scenario == "config-error"
-                else []
-            )
-            body = json.dumps({
-                "compute": {
-                    "osProfile": {
-                        "adminUsername": USERNAME,
-                        "computerName": "coverage-host",
-                        "disablePasswordAuthentication": "true",
-                    },
-                    "publicKeys": keys,
-                }
-            }).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_POST(self):
-            assert self.path == "/provisioning/health", self.path
-            body = self.rfile.read(int(self.headers["Content-Length"]))
-            requests.append(("report", json.loads(body)))
-            self.send_response(201)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+    metadata_handler, health_handler = make_handlers(scenario, requests, service_errors)
 
     artifacts = Path("/artifacts")
     work = Path("/work")
@@ -115,8 +129,12 @@ def inside_container(scenario):
     for name in ("hostnamectl", "getent", "useradd", "usermod", "passwd"):
         (stubs / name).symlink_to(stub)
 
-    with HTTPServer(("127.0.0.1", 0), Handler) as server:
-        endpoint = f"http://127.0.0.1:{server.server_port}"
+    with (
+        HTTPServer(("127.0.0.1", 0), metadata_handler) as imds_server,
+        HTTPServer(("127.0.0.1", 0), health_handler) as health_server,
+    ):
+        imds_endpoint = f"http://127.0.0.1:{imds_server.server_port}"
+        health_endpoint = f"http://127.0.0.1:{health_server.server_port}"
         config = work / "azure-init.toml"
         config.write_text(
             '[ssh]\nconfigure_sshd_password_authentication = false\n'
@@ -127,21 +145,26 @@ def inside_container(scenario):
             'retry_interval_secs = 0.01\ntotal_retry_timeout_secs = 3\n'
             '[wireserver]\nconnection_timeout_secs = 0.01\n'
             'read_timeout_secs = 1\ntotal_retry_timeout_secs = 3\n'
-            f'health_endpoint = "{endpoint}/provisioning/health"\n'
+            f'health_endpoint = "{health_endpoint}/provisioning/health"\n'
             '[telemetry]\nkvp_diagnostics = true\nkvp_filter = "info"\n'
         )
         environment = dict(
             os.environ,
             PATH=str(stubs),
             TEST_SCENARIO=scenario,
-            HTTP_PROXY=endpoint,
-            http_proxy=endpoint,
+            HTTP_PROXY=imds_endpoint,
+            http_proxy=imds_endpoint,
             NO_PROXY="127.0.0.1,localhost",
             no_proxy="127.0.0.1,localhost",
             AZURE_INIT_LOG="info",
         )
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        servers = (imds_server, health_server)
+        threads = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in servers
+        ]
+        for thread in threads:
+            thread.start()
         try:
             result = subprocess.run(
                 ["/test/azure-init", "--config", str(config)],
@@ -192,9 +215,11 @@ def inside_container(scenario):
             shutil.copyfile("/var/lib/hyperv/.kvp_pool_1", artifacts / ".kvp_pool_1")
             print(f"Verified {scenario}: actual agent exit {result.returncode} and health report")
         finally:
-            server.shutdown()
-            thread.join(timeout=5)
-            assert not thread.is_alive(), "mock server did not shut down"
+            for server in servers:
+                server.shutdown()
+            for thread in threads:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "mock server did not shut down"
             log = work / "azure-init.log"
             if log.exists():
                 shutil.copyfile(log, artifacts / "azure-init.log")

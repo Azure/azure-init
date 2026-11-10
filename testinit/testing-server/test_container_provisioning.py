@@ -1,18 +1,107 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Check fixture isolation and lifecycle using mocked Docker and synthetic files."""
+"""Check shared HTTP handlers, fixture isolation, and the Docker lifecycle."""
 
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
+from http.client import HTTPConnection, RemoteDisconnected
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
 import container_provisioning as fixture
+
+
+class HandlerTests(unittest.TestCase):
+    @contextmanager
+    def serve(self, handler):
+        with fixture.HTTPServer(("127.0.0.1", 0), handler) as server:
+            thread = threading.Thread(
+                target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+            )
+            thread.start()
+            connection = HTTPConnection(*server.server_address, timeout=5)
+            try:
+                yield connection
+            finally:
+                connection.close()
+                server.shutdown()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive(), "mock server did not shut down")
+
+    def test_scenarios_share_handlers_with_fresh_response_state(self):
+        for scenario in fixture.SCENARIOS:
+            with self.subTest(scenario=scenario):
+                requests, errors = [], []
+                metadata, health = fixture.make_handlers(scenario, requests, errors)
+                self.assertEqual(metadata._response_position, 0)
+                self.assertEqual(health._response_position, 0)
+                with self.serve(metadata) as connection:
+                    connection.request(
+                        "GET", "http://169.254.169.254/metadata/instance?extended=true",
+                        headers={"Metadata": "true"},
+                    )
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    compute = json.loads(response.read())["compute"]
+                    self.assertEqual(compute["osProfile"]["adminUsername"], fixture.USERNAME)
+                    self.assertEqual(bool(compute["publicKeys"]), scenario == "config-error")
+                report = {"state": "Ready" if scenario == "success" else "NotReady"}
+                with self.serve(health) as connection:
+                    connection.request("POST", "/provisioning/health", json.dumps(report))
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 201)
+                    self.assertEqual(response.read(), b"")
+                self.assertEqual(requests, [("imds", None), ("report", report)])
+                self.assertEqual(errors, [])
+                self.assertEqual(metadata._response_position, 1)
+                self.assertEqual(health._response_position, 1)
+
+    def test_invalid_requests_are_reported(self):
+        requests, errors = [], []
+        metadata, health = fixture.make_handlers("success", requests, errors)
+        for handler, method, path, body in (
+            (metadata, "GET", "/unexpected", ""),
+            (health, "POST", "/provisioning/health", "not-json"),
+        ):
+            with self.subTest(method=method), patch.object(fixture.HTTPServer, "handle_error"):
+                with self.serve(handler) as connection:
+                    connection.request(method, path, body)
+                    with self.assertRaises(RemoteDisconnected):
+                        connection.getresponse()
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(requests, [])
+
+    def test_systemd_health_responses_still_snapshot_kvp(self):
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                class Handler(fixture.WireServerHandler):
+                    _response_position = 0
+
+                if custom:
+                    response_file = Path(fixture.__file__).parent / (
+                        "api-responses/wireserver/one-bad-then-success.xml"
+                    )
+                    Handler.set_response_file_path(response_file)
+                    Handler.load_responses()
+                statuses = (500, 200) if custom else (200,)
+                with (
+                    patch.object(Handler, "store_kvp_file") as snapshot,
+                    patch("wireserver_handler.time.sleep"),
+                    self.serve(Handler) as connection,
+                ):
+                    for status in statuses:
+                        connection.request("POST", "/provisioning/health", '{"state":"Ready"}')
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, status)
+                        self.assertEqual(response.read(), b"")
+                self.assertEqual(snapshot.call_count, len(statuses))
 
 
 class MountTableTests(unittest.TestCase):

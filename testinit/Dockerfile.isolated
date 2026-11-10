@@ -7,6 +7,7 @@ RUN apt-get update \
     && mkdir -p /test /work /var/lib/hyperv /etc/sudoers.d \
     && touch /test/isolated-provisioning
 
-COPY container_provisioning.py /test/container_provisioning.py
+COPY testing-server/container_provisioning.py testing-server/imds_handler.py \
+    testing-server/wireserver_handler.py testing-server/utils.py /test/
 
-ENTRYPOINT ["python3", "/test/container_provisioning.py", "--inside"]
+ENTRYPOINT ["python3", "-B", "/test/container_provisioning.py", "--inside"]
