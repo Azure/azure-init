@@ -293,6 +293,17 @@ async fn provision_with_reporting(
     vm_id: &str,
     provisioning: impl Future<Output = Result<(), anyhow::Error>>,
 ) -> Result<(), anyhow::Error> {
+    if let Some(store) = store {
+        let report = ProvisioningReport::in_progress(
+            REPORT_AGENT,
+            vm_id,
+            ReportPpsType::None,
+        );
+        if let Err(error) = write_kvp_report(store, &report).await {
+            eprintln!("Failed to write in-progress provisioning report to KVP: {error:#}");
+        }
+    }
+
     let result = provisioning.await;
     let report = match &result {
         Ok(()) => ProvisioningReport::success(
@@ -811,6 +822,13 @@ mod tests {
         let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
         let result =
             provision_with_reporting(&config, Some(&store), VM_ID, async {
+                let reserved =
+                    serde_json::to_value(stored_report(&store)).unwrap();
+                assert_eq!(reserved["result"], "in_progress");
+                assert_eq!(reserved["vm_id"], VM_ID);
+                for field in ["reason", "documentation_url", "extra"] {
+                    assert!(reserved.get(field).is_none());
+                }
                 if failed {
                     Err(LibError::UserMissing {
                         user: "new|\"user\"".into(),
@@ -922,8 +940,12 @@ mod tests {
     async fn health_report_survives_diagnostic_errors() {
         let dir = TempDir::new().unwrap();
         let store = store_at(&dir);
+        store
+            .append_multiple((0..1023).map(|i| (format!("key-{i}"), "keep")))
+            .unwrap();
         let (config, server) = mock_wireserver(vec![StatusCode::OK]).await;
         provision_with_reporting(&config, Some(&store), VM_ID, async {
+            assert_eq!(store.len().unwrap(), 1024);
             let writer = DiagnosticWriter::new(store.clone(), "agent", VM_ID).unwrap();
             let subscriber = tracing_subscriber::registry()
                 .with(crate::tracing_layer::DiagnosticsKvp::new(writer));
@@ -936,7 +958,8 @@ mod tests {
         }).await.unwrap();
         server.await.unwrap();
         let records = store.dump().unwrap();
-        assert_eq!(records.len(), 4);
+        assert_eq!(records.len(), 1027);
+        assert_eq!(records[1023].0, PROVISIONING_REPORT_KEY);
         assert_eq!(
             serde_json::to_value(stored_report(&store)).unwrap()["result"],
             "success"
@@ -993,8 +1016,11 @@ mod tests {
             value["extra"],
             json!([["error", format!("unhandled error: {details}")]])
         );
-        assert_eq!(store.read(PROVISIONING_REPORT_KEY).unwrap(), None);
-        assert_eq!(store.len().unwrap(), 0);
+        assert_eq!(
+            serde_json::to_value(stored_report(&store)).unwrap()["result"],
+            "in_progress"
+        );
+        assert_eq!(store.len().unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1170,6 +1196,7 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
             let stderr = String::from_utf8(output.stderr).unwrap();
             for message in [
+                "Failed to write in-progress provisioning report to KVP:",
                 "Failed to write provisioning report to KVP:",
                 "Failed to send provisioning report to wireserver:",
             ] {
