@@ -360,6 +360,75 @@ fn report_commands_reject_invalid_supporting_data(#[case] args: &[&str]) {
     assert!(!store_at(&dir).path().exists());
 }
 
+#[rstest]
+#[case::in_progress(&["report-in-progress"])]
+#[case::success(&["report-success"])]
+#[case::failure(&["report-failure", "--reason", "boom"])]
+fn report_commands_reject_reserved_supporting_data(
+    #[case] command: &[&str],
+    #[values("result", "agent", "pps_type", "vm_id", "timestamp")] key: &str,
+    #[values(false, true)] existing_report: bool,
+) {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    let before = if existing_report {
+        let report = ProvisioningReport::failure(
+            "old agent",
+            "old vm",
+            "old failure",
+            ReportPpsType::None,
+        )
+        .with_documentation_url("https://example.invalid/old")
+        .with_extra("old_context", "old value");
+        write_report(&store, &report).unwrap();
+        store.append("keep", "unchanged").unwrap();
+        Some(fs::read(store.path()).unwrap())
+    } else {
+        None
+    };
+
+    let single = format!("{key}=x");
+    let comma_separated = format!("stage=starting,{key}=x,build=123");
+    for supporting_args in [
+        vec!["--supporting-data", single.as_str()],
+        vec!["--supporting-data", comma_separated.as_str()],
+        vec![
+            "--supporting-data",
+            "stage=starting",
+            "--supporting-data",
+            single.as_str(),
+        ],
+    ] {
+        let mut args = command.to_vec();
+        args.extend_from_slice(&["--vm-id", "vm-1"]);
+        args.extend_from_slice(&supporting_args);
+        let output = kvp(&with_dir(&dir, &args));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr.contains(&format!(
+                "supporting data key '{key}' is reserved for report fields"
+            )),
+            "{stderr}"
+        );
+        match &before {
+            Some(before) => {
+                assert_eq!(fs::read(store.path()).unwrap(), *before);
+            }
+            None => assert!(!store.path().exists()),
+        }
+    }
+
+    if existing_report {
+        let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+        assert_eq!(entries[0]["type"], PROVISIONING_REPORT_KEY);
+        assert_eq!(entries[0]["result"], "error");
+        assert_eq!(entries[0]["reason"], "old failure");
+    }
+}
+
 #[test]
 fn parsed_dump_reassembles_and_filters_without_dropping_other_entries() {
     let dir = TempDir::new().unwrap();

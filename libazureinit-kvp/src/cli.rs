@@ -179,7 +179,8 @@ enum Command {
         #[arg(long, default_value = DEFAULT_AGENT)]
         agent: String,
         /// Additional key=value supporting data, comma-separated.
-        /// The flag may also be repeated.
+        /// The flag may also be repeated. Standard report field names
+        /// are reserved.
         #[arg(long, value_parser = parse_supporting_data)]
         supporting_data: Vec<SupportingData>,
     },
@@ -194,7 +195,7 @@ enum Command {
         agent: String,
         /// Additional key=value supporting data, comma-separated
         /// (e.g. --supporting-data k1=v1,k2=v2). The flag may also be
-        /// repeated.
+        /// repeated. Standard report field names are reserved.
         #[arg(long, value_parser = parse_supporting_data)]
         supporting_data: Vec<SupportingData>,
     },
@@ -215,7 +216,7 @@ enum Command {
         documentation_url: Option<String>,
         /// Additional key=value supporting data, comma-separated
         /// (e.g. --supporting-data k1=v1,k2=v2). The flag may also be
-        /// repeated.
+        /// repeated. Standard report field names are reserved.
         ///
         /// To keep a literal comma in a value, wrap that value in matching
         /// single or double quotes. The shell strips quotes first, so wrap
@@ -808,6 +809,11 @@ fn parse_key_value_pair(raw: &str) -> Result<(String, String), String> {
     if key.is_empty() {
         return Err(format!("supporting data '{raw}' has an empty key"));
     }
+    if matches!(key, "result" | "agent" | "pps_type" | "vm_id" | "timestamp") {
+        return Err(format!(
+            "supporting data key '{key}' is reserved for report fields"
+        ));
+    }
     Ok((key.to_string(), unquote(value).to_string()))
 }
 
@@ -1376,6 +1382,14 @@ mod tests {
     #[case::missing_key_on_quoted_field(
         "k1=v1,'a,b'",
         "supporting data ''a' must be in key=value format"
+    )]
+    #[case::reserved_key(
+        "timestamp=x",
+        "supporting data key 'timestamp' is reserved for report fields"
+    )]
+    #[case::reserved_key_after_valid_field(
+        "stage=starting,timestamp='x'",
+        "supporting data key 'timestamp' is reserved for report fields"
     )]
     fn parse_supporting_data_rejects_invalid_fields(
         #[case] raw: &str,
