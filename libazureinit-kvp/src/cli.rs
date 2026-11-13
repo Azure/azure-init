@@ -169,6 +169,20 @@ enum Command {
     },
     /// Print whether the pool is stale (exit 0 if stale, 1 otherwise).
     IsStale,
+    /// Write an in-progress provisioning health report, reserving or replacing
+    /// the `PROVISIONING_REPORT` record.
+    ReportInProgress {
+        /// Virtual machine identifier.
+        #[arg(long)]
+        vm_id: Option<String>,
+        /// Reporting agent identifier (e.g. libazureinit-kvp/0.1.0).
+        #[arg(long, default_value = DEFAULT_AGENT)]
+        agent: String,
+        /// Additional key=value supporting data, comma-separated.
+        /// The flag may also be repeated.
+        #[arg(long, value_parser = parse_supporting_data)]
+        supporting_data: Vec<SupportingData>,
+    },
     /// Write a success provisioning health report, overriding any existing
     /// `PROVISIONING_REPORT` record.
     ReportSuccess {
@@ -331,6 +345,11 @@ fn dispatch<W: Write>(cli: Cli, stdout: &mut W) -> Result<u8, CliError> {
             Ok(EXIT_OK)
         }
         Command::IsStale => is_stale(&store, stdout, output),
+        Command::ReportInProgress {
+            vm_id,
+            agent,
+            supporting_data,
+        } => report_in_progress(&store, vm_id, agent, supporting_data),
         Command::ReportSuccess {
             vm_id,
             agent,
@@ -616,6 +635,22 @@ fn emit(
     let vm_id = resolve_vm_id(vm_id)?;
     let writer = DiagnosticWriter::new(store.clone(), agent, vm_id)?;
     writer.emit_event(&name, message, None, None, None)?;
+    Ok(EXIT_OK)
+}
+
+fn report_in_progress(
+    store: &KvpPoolStore,
+    vm_id: Option<String>,
+    agent: String,
+    supporting_data: Vec<SupportingData>,
+) -> Result<u8, CliError> {
+    let vm_id = resolve_vm_id(vm_id)?;
+    let mut report =
+        ProvisioningReport::in_progress(agent, vm_id, ReportPpsType::None);
+    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
+        report = report.with_extra(key, value);
+    }
+    write_report(store, &report)?;
     Ok(EXIT_OK)
 }
 
@@ -1117,6 +1152,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_report_in_progress() {
+        let cli = Cli::parse_from([
+            "libazureinit-kvp",
+            "report-in-progress",
+            "--vm-id",
+            "vm-1",
+            "--agent",
+            "Azure-Init/0.0.0",
+            "--supporting-data",
+            "stage=starting",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportInProgress { ref vm_id, ref agent, ref supporting_data }
+                if vm_id.as_deref() == Some("vm-1")
+                    && agent == "Azure-Init/0.0.0"
+                    && supporting_data == &vec![SupportingData(vec![
+                        ("stage".to_string(), "starting".to_string()),
+                    ])]
+        ));
+    }
+
+    #[test]
+    fn parse_report_in_progress_defaults_agent_and_vm_id() {
+        let cli = Cli::parse_from(["libazureinit-kvp", "report-in-progress"]);
+        assert!(matches!(
+            cli.command,
+            Command::ReportInProgress { ref vm_id, ref agent, ref supporting_data }
+                if vm_id.is_none()
+                    && agent == DEFAULT_AGENT
+                    && supporting_data.is_empty()
+        ));
+    }
+
+    #[test]
     fn parse_report_success() {
         let cli = Cli::parse_from([
             "libazureinit-kvp",
@@ -1340,6 +1410,30 @@ mod tests {
                 assert!(err.to_string().contains(needle));
             }
         }
+    }
+
+    #[test]
+    fn dispatch_report_in_progress_writes_single_record() {
+        let dir = TempDir::new().unwrap();
+        let command = Command::ReportInProgress {
+            vm_id: Some("vm-1".into()),
+            agent: "Azure-Init/0.0.0".into(),
+            supporting_data: vec![SupportingData(vec![
+                ("stage".into(), "starting".into()),
+                ("stage".into(), "prepared".into()),
+            ])],
+        };
+        let (code, _) = run_dispatch(cli(&dir, command));
+        assert_eq!(code, EXIT_OK);
+
+        let entries = store_at(&dir).entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        let value = entries.get("PROVISIONING_REPORT").unwrap();
+        assert!(value.starts_with(
+            "result=in_progress|agent=Azure-Init/0.0.0\
+|pps_type=None|vm_id=vm-1|timestamp="
+        ));
+        assert!(value.ends_with("|stage=starting|stage=prepared"));
     }
 
     #[test]

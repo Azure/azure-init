@@ -6,6 +6,7 @@ use std::io::Write;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use libazureinit_kvp::{
     write_report, DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome,
     PoolMode, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
@@ -73,6 +74,9 @@ fn help_lists_commands() {
     assert!(stdout.contains("append-multiple"));
     assert!(stdout.contains("delete-multiple"));
     assert!(stdout.contains("is-stale"));
+    assert!(stdout.contains("report-in-progress"));
+    assert!(stdout.contains("report-success"));
+    assert!(stdout.contains("report-failure"));
 }
 
 #[test]
@@ -270,6 +274,56 @@ fn json_read_round_trips_value_with_equals_and_newline() {
 }
 
 #[test]
+fn report_in_progress_resets_failure_context() {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    let previous = ProvisioningReport::failure(
+        "old agent",
+        "old vm",
+        "old",
+        ReportPpsType::None,
+    )
+    .with_documentation_url("https://example.invalid/old")
+    .with_extra("old_context", "old value");
+    write_report(&store, &previous).unwrap();
+    store.append("keep", "unchanged").unwrap();
+
+    let before = Utc::now();
+    assert_success(kvp(&with_dir(
+        &dir,
+        &[
+            "report-in-progress",
+            "--vm-id",
+            "vm-1",
+            "--supporting-data",
+            "stage=starting,stage=prepared",
+        ],
+    )));
+    let after = Utc::now();
+    let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(entries.as_array().unwrap().len(), 2);
+    let timestamp = entries[0]["timestamp"].as_str().unwrap();
+    let captured = DateTime::parse_from_rfc3339(timestamp)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!((before..=after).contains(&captured));
+    assert_eq!(
+        entries[0],
+        json!({
+            "type": PROVISIONING_REPORT_KEY,
+            "result": "in_progress",
+            "agent": format!("libazureinit-kvp/{}", env!("CARGO_PKG_VERSION")),
+            "vm_id": "vm-1",
+            "pps_type": "None",
+            "timestamp": timestamp,
+            "extra": [["stage", "starting"], ["stage", "prepared"]],
+        })
+    );
+    assert_eq!(store.read("keep").unwrap().as_deref(), Some("unchanged"));
+    assert_eq!(store.dump().unwrap().len(), 2);
+}
+
+#[test]
 fn report_success_defaults_agent_and_accepts_supporting_data() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
@@ -292,25 +346,18 @@ fn report_success_defaults_agent_and_accepts_supporting_data() {
     assert!(report.trim_end().ends_with("|build=123|commit=abc"));
 }
 
-#[test]
-fn report_failure_rejects_invalid_supporting_data() {
+#[rstest]
+#[case::in_progress(&["report-in-progress", "--vm-id", "vm-1", "--supporting-data", "novalue"])]
+#[case::success(&["report-success", "--vm-id", "vm-1", "--supporting-data", "novalue"])]
+#[case::failure(&["report-failure", "--vm-id", "vm-1", "--reason", "boom", "--supporting-data", "novalue"])]
+fn report_commands_reject_invalid_supporting_data(#[case] args: &[&str]) {
     let dir = TempDir::new().unwrap();
-    let output = kvp(&with_dir(
-        &dir,
-        &[
-            "report-failure",
-            "--vm-id",
-            "vm-1",
-            "--reason",
-            "boom",
-            "--supporting-data",
-            "novalue",
-        ],
-    ));
+    let output = kvp(&with_dir(&dir, args));
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("key=value"));
+    assert!(!store_at(&dir).path().exists());
 }
 
 #[test]

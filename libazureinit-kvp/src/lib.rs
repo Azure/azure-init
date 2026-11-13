@@ -13,8 +13,10 @@
 //!   timestamps, compression and splitting long payloads into records.
 //! - [`DiagnosticReader`] reads native and cloud-init diagnostics, provisioning
 //!   reports, and unrecognized records as [`Entry`] values.
-//! - [`ProvisioningReport`] and [`write_report`] publish one replaceable
-//!   provisioning result, rather than a history of diagnostic events.
+//! - [`report_success`], [`report_failure`], and [`report_in_progress`] publish
+//!   one replaceable provisioning state. Use [`ProvisioningReport`] and
+//!   [`write_report`] for additional context or to reuse a report across
+//!   transports.
 //! - [`KvpPoolStore`] reads and writes ordinary key/value records. Use
 //!   [`insert`](KvpPoolStore::insert) to update a key, or
 //!   [`append`](KvpPoolStore::append) to preserve duplicates.
@@ -49,9 +51,29 @@
 //! # }
 //! ```
 //!
-//! See [`DiagnosticWriter`] for recording operations, [`DiagnosticReader`] for
-//! consuming telemetry, and [`ProvisioningReport`] for reporting provisioning
-//! success or failure.
+//! # Report Provisioning
+//!
+//! Reserve the report key before provisioning, then replace it with the final
+//! result. These APIs write local KVP data, not HTTP health requests.
+//!
+//! ```no_run
+//! use libazureinit_kvp::{
+//!     report_in_progress, report_success, KvpPool, KvpPoolStore, PoolMode,
+//!     ReportPpsType,
+//! };
+//!
+//! # fn main() -> Result<(), libazureinit_kvp::KvpError> {
+//! let store = KvpPoolStore::new(KvpPool::Guest, PoolMode::Safe)?;
+//! let agent = "my-agent/1.0";
+//! let vm_id = "vm-123";
+//! report_in_progress(&store, agent, vm_id, ReportPpsType::None)?;
+//! report_success(&store, agent, vm_id, ReportPpsType::None)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The CLI provides `report-in-progress`, `report-success`, and `report-failure`.
+//! Its report commands use [`ProvisioningReport`] to support additional context.
 //!
 //! # Format References
 //! The [KVP contract] describes pool files and Hyper-V interfaces. The
@@ -77,6 +99,7 @@ pub use diagnostics::{
 };
 pub use error::KvpError;
 pub use report::{
-    write_report, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
+    report_failure, report_in_progress, report_success, write_report,
+    ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
 };
 pub use store::{KvpPool, KvpPoolStore, PoolMode};

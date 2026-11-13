@@ -1,20 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Public diagnostics API round trips, cloud-init compatibility, and store
-//! behavior.
+//! Public diagnostics and provisioning report APIs, cloud-init compatibility,
+//! and store behavior.
 
 use std::io::Read;
 use std::thread;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chrono::{DateTime, Utc};
 use flate2::read::ZlibDecoder;
 use libazureinit_kvp::{
-    write_report, DecodeError, Diagnostic, DiagnosticPayload, DiagnosticReader,
+    report_failure, report_in_progress, report_success, write_report,
+    DecodeError, Diagnostic, DiagnosticPayload, DiagnosticReader,
     DiagnosticWriter, Encoding, Entry, Kind, KvpError, KvpPool, KvpPoolStore,
     Outcome, PoolMode, ProvisioningReport, RawKeyValue, ReportPpsType,
-    DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES,
+    DIAGNOSTIC_VERSION_ID, MAX_CHUNK_BYTES, PROVISIONING_REPORT_KEY,
 };
 use rstest::rstest;
 use tempfile::TempDir;
@@ -26,6 +28,7 @@ use cloud_init_fixtures::COMPRESSED_LOG_CHUNKS;
 const AGENT: &str = "azure-init-test";
 const VM_ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 const EVENT_ID: &str = "8f3e9c4a-1b2c-4d5e-9f01-234567890abc";
+const REPORT_REASON: &str = "failed | \"quoted\"\r\nnext line";
 
 fn store_at(dir: &TempDir) -> KvpPoolStore {
     KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe).unwrap()
@@ -182,6 +185,111 @@ fn span_and_point_events_round_trip_with_a_report(
         let fields: Vec<_> = key.split('|').collect();
         assert_eq!(fields.len(), 11);
         assert_eq!(fields[8], expected_result);
+    }
+}
+
+#[rstest]
+#[case::in_progress(
+    |store: &KvpPoolStore, agent: &str, vm_id: &str| {
+        report_in_progress(store, agent, vm_id, ReportPpsType::Savable)
+    },
+    "in_progress",
+    None
+)]
+#[case::success(
+    |store: &KvpPoolStore, agent: &str, vm_id: &str| {
+        report_success(store, agent, vm_id, ReportPpsType::Savable)
+    },
+    "success",
+    None
+)]
+#[case::failure(
+    |store: &KvpPoolStore, agent: &str, vm_id: &str| {
+        report_failure(store, agent, vm_id, REPORT_REASON, ReportPpsType::Savable)
+    },
+    "error",
+    Some(REPORT_REASON)
+)]
+fn report_helpers_publish_typed_states(
+    #[case] publish: fn(&KvpPoolStore, &str, &str) -> Result<(), KvpError>,
+    #[case] result: &str,
+    #[case] reason: Option<&str>,
+    #[values("", "reporting-agent-longer-than-32-bytes|\"quoted\"\n\u{00e9}")]
+    agent: &str,
+    #[values("", "vm|\"quoted\"\n")] vm_id: &str,
+    #[values(false, true)] existing_report: bool,
+) {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    store.append("before", "keep before").unwrap();
+    if existing_report {
+        let previous = ProvisioningReport::failure(
+            AGENT,
+            VM_ID,
+            "old",
+            ReportPpsType::None,
+        )
+        .with_extra("old_context", "old value")
+        .with_documentation_url("https://example.invalid/old");
+        write_report(&store, &previous).unwrap();
+    }
+    store.append("after", "keep after").unwrap();
+    let before = Utc::now();
+    publish(&store, agent, vm_id).unwrap();
+    let after = Utc::now();
+
+    let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
+    assert_eq!(entries.len(), 3);
+    let report_index = if existing_report { 1 } else { 2 };
+    let Entry::Report(report) = &entries[report_index] else {
+        panic!("expected a provisioning report, got {entries:?}");
+    };
+    let value = serde_json::to_value(report).unwrap();
+    let timestamp = value["timestamp"].as_str().unwrap();
+    let captured = DateTime::parse_from_rfc3339(timestamp)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!((before..=after).contains(&captured));
+    let mut expected = serde_json::json!({
+        "result": result,
+        "agent": agent,
+        "vm_id": vm_id,
+        "timestamp": timestamp,
+        "pps_type": "Savable",
+    });
+    if let Some(reason) = reason {
+        expected["reason"] = serde_json::json!(reason);
+    }
+    assert_eq!(value, expected);
+    let mut records = vec![
+        ("before".into(), "keep before".into()),
+        ("after".into(), "keep after".into()),
+    ];
+    records.insert(
+        report_index,
+        (PROVISIONING_REPORT_KEY.into(), report.encode()),
+    );
+    assert_eq!(store.dump().unwrap(), records);
+}
+
+#[test]
+fn report_helpers_propagate_io_errors() {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    std::fs::create_dir(store.path()).unwrap();
+
+    for result in [
+        report_in_progress(&store, AGENT, VM_ID, ReportPpsType::None),
+        report_success(&store, AGENT, VM_ID, ReportPpsType::None),
+        report_failure(
+            &store,
+            AGENT,
+            VM_ID,
+            REPORT_REASON,
+            ReportPpsType::None,
+        ),
+    ] {
+        assert!(matches!(result, Err(KvpError::Io(_))));
     }
 }
 
