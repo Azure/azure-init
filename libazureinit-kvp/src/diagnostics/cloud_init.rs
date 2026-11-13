@@ -309,11 +309,20 @@ mod tests {
 
     fn only_diagnostic(mut entries: Vec<Entry>) -> Diagnostic {
         assert_eq!(entries.len(), 1);
-        let mut diagnostic = None;
-        if let Some(Entry::Diagnostic(value)) = entries.pop() {
-            diagnostic = Some(value);
-        }
-        diagnostic.expect("expected a diagnostic")
+        let Entry::Diagnostic(diagnostic) = entries.pop().unwrap() else {
+            panic!("expected a diagnostic");
+        };
+        diagnostic
+    }
+
+    #[test]
+    #[should_panic(expected = "expected a diagnostic")]
+    fn only_diagnostic_rejects_raw_entries() {
+        only_diagnostic(vec![Entry::Raw(RawKeyValue {
+            key: "raw".into(),
+            value: "not a diagnostic".into(),
+            error: None,
+        })]);
     }
 
     fn assert_raw(records: &[(String, String)], error: DecodeError) {
@@ -537,6 +546,9 @@ mod tests {
     #[rstest]
     #[case::index(chunk("event", 0, "second"))]
     #[case::metadata(chunk("event", 1, "second").replace(TIMESTAMP, "2026-07-27T21:34:00Z"))]
+    #[case::invalid_metadata_json(
+        chunk("event", 1, "second").replace("\"msg_i\":1", "\"msg_i\":invalid")
+    )]
     #[case::escape(chunk("event", 1, r"\x"))]
     fn invalid_chunk_values_preserve_the_entire_group(#[case] second: String) {
         assert_raw(
@@ -717,15 +729,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compressed_envelope_requires_string_data() {
-        let message = json!({"encoding": "gz+b64", "data": 7}).to_string();
+    #[rstest]
+    #[case::non_string(json!(7), DecodeError::Malformed)]
+    #[case::invalid_base64(json!("%%%"), DecodeError::Undecodable)]
+    fn compressed_envelope_rejects_invalid_data(
+        #[case] data: Value,
+        #[case] error: DecodeError,
+    ) {
+        let message = json!({"encoding": "gz+b64", "data": data}).to_string();
         assert_raw(
             &[(
                 key("compressed", true, None),
                 value("compressed", &message).to_string(),
             )],
-            DecodeError::Malformed,
+            error,
         );
     }
 

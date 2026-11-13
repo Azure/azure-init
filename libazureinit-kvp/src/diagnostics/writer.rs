@@ -1108,7 +1108,8 @@ mod tests {
                 writer.store.clone(),
                 "a".repeat(MAX_AGENT_BYTES),
                 VM_ID,
-            )?
+            )
+            .expect("the agent length and VM ID are valid")
             .with_timestamp_precision(TimestampPrecision::Nanos)
             .with_duration_precision(DurationPrecision::Nanos)
             .emit_finish(

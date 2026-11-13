@@ -1905,6 +1905,18 @@ mod tests {
         writer
             .emit_event("keep", "visible", None, None, None)
             .unwrap();
+        store
+            .append(
+                "CLOUD_INIT|100|event|keep|8f3e9c4a-1b2c-4d5e-9f01-234567890abc",
+                &json!({
+                    "name": "keep",
+                    "type": "event",
+                    "ts": "2026-08-31T12:34:56.789Z",
+                    "msg": "legacy without VM ID",
+                })
+                .to_string(),
+            )
+            .unwrap();
         let report =
             ProvisioningReport::success("agent", "vm-id", ReportPpsType::None);
         write_report(&store, &report).unwrap();
@@ -1920,7 +1932,7 @@ mod tests {
         ));
         let entries = parse_json(&output);
         let entries = entries.as_array().unwrap();
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 5);
         assert_eq!(
             entries[0],
             json!({"type": "raw", "key": "note", "value": "raw value"})
@@ -1928,17 +1940,42 @@ mod tests {
         assert_eq!(entries[1]["type"], "diagnostic");
         assert_eq!(entries[1]["name"], "keep");
         assert_eq!(entries[1]["payload"], "visible");
+        assert_eq!(entries[2]["type"], "diagnostic");
+        assert_eq!(entries[2]["name"], "keep");
+        assert_eq!(entries[2]["payload"], "legacy without VM ID");
+        assert!(entries[2]["vm_id"].is_null());
         assert_eq!(
-            entries[2],
+            entries[3],
             serde_json::to_value(Entry::Report(report)).unwrap()
         );
         assert_eq!(
-            entries[3],
+            entries[4],
             json!({
                 "type": "raw", "key": "DIAG_V2|future", "value": "preserved",
                 "error": "unsupported_version",
             })
         );
+
+        let mut text_cli = cli(
+            &dir,
+            Command::Dump {
+                parse: true,
+                name: Some("keep".into()),
+                kind: None,
+            },
+        );
+        text_cli.text = true;
+        let (code, output) = run_dispatch(text_cli);
+        assert_eq!(code, EXIT_OK);
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "raw key=note value=raw value");
+        assert!(
+            lines[1].contains(" vm_id=00000000-0000-0000-0000-000000000abc ")
+        );
+        assert!(lines[2].contains("name=keep"));
+        assert!(lines[2].ends_with("payload=legacy without VM ID"));
+        assert!(!lines[2].contains(" vm_id="));
     }
 
     #[test]

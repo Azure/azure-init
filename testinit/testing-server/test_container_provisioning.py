@@ -110,7 +110,7 @@ class ContainerRunnerTests(unittest.TestCase):
             os.environ.pop("LLVM_PROFILE_FILE", None)
             if profile_pattern:
                 os.environ["LLVM_PROFILE_FILE"] = str(profile_pattern)
-            fixture.run_containers(Path("/test-agent"), artifacts)
+            fixture.run_containers(Path("/test-agent"), artifacts, Path("/test-testinit"))
 
     def test_collects_profiles_and_removes_each_container(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -134,7 +134,12 @@ class ContainerRunnerTests(unittest.TestCase):
                     self.assertIn("--read-only", command)
                     self.assertIn("type=volume,dst=/etc", command)
                     self.assertIn("/work:exec,mode=0700", command)
+                    self.assertIn("/etc/ssh:mode=0700", command)
+                    self.assertIn("/root:mode=0700", command)
                     self.assertIn("/run/azure-init/media:mode=0700", command)
+                    self.assertIn(
+                        "type=bind,src=/test-testinit,dst=/test/testinit,readonly", command
+                    )
                     for mount in command:
                         if mount.endswith("dst=/sys,readonly"):
                             source = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
