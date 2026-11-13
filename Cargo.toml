@@ -46,6 +46,10 @@ path = "src/main.rs"
 name = "functional_tests"
 path = "tests/functional_tests.rs"
 
+[[test]]
+name = "testinit"
+path = "testinit/tests/provisioning.rs"
+
 [workspace]
 members = [
     "libazureinit",
