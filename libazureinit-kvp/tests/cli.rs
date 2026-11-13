@@ -6,6 +6,7 @@ use std::io::Write;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use libazureinit_kvp::{
     write_report, DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome,
     PoolMode, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
@@ -65,6 +66,47 @@ fn store_at(dir: &TempDir) -> KvpPoolStore {
     KvpPoolStore::new_in(KvpPool::Guest, dir.path(), PoolMode::Safe).unwrap()
 }
 
+fn assert_report_rejected_without_writing(
+    args: &[&str],
+    expected_error: &str,
+    existing_report: bool,
+) {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    let before = if existing_report {
+        let report = ProvisioningReport::failure(
+            "old agent",
+            "old vm",
+            "old failure",
+            ReportPpsType::None,
+        )
+        .with_documentation_url("https://example.invalid/old")
+        .with_extra("old_context", "old value");
+        write_report(&store, &report).unwrap();
+        store.append("keep", "unchanged").unwrap();
+        Some(fs::read(store.path()).unwrap())
+    } else {
+        None
+    };
+
+    let output = kvp(&with_dir(&dir, args));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(stderr.contains(expected_error), "{stderr}");
+    match before {
+        Some(before) => {
+            assert_eq!(fs::read(store.path()).unwrap(), before);
+            let entries =
+                assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+            assert_eq!(entries[0]["type"], PROVISIONING_REPORT_KEY);
+            assert_eq!(entries[0]["result"], "error");
+            assert_eq!(entries[0]["reason"], "old failure");
+        }
+        None => assert!(!store.path().exists()),
+    }
+}
+
 #[test]
 fn help_lists_commands() {
     let stdout = assert_success(kvp(&["--help"]));
@@ -73,6 +115,9 @@ fn help_lists_commands() {
     assert!(stdout.contains("append-multiple"));
     assert!(stdout.contains("delete-multiple"));
     assert!(stdout.contains("is-stale"));
+    assert!(stdout.contains("report-in-progress"));
+    assert!(stdout.contains("report-success"));
+    assert!(stdout.contains("report-failure"));
 }
 
 #[test]
@@ -270,6 +315,56 @@ fn json_read_round_trips_value_with_equals_and_newline() {
 }
 
 #[test]
+fn report_in_progress_resets_failure_context() {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    let previous = ProvisioningReport::failure(
+        "old agent",
+        "old vm",
+        "old",
+        ReportPpsType::None,
+    )
+    .with_documentation_url("https://example.invalid/old")
+    .with_extra("old_context", "old value");
+    write_report(&store, &previous).unwrap();
+    store.append("keep", "unchanged").unwrap();
+
+    let before = Utc::now();
+    assert_success(kvp(&with_dir(
+        &dir,
+        &[
+            "report-in-progress",
+            "--vm-id",
+            "vm-1",
+            "--supporting-data",
+            "stage=starting,stage=prepared",
+        ],
+    )));
+    let after = Utc::now();
+    let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(entries.as_array().unwrap().len(), 2);
+    let timestamp = entries[0]["timestamp"].as_str().unwrap();
+    let captured = DateTime::parse_from_rfc3339(timestamp)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!((before..=after).contains(&captured));
+    assert_eq!(
+        entries[0],
+        json!({
+            "type": PROVISIONING_REPORT_KEY,
+            "result": "in_progress",
+            "agent": format!("libazureinit-kvp/{}", env!("CARGO_PKG_VERSION")),
+            "vm_id": "vm-1",
+            "pps_type": "None",
+            "timestamp": timestamp,
+            "extra": [["stage", "starting"], ["stage", "prepared"]],
+        })
+    );
+    assert_eq!(store.read("keep").unwrap().as_deref(), Some("unchanged"));
+    assert_eq!(store.dump().unwrap().len(), 2);
+}
+
+#[test]
 fn report_success_defaults_agent_and_accepts_supporting_data() {
     let dir = TempDir::new().unwrap();
     assert_success(kvp(&with_dir(
@@ -292,25 +387,178 @@ fn report_success_defaults_agent_and_accepts_supporting_data() {
     assert!(report.trim_end().ends_with("|build=123|commit=abc"));
 }
 
-#[test]
-fn report_failure_rejects_invalid_supporting_data() {
+#[rstest]
+#[case::in_progress(&["report-in-progress", "--vm-id", "vm-1", "--supporting-data", "novalue"])]
+#[case::success(&["report-success", "--vm-id", "vm-1", "--supporting-data", "novalue"])]
+#[case::failure(&["report-failure", "--vm-id", "vm-1", "--reason", "boom", "--supporting-data", "novalue"])]
+fn report_commands_reject_invalid_supporting_data(#[case] args: &[&str]) {
     let dir = TempDir::new().unwrap();
-    let output = kvp(&with_dir(
-        &dir,
-        &[
-            "report-failure",
-            "--vm-id",
-            "vm-1",
-            "--reason",
-            "boom",
-            "--supporting-data",
-            "novalue",
-        ],
-    ));
+    let output = kvp(&with_dir(&dir, args));
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("key=value"));
+    assert!(!store_at(&dir).path().exists());
+}
+
+#[rstest]
+#[case::in_progress(&["report-in-progress"])]
+#[case::success(&["report-success"])]
+#[case::failure(&["report-failure", "--reason", "boom"])]
+fn report_commands_reject_reserved_supporting_data(
+    #[case] command: &[&str],
+    #[values("result", "agent", "pps_type", "vm_id", "timestamp")] key: &str,
+    #[values(false, true)] existing_report: bool,
+) {
+    let single = format!("{key}=x");
+    let comma_separated = format!("stage=starting,{key}=x,build=123");
+    for supporting_args in [
+        vec!["--supporting-data", single.as_str()],
+        vec!["--supporting-data", comma_separated.as_str()],
+        vec![
+            "--supporting-data",
+            "stage=starting",
+            "--supporting-data",
+            single.as_str(),
+        ],
+    ] {
+        let mut args = command.to_vec();
+        args.extend_from_slice(&["--vm-id", "vm-1"]);
+        args.extend_from_slice(&supporting_args);
+        assert_report_rejected_without_writing(
+            &args,
+            &format!(
+                "supporting data key '{key}' is reserved for report fields"
+            ),
+            existing_report,
+        );
+    }
+}
+
+#[rstest]
+#[case::reason_single(
+    &["--supporting-data", "reason=override"],
+    "reason"
+)]
+#[case::reason_comma_separated(
+    &["--supporting-data", "stage=starting,reason=override,build=123"],
+    "reason"
+)]
+#[case::reason_repeated_flag(
+    &["--supporting-data", "stage=starting", "--supporting-data", "reason=override"],
+    "reason"
+)]
+#[case::documentation_url_flag(
+    &[
+        "--documentation-url", "https://example.invalid/help",
+        "--supporting-data", "documentation_url=override",
+    ],
+    "documentation_url"
+)]
+#[case::empty_documentation_url_flag(
+    &["--documentation-url", "", "--supporting-data", "documentation_url=override"],
+    "documentation_url"
+)]
+#[case::documentation_url_comma_separated(
+    &["--supporting-data", "documentation_url=first,documentation_url=second"],
+    "documentation_url"
+)]
+#[case::documentation_url_repeated_flag(
+    &[
+        "--supporting-data", "documentation_url=first",
+        "--supporting-data", "documentation_url=second",
+    ],
+    "documentation_url"
+)]
+fn report_failure_rejects_conflicting_supporting_data(
+    #[case] supporting_args: &[&str],
+    #[case] key: &str,
+    #[values(false, true)] existing_report: bool,
+) {
+    let mut args =
+        vec!["report-failure", "--vm-id", "vm-1", "--reason", "boom"];
+    args.extend_from_slice(supporting_args);
+    assert_report_rejected_without_writing(
+        &args,
+        &format!(
+            "supporting data key '{key}' duplicates a failure report field"
+        ),
+        existing_report,
+    );
+}
+
+#[rstest]
+#[case::in_progress("report-in-progress", "in_progress")]
+#[case::success("report-success", "success")]
+fn report_non_failure_preserves_failure_fields_as_supporting_data(
+    #[case] command: &str,
+    #[case] result: &str,
+) {
+    let dir = TempDir::new().unwrap();
+    assert_success(kvp(&with_dir(
+        &dir,
+        &[
+            command,
+            "--vm-id",
+            "vm-1",
+            "--supporting-data",
+            "reason=first,documentation_url=https://example.invalid/help",
+            "--supporting-data",
+            "reason=second,documentation_url=",
+        ],
+    )));
+
+    let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(entries.as_array().unwrap().len(), 1);
+    assert_eq!(entries[0]["type"], PROVISIONING_REPORT_KEY);
+    assert_eq!(entries[0]["result"], result);
+    assert!(entries[0].get("reason").is_none());
+    assert!(entries[0].get("documentation_url").is_none());
+    assert_eq!(
+        entries[0]["extra"],
+        json!([
+            ["reason", "first"],
+            ["documentation_url", "https://example.invalid/help"],
+            ["reason", "second"],
+            ["documentation_url", ""],
+        ])
+    );
+}
+
+#[rstest]
+#[case::flag(&["--documentation-url", "https://example.invalid/help"])]
+#[case::supporting_data(&[
+    "--supporting-data", "documentation_url=https://example.invalid/help",
+])]
+fn report_failure_accepts_single_documentation_url(
+    #[case] documentation_args: &[&str],
+) {
+    let dir = TempDir::new().unwrap();
+    let mut args = vec![
+        "report-failure",
+        "--vm-id",
+        "vm-1",
+        "--reason",
+        "boom",
+        "--supporting-data",
+        "detail=first,detail=second",
+    ];
+    args.extend_from_slice(documentation_args);
+    assert_success(kvp(&with_dir(&dir, &args)));
+
+    let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(entries.as_array().unwrap().len(), 1);
+    assert_eq!(entries[0]["type"], PROVISIONING_REPORT_KEY);
+    assert_eq!(entries[0]["result"], "error");
+    assert_eq!(entries[0]["reason"], "boom");
+    assert_eq!(
+        entries[0]["documentation_url"],
+        "https://example.invalid/help"
+    );
+    assert_eq!(
+        entries[0]["extra"],
+        json!([["detail", "first"], ["detail", "second"]])
+    );
 }
 
 #[test]

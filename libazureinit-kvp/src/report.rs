@@ -410,6 +410,45 @@ pub fn write_report(
     store.insert(PROVISIONING_REPORT_KEY, &report.encode())
 }
 
+/// Stores an in-progress provisioning report, replacing any prior report.
+///
+/// Call before diagnostics fill the pool to reserve the report key.
+pub fn report_in_progress(
+    store: &KvpPoolStore,
+    agent: impl Into<String>,
+    vm_id: impl Into<String>,
+    pps_type: ReportPpsType,
+) -> Result<(), KvpError> {
+    write_report(
+        store,
+        &ProvisioningReport::in_progress(agent, vm_id, pps_type),
+    )
+}
+
+/// Stores a successful provisioning report, replacing any prior report.
+pub fn report_success(
+    store: &KvpPoolStore,
+    agent: impl Into<String>,
+    vm_id: impl Into<String>,
+    pps_type: ReportPpsType,
+) -> Result<(), KvpError> {
+    write_report(store, &ProvisioningReport::success(agent, vm_id, pps_type))
+}
+
+/// Stores a failed provisioning report, replacing any prior report.
+pub fn report_failure(
+    store: &KvpPoolStore,
+    agent: impl Into<String>,
+    vm_id: impl Into<String>,
+    reason: impl Into<String>,
+    pps_type: ReportPpsType,
+) -> Result<(), KvpError> {
+    write_report(
+        store,
+        &ProvisioningReport::failure(agent, vm_id, reason, pps_type),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,28 +760,25 @@ mod tests {
     }
 
     #[rstest]
-    #[case::success(ProvisioningReport::success(
-        AGENT,
-        VM_ID,
-        ReportPpsType::None
-    ))]
-    #[case::failure(ProvisioningReport::failure(
-        AGENT,
-        VM_ID,
-        "failed",
-        ReportPpsType::None
-    ))]
+    #[case::success(
+        |store: &KvpPoolStore| report_success(store, AGENT, VM_ID, ReportPpsType::None),
+        ReportResult::Success,
+        None
+    )]
+    #[case::failure(
+        |store: &KvpPoolStore| report_failure(store, AGENT, VM_ID, "failed", ReportPpsType::None),
+        ReportResult::Error,
+        Some("failed")
+    )]
     fn reserved_report_updates_at_and_above_key_limit(
-        #[case] final_report: ProvisioningReport,
+        #[case] publish: fn(&KvpPoolStore) -> Result<(), KvpError>,
+        #[case] result: ReportResult,
+        #[case] reason: Option<&str>,
         #[values(1023, 1024)] diagnostic_count: usize,
     ) {
         let dir = TempDir::new().unwrap();
         let store = safe_store(&dir);
-        write_report(
-            &store,
-            &ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None),
-        )
-        .unwrap();
+        report_in_progress(&store, AGENT, VM_ID, ReportPpsType::None).unwrap();
         store
             .append_multiple(
                 (0..diagnostic_count)
@@ -750,10 +786,18 @@ mod tests {
             )
             .unwrap();
 
-        write_report(&store, &final_report).unwrap();
+        publish(&store).unwrap();
 
         let records = store.dump().unwrap();
         assert_eq!(records.len(), diagnostic_count + 1);
+        let final_report: ProvisioningReport = records[0].1.parse().unwrap();
+        assert_eq!(final_report.result, result);
+        assert_eq!(final_report.agent, AGENT);
+        assert_eq!(final_report.vm_id, VM_ID);
+        assert_eq!(final_report.pps_type, ReportPpsType::None);
+        assert_eq!(final_report.reason.as_deref(), reason);
+        assert!(final_report.documentation_url.is_none());
+        assert!(final_report.extra.is_empty());
         assert_eq!(
             records[0],
             (PROVISIONING_REPORT_KEY.into(), final_report.encode())
@@ -775,19 +819,100 @@ mod tests {
             )
             .unwrap();
         let before = store.dump().unwrap();
-        for report in [
-            ProvisioningReport::in_progress(AGENT, VM_ID, ReportPpsType::None),
-            ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None),
-            ProvisioningReport::failure(
-                AGENT,
+        for result in [
+            report_in_progress(&store, AGENT, VM_ID, ReportPpsType::None),
+            report_success(&store, AGENT, VM_ID, ReportPpsType::None),
+            report_failure(&store, AGENT, VM_ID, "failed", ReportPpsType::None),
+        ] {
+            assert!(matches!(
+                result,
+                Err(KvpError::MaxUniqueKeysExceeded { max: 1024 })
+            ));
+            assert_eq!(store.dump().unwrap(), before);
+        }
+    }
+
+    #[rstest]
+    #[case::null("bad\0agent".to_owned())]
+    #[case::oversized("x".repeat(1023))]
+    fn report_helpers_propagate_validation_errors(#[case] agent: String) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        store.append("keep", "unchanged").unwrap();
+        let before = store.dump().unwrap();
+
+        for result in [
+            report_in_progress(
+                &store,
+                agent.as_str(),
+                VM_ID,
+                ReportPpsType::None,
+            ),
+            report_success(&store, agent.as_str(), VM_ID, ReportPpsType::None),
+            report_failure(
+                &store,
+                agent.as_str(),
                 VM_ID,
                 "failed",
                 ReportPpsType::None,
             ),
         ] {
+            match result {
+                Err(KvpError::ValueContainsNull) => {
+                    assert!(agent.contains('\0'));
+                }
+                Err(KvpError::ValueTooLarge { max, actual }) => {
+                    assert!(!agent.contains('\0'));
+                    assert_eq!(max, 1022);
+                    assert!(actual > max);
+                }
+                result => panic!("unexpected reporting result: {result:?}"),
+            }
+            assert_eq!(store.dump().unwrap(), before);
+        }
+    }
+
+    #[rstest]
+    #[case::at_limit(1022, true)]
+    #[case::over_limit(1023, false)]
+    fn report_value_limit_counts_encoded_utf8_bytes(
+        #[case] value_size: usize,
+        #[case] fits: bool,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = safe_store(&dir);
+        store.append("keep", "unchanged").unwrap();
+        let before = store.dump().unwrap();
+        let mut report = with_ts(
+            ProvisioningReport::failure(
+                AGENT,
+                VM_ID,
+                "\u{00e9}|\"",
+                ReportPpsType::None,
+            )
+            .with_extra("padding", ""),
+        );
+        let padding_size = value_size - report.encode().len();
+        report.extra[0].1 = "x".repeat(padding_size);
+        let encoded = report.encode();
+        assert_eq!(encoded.len(), value_size);
+
+        let result = write_report(&store, &report);
+        if fits {
+            result.unwrap();
+            assert_eq!(
+                store.read(PROVISIONING_REPORT_KEY).unwrap(),
+                Some(encoded)
+            );
+            assert_eq!(
+                store.read("keep").unwrap().as_deref(),
+                Some("unchanged")
+            );
+        } else {
             assert!(matches!(
-                write_report(&store, &report),
-                Err(KvpError::MaxUniqueKeysExceeded { max: 1024 })
+                result,
+                Err(KvpError::ValueTooLarge { max: 1022, actual })
+                    if actual == value_size
             ));
             assert_eq!(store.dump().unwrap(), before);
         }
