@@ -27,7 +27,10 @@ SCENARIOS = {
     "failure": (1, "failed to provision hostname"),
     "config-error": (78, "user not found"),
     "ssh-success": (0, None),
+    "ssh-key-error": (1, "I/O error"),
     "sshd-error": (1, "failed to update sshd config"),
+    "sshd-create-write-error": (1, "failed to update sshd config"),
+    "sshd-append-write-error": (1, "failed to update sshd config"),
     "state-permission-error": (0, None),
     "marker-error": (1, "I/O error"),
     "ovf-fallback": (1, "failed to retrieve instance metadata"),
@@ -64,6 +67,8 @@ def check_mount_table(mtab):
 
 
 def make_handlers(scenario, requests, service_errors):
+    with_ssh_keys = scenario in ("ssh-success", "ssh-key-error")
+
     class CheckedHandler:
         def log_message(self, *_args):
             pass
@@ -83,13 +88,13 @@ def make_handlers(scenario, requests, service_errors):
             "response": {
                 "compute": {
                     "osProfile": {
-                        "adminUsername": "root" if scenario == "ssh-success" else USERNAME,
+                        "adminUsername": "root" if with_ssh_keys else USERNAME,
                         "computerName": "coverage-host",
                         "disablePasswordAuthentication": "true",
                     },
                     "publicKeys": (
                         [{"keyData": "ssh-ed25519 test-key", "path": "/unused"}]
-                        if scenario in ("config-error", "ssh-success")
+                        if scenario == "config-error" or with_ssh_keys
                         else []
                     ),
                 }
@@ -139,11 +144,17 @@ def inside_container(scenario):
     artifacts = Path("/artifacts")
     work = Path("/work")
     cleaning = scenario.startswith("clean-")
+    with_ssh_keys = scenario in ("ssh-success", "ssh-key-error")
+    sshd_write_error = scenario in (
+        "sshd-create-write-error", "sshd-append-write-error",
+    )
     if scenario == "marker-error":
         (work / "state").write_text("not a directory")
     if scenario == "sshd-error":
         Path("/etc/ssh/sshd_config").mkdir()
-    if scenario == "ssh-success":
+    if scenario == "sshd-append-write-error":
+        Path("/etc/ssh/sshd_config").write_text("Port 2222\n")
+    if with_ssh_keys:
         assert pwd.getpwnam("root").pw_dir == "/root"
     if cleaning:
         (work / "state").mkdir()
@@ -165,7 +176,7 @@ def inside_container(scenario):
         "with open('/work/commands.jsonl', 'a') as output:\n"
         "    output.write(json.dumps([name, *sys.argv[1:]]) + '\\n')\n"
         "if name == 'getent':\n"
-        "    if os.environ['TEST_SCENARIO'] == 'ssh-success':\n"
+        "    if os.environ['TEST_SCENARIO'] in ('ssh-success', 'ssh-key-error'):\n"
         "        assert sys.argv[1:] == ['passwd', 'root']\n"
         "        sys.exit(0)\n"
         "    sys.exit(1)\n"
@@ -179,9 +190,12 @@ def inside_container(scenario):
         "        sys.exit(17)\n"
         "    sys.exit(0)\n"
         "if name == 'sshd':\n"
-        "    assert os.environ['TEST_SCENARIO'] == 'ssh-success'\n"
+        "    assert os.environ['TEST_SCENARIO'] in ('ssh-success', 'ssh-key-error')\n"
         "    assert sys.argv[1:] == ['-G']\n"
-        "    print('authorizedkeysfile .ssh/queried_keys')\n"
+        "    if os.environ['TEST_SCENARIO'] == 'ssh-key-error':\n"
+        "        print('authorizedkeysfile .ssh/missing/queried_keys')\n"
+        "    else:\n"
+        "        print('authorizedkeysfile .ssh/queried_keys')\n"
         "    sys.exit(0)\n"
         "if name == 'mount':\n"
         "    if sys.argv[-2] != '/test/ovf-good':\n"
@@ -238,8 +252,8 @@ def inside_container(scenario):
         config = work / "azure-init.toml"
         config.write_text(
             '[ssh]\nconfigure_sshd_password_authentication = '
-            f'{str(scenario in ("ssh-success", "sshd-error")).lower()}\n'
-            f'query_sshd_config = {str(scenario == "ssh-success").lower()}\n'
+            f'{str(with_ssh_keys or scenario == "sshd-error" or sshd_write_error).lower()}\n'
+            f'query_sshd_config = {str(with_ssh_keys).lower()}\n'
             'authorized_keys_path = ".ssh/fallback_keys"\n'
             '[azure_init_data_dir]\npath = "/work/state"\n'
             '[azure_init_log_path]\npath = "/work/azure-init.log"\n'
@@ -260,7 +274,9 @@ def inside_container(scenario):
             no_proxy="127.0.0.1,localhost",
             AZURE_INIT_LOG="info",
         )
-        if scenario in ("clean-read-error", "clean-race", "state-permission-error"):
+        if sshd_write_error or scenario in (
+            "clean-read-error", "clean-race", "state-permission-error",
+        ):
             environment["LD_PRELOAD"] = "/test/fs_faults.so"
         servers = (imds_server, health_server)
         threads = [
@@ -272,7 +288,7 @@ def inside_container(scenario):
         try:
             result = subprocess.run(
                 ["/test/azure-init", "--config", str(config),
-                 *(["--groups", "wheel,docker"] if scenario == "ssh-success" else []),
+                 *(["--groups", "wheel,docker"] if with_ssh_keys else []),
                  *(["clean"] if cleaning else [])],
                 env=environment,
                 capture_output=True,
@@ -302,7 +318,7 @@ def inside_container(scenario):
                     assert log.count("Successfully parsed OVF environment.") == 1, log
                 elif scenario == "ovf-missing":
                     expected_commands = ["mount", "mount"]
-                elif scenario == "ssh-success":
+                elif with_ssh_keys:
                     expected_commands = ["hostnamectl", "getent", "usermod", "passwd", "sshd"]
                 else:
                     expected_commands = (
@@ -315,7 +331,7 @@ def inside_container(scenario):
                     assert report == {"state": "Ready"}, report
                     assert marker.is_file()
                     assert Path("/etc/sudoers.d/azure-init-user").read_text() == (
-                        f"{'root' if scenario == 'ssh-success' else USERNAME} ALL=(ALL) NOPASSWD: ALL\n"
+                        f"{'root' if with_ssh_keys else USERNAME} ALL=(ALL) NOPASSWD: ALL\n"
                     )
                 else:
                     assert report["state"] == "NotReady", report
@@ -329,7 +345,7 @@ def inside_container(scenario):
                     assert "Failed to set permissions on /work/state:" in log, log
                     assert (work / "state").stat().st_mode & 0o777 == 0o755
                     assert marker.stat().st_mode & 0o777 == 0o600
-                if scenario == "ssh-success":
+                if with_ssh_keys:
                     assert calls[2] == ["usermod", "-aG", "wheel,docker", "root"], calls
                     assert calls[-1] == ["sshd", "-G"], calls
                     assert Path("/etc/ssh/sshd_config").read_text() == (
@@ -337,16 +353,32 @@ def inside_container(scenario):
                     )
                     assert Path("/etc/ssh/sshd_config").stat().st_mode & 0o777 == 0o600
                     ssh_dir = Path("/root/.ssh")
-                    authorized_keys = ssh_dir / "queried_keys"
-                    assert authorized_keys.read_text() == "ssh-ed25519 test-key\n"
                     assert not (ssh_dir / "fallback_keys").exists()
-                    for path, mode in ((ssh_dir, 0o700), (authorized_keys, 0o600)):
-                        metadata = path.stat()
-                        assert metadata.st_mode & 0o777 == mode
+                    metadata = ssh_dir.stat()
+                    assert metadata.st_mode & 0o777 == 0o700
+                    assert metadata.st_uid == metadata.st_gid == 0
+                    if scenario == "ssh-success":
+                        authorized_keys = ssh_dir / "queried_keys"
+                        assert authorized_keys.read_text() == "ssh-ed25519 test-key\n"
+                        metadata = authorized_keys.stat()
+                        assert metadata.st_mode & 0o777 == 0o600
                         assert metadata.st_uid == metadata.st_gid == 0
+                    else:
+                        assert not (ssh_dir / "missing").exists()
+                        assert ".ssh/missing/queried_keys" in log, log
                 if scenario == "sshd-error":
                     assert "Failed to update sshd configuration for password authentication" in log, log
                     assert Path("/etc/ssh/sshd_config").is_dir()
+                if sshd_write_error:
+                    assert "Failed to update sshd configuration for password authentication" in log, log
+                    assert "No space left on device" in log, log
+                    sshd_config = Path("/etc/ssh/sshd_config")
+                    assert sshd_config.read_text() == (
+                        "" if scenario == "sshd-create-write-error" else "Port 2222\n"
+                    )
+                    assert sshd_config.stat().st_mode & 0o777 == (
+                        0o600 if scenario == "sshd-create-write-error" else 0o644
+                    )
                 expected_log = (
                     "Provisioning completed successfully"
                     if expected_status == 0

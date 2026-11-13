@@ -32,17 +32,29 @@ static bool enabled(const char *scenario) {
     return result;
 }
 
-static bool is_state_directory(DIR *directory) {
+static bool is_descriptor_path(int fd, const char *expected) {
     int saved_errno = errno;
-    char descriptor[64], path[sizeof("/work/state")];
-    snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", dirfd(directory));
+    char descriptor[64], path[256];
+    snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", fd);
     ssize_t length = readlink(descriptor, path, sizeof(path));
     errno = saved_errno;
-    return length >= 0 && (size_t)length == sizeof("/work/state") - 1 &&
-           memcmp(path, "/work/state", (size_t)length) == 0;
+    return length >= 0 && (size_t)length == strlen(expected) &&
+           memcmp(path, expected, (size_t)length) == 0;
 }
 
 // Inject faults only at the disposable fixture's paths.
+ssize_t write(int fd, const void *buffer, size_t count) {
+    if ((enabled("sshd-create-write-error") ||
+         enabled("sshd-append-write-error")) &&
+        is_descriptor_path(fd, "/etc/ssh/sshd_config")) {
+        errno = ENOSPC;
+        return -1;
+    }
+    ssize_t (*write_next)(int, const void *, size_t) =
+        (ssize_t (*)(int, const void *, size_t))next_symbol("write");
+    return write_next(fd, buffer, count);
+}
+
 int chmod(const char *path, mode_t mode) {
     if (enabled("state-permission-error") &&
         strcmp(path, "/work/state") == 0 && mode == 0700) {
@@ -55,7 +67,8 @@ int chmod(const char *path, mode_t mode) {
 }
 
 struct dirent64 *readdir64(DIR *directory) {
-    if (enabled("clean-read-error") && is_state_directory(directory)) {
+    if (enabled("clean-read-error") &&
+        is_descriptor_path(dirfd(directory), "/work/state")) {
         errno = EIO;
         return NULL;
     }

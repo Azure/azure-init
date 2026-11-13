@@ -243,7 +243,9 @@ impl FromStr for ProvisioningReport {
             .records()
             .next()
             .ok_or(DecodeError::Malformed)?
-            .map_err(|_| DecodeError::Malformed)?;
+            .expect(
+                "the first validated UTF-8 record from a string cannot fail",
+            );
         let mut fields = record
             .iter()
             .map(|field| {
@@ -390,9 +392,9 @@ impl ProvisioningReport {
         let mut bytes = writer
             .into_inner()
             .expect("flushing an in-memory buffer cannot fail");
-        if let Some(b'\n') = bytes.last() {
-            bytes.pop();
-        }
+        bytes.pop().expect(
+            "the CSV writer always terminates its record with a newline",
+        );
         String::from_utf8(bytes).expect("encoded report is valid UTF-8")
     }
 }
@@ -885,7 +887,15 @@ mod tests {
 
     #[test]
     fn failure_requires_a_reason() {
-        let value = success_wire().replace("result=success", "result=error");
+        let mut report = with_ts(ProvisioningReport::failure(
+            AGENT,
+            VM_ID,
+            "failure",
+            ReportPpsType::None,
+        ));
+        report.reason = None;
+        let value = report.encode();
+        assert!(!value.contains("reason="));
         assert_eq!(
             value.parse::<ProvisioningReport>(),
             Err(DecodeError::Malformed)
