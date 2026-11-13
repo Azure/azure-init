@@ -275,6 +275,17 @@ fn failure_report(error: &anyhow::Error, vm_id: &str) -> ProvisioningReport {
         })
 }
 
+fn provisioning_error_exit_code(error: &anyhow::Error) -> ExitCode {
+    let config: u8 = exitcode::CONFIG
+        .try_into()
+        .expect("Error code must be less than 256");
+    match error.root_cause().downcast_ref::<LibError>() {
+        Some(LibError::UserMissing { user: _ }) => ExitCode::from(config),
+        Some(LibError::NonEmptyPassword) => ExitCode::from(config),
+        Some(_) | None => ExitCode::FAILURE,
+    }
+}
+
 async fn write_kvp_report(
     store: &KvpPoolStore,
     report: &ProvisioningReport,
@@ -436,17 +447,7 @@ async fn main() -> ExitCode {
             }
             Err(e) => {
                 tracing::error!("Provisioning failed with error: {e:?}");
-
-                let config: u8 = exitcode::CONFIG
-                    .try_into()
-                    .expect("Error code must be less than 256");
-                match e.root_cause().downcast_ref::<LibError>() {
-                    Some(LibError::UserMissing { user: _ }) => {
-                        ExitCode::from(config)
-                    }
-                    Some(LibError::NonEmptyPassword) => ExitCode::from(config),
-                    Some(_) | None => ExitCode::FAILURE,
-                }
+                provisioning_error_exit_code(&e)
             }
         }
     };
@@ -556,6 +557,85 @@ mod tests {
     use tokio::time::timeout;
 
     const VM_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    #[rstest]
+    #[case::imds_preferred(true, true, Some("imds-user"))]
+    #[case::imds_only(true, false, Some("imds-user"))]
+    #[case::ovf_fallback(false, true, Some("ovf-user"))]
+    #[case::missing_sources(false, false, None)]
+    fn username_source_precedence(
+        #[case] imds_available: bool,
+        #[case] ovf_available: bool,
+        #[case] expected: Option<&str>,
+    ) {
+        let metadata: InstanceMetadata = serde_json::from_value(json!({
+            "compute": {
+                "osProfile": {
+                    "adminUsername": "imds-user",
+                    "computerName": "test-host",
+                    "disablePasswordAuthentication": "true"
+                },
+                "publicKeys": []
+            }
+        }))
+        .unwrap();
+        let mut environment = Environment::default();
+        environment
+            .provisioning_section
+            .linux_prov_conf_set
+            .username = "ovf-user".into();
+        let result = get_username(
+            imds_available.then_some(&metadata),
+            ovf_available.then_some(&environment),
+        );
+        match expected {
+            Some(username) => assert_eq!(result.unwrap(), username),
+            None => assert!(matches!(
+                result.unwrap_err().downcast_ref::<LibError>(),
+                Some(LibError::UsernameFailure)
+            )),
+        }
+    }
+
+    #[rstest]
+    #[case::existing("file", Ok(()))]
+    #[case::missing("missing", Ok(()))]
+    #[case::directory("directory", Err(io::ErrorKind::IsADirectory))]
+    fn log_cleanup_preserves_io_results(
+        #[case] entry: &str,
+        #[case] expected: Result<(), io::ErrorKind>,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("azure-init.log");
+        match entry {
+            "file" => std::fs::write(&log, "log").unwrap(),
+            "directory" => std::fs::create_dir(&log).unwrap(),
+            _ => {}
+        }
+        let mut config = Config::default();
+        config.azure_init_log_path.path = log.clone();
+        assert_eq!(
+            clean_log_file(&config).map_err(|error| error.kind()),
+            expected
+        );
+        assert_eq!(log.exists(), expected.is_err());
+    }
+
+    #[rstest]
+    #[case::missing_user(LibError::UserMissing { user: "missing".into() }.into(), 78)]
+    #[case::nonempty_password(LibError::NonEmptyPassword.into(), 78)]
+    #[case::other_typed_error(LibError::UsernameFailure.into(), 1)]
+    #[case::untyped_error(anyhow::anyhow!("unexpected failure"), 1)]
+    fn provisioning_error_exit_codes_preserve_context(
+        #[case] error: anyhow::Error,
+        #[case] expected: u8,
+    ) {
+        let error = error.context("provisioning failed");
+        assert_eq!(
+            format!("{:?}", provisioning_error_exit_code(&error)),
+            format!("{:?}", ExitCode::from(expected))
+        );
+    }
 
     #[test]
     fn clean_reports_subscriber_conflict() {

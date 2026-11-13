@@ -45,12 +45,31 @@ jobs:
           tool: cargo-llvm-cov
           fallback: none
 
-      - name: Generate code coverage
-        run: cargo llvm-cov --locked --all-features --workspace --lcov --output-path lcov.info
+      - name: Test the isolated provisioning runner
+        run: python3 -B -m unittest discover -s testinit/testing-server -p 'test_*.py' -v
+
+      - name: Build the isolated provisioning image
+        run: |
+          . /etc/os-release
+          docker build --build-arg "BASE_IMAGE=ubuntu:${VERSION_ID}" -f testinit/Dockerfile.isolated -t azure-init-main-tests:local testinit
+
+      - name: Collect unit and CLI coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --locked --all-features --workspace --no-report
+
+      - name: Collect real entrypoint coverage
+        run: cargo llvm-cov --locked --all-features --package azure-init --test testinit --no-report -- --ignored agent_provisioning_in_container
+
+      - name: Generate combined code coverage
+        run: cargo llvm-cov report --package azure-init --package libazureinit --package libazureinit-kvp --lcov --output-path lcov.info
+
+      - name: Cover compile-time version variants
+        run: python3 -B testinit/testing-server/version_coverage.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
+          files: lcov.info,target/version-override.lcov,target/version-sha.lcov,target/version-package.lcov
           fail_ci_if_error: true
