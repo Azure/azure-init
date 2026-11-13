@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void *next_symbol(const char *name) {
@@ -41,7 +42,18 @@ static bool is_state_directory(DIR *directory) {
            memcmp(path, "/work/state", (size_t)length) == 0;
 }
 
-// Inject faults only at the disposable fixture's cleanup paths.
+// Inject faults only at the disposable fixture's paths.
+int chmod(const char *path, mode_t mode) {
+    if (enabled("state-permission-error") &&
+        strcmp(path, "/work/state") == 0 && mode == 0700) {
+        errno = EPERM;
+        return -1;
+    }
+    int (*set_mode)(const char *, mode_t) =
+        (int (*)(const char *, mode_t))next_symbol("chmod");
+    return set_mode(path, mode);
+}
+
 struct dirent64 *readdir64(DIR *directory) {
     if (enabled("clean-read-error") && is_state_directory(directory)) {
         errno = EIO;

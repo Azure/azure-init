@@ -262,6 +262,7 @@ pub fn mark_provisioning_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use std::fs::{create_dir, remove_dir};
     use tempfile::TempDir;
@@ -302,9 +303,21 @@ mod tests {
         remove_dir(mock_path).ok();
     }
 
-    #[test]
-    fn test_mark_provisioning_complete() {
-        let (test_config, test_dir) = create_test_config();
+    #[rstest]
+    #[case::existing_directory(true)]
+    #[case::new_directory(false)]
+    fn test_mark_provisioning_complete(#[case] existing_directory: bool) {
+        let (mut test_config, test_dir) = create_test_config();
+        test_config.azure_init_data_dir.path =
+            test_dir.path().join("nested/state");
+        if existing_directory {
+            fs::create_dir_all(&test_config.azure_init_data_dir.path).unwrap();
+            fs::set_permissions(
+                &test_config.azure_init_data_dir.path,
+                fs::Permissions::from_mode(0o750),
+            )
+            .unwrap();
+        }
 
         let mock_vm_id_path = test_dir.path().join("mock_product_uuid");
         fs::write(&mock_vm_id_path, "550e8400-e29b-41d4-a716-446655440000")
@@ -316,12 +329,27 @@ mod tests {
         )
         .unwrap();
 
-        let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
+        let file_path = test_config
+            .azure_init_data_dir
+            .path
+            .join(format!("{}.provisioned", vm_id));
         let exists = file_path.exists();
         assert!(!exists, "File should not exist before provisioning");
 
         mark_provisioning_complete(Some(&test_config), &vm_id).unwrap();
         assert!(file_path.exists(), "Provisioning file should be created");
+        assert_eq!(
+            fs::metadata(file_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&test_config.azure_init_data_dir.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            if existing_directory { 0o750 } else { 0o700 }
+        );
     }
 
     #[test]
@@ -371,22 +399,37 @@ mod tests {
         assert!(complete, "Provisioning should be skipped on second run");
     }
 
-    #[test]
-    fn test_get_vm_id_gen1() {
+    #[tracing_test::traced_test]
+    #[rstest]
+    #[case::valid(
+        "  550E8400-E29B-41D4-A716-446655440000\n",
+        Some("00840e55-9be2-d441-a716-446655440000"),
+        "VM ID (Gen1, swapped)"
+    )]
+    #[case::empty(" \t\n", None, "VM ID file is empty")]
+    #[case::invalid(
+        "  Not-A-UUID\n",
+        Some("not-a-uuid"),
+        "Failed to parse system UUID"
+    )]
+    fn test_get_vm_id_gen1(
+        #[case] contents: &str,
+        #[case] expected: Option<&str>,
+        #[case] message: &str,
+    ) {
         let tmpdir = TempDir::new().unwrap();
         let vm_uuid_path = tmpdir.path().join("product_uuid");
-        fs::write(&vm_uuid_path, "550e8400-e29b-41d4-a716-446655440000")
-            .unwrap();
+        fs::write(&vm_uuid_path, contents).unwrap();
+        let sysfs_efi = tmpdir.path().join("sysfs_efi");
+        let dev_efi = tmpdir.path().join("dev_efi");
 
-        // No sysfs_efi or dev_efi path created => means neither exists => expect Gen1
         let res = private_get_vm_id(
             Some(vm_uuid_path.to_str().unwrap()),
-            Some("/this_does_not_exist"),
-            Some("/still_nope"),
+            Some(sysfs_efi.to_str().unwrap()),
+            Some(dev_efi.to_str().unwrap()),
         );
-        let actual = res.unwrap();
-        let expected = "00840e55-9be2-d441-a716-446655440000";
-        assert_eq!(actual, expected, "Should byte-swap for Gen1");
+        assert_eq!(res.as_deref(), expected);
+        assert!(logs_contain(message));
     }
 
     #[test]
