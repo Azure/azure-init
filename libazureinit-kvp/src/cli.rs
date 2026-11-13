@@ -646,13 +646,9 @@ fn report_in_progress(
     supporting_data: Vec<SupportingData>,
 ) -> Result<u8, CliError> {
     let vm_id = resolve_vm_id(vm_id)?;
-    let mut report =
+    let report =
         ProvisioningReport::in_progress(agent, vm_id, ReportPpsType::None);
-    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
-        report = report.with_extra(key, value);
-    }
-    write_report(store, &report)?;
-    Ok(EXIT_OK)
+    finish_report(store, report, supporting_data)
 }
 
 fn report_success(
@@ -662,13 +658,8 @@ fn report_success(
     supporting_data: Vec<SupportingData>,
 ) -> Result<u8, CliError> {
     let vm_id = resolve_vm_id(vm_id)?;
-    let mut report =
-        ProvisioningReport::success(agent, vm_id, ReportPpsType::None);
-    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
-        report = report.with_extra(key, value);
-    }
-    write_report(store, &report)?;
-    Ok(EXIT_OK)
+    let report = ProvisioningReport::success(agent, vm_id, ReportPpsType::None);
+    finish_report(store, report, supporting_data)
 }
 
 fn report_failure(
@@ -679,14 +670,34 @@ fn report_failure(
     documentation_url: Option<String>,
     supporting_data: Vec<SupportingData>,
 ) -> Result<u8, CliError> {
+    let mut has_documentation_url = documentation_url.is_some();
+    for (key, _) in supporting_data.iter().flat_map(|data| &data.0) {
+        if key == "reason"
+            || (key == "documentation_url" && has_documentation_url)
+        {
+            return Err(CliError::Usage(format!(
+                "supporting data key '{key}' duplicates a failure report field"
+            )));
+        }
+        has_documentation_url |= key == "documentation_url";
+    }
+
     let vm_id = resolve_vm_id(vm_id)?;
     let mut report =
         ProvisioningReport::failure(agent, vm_id, reason, ReportPpsType::None);
-    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
-        report = report.with_extra(key, value);
-    }
     if let Some(url) = documentation_url {
         report = report.with_documentation_url(url);
+    }
+    finish_report(store, report, supporting_data)
+}
+
+fn finish_report(
+    store: &KvpPoolStore,
+    mut report: ProvisioningReport,
+    supporting_data: Vec<SupportingData>,
+) -> Result<u8, CliError> {
+    for (key, value) in supporting_data.into_iter().flat_map(|data| data.0) {
+        report = report.with_extra(key, value);
     }
     write_report(store, &report)?;
     Ok(EXIT_OK)
