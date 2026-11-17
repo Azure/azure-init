@@ -268,7 +268,7 @@ fn parse_decimal_duration(value: &str) -> Result<Duration, DecodeError> {
             }
             fraction
                 .parse::<u32>()
-                .map_err(|_| DecodeError::Malformed)?
+                .expect("at most nine validated ASCII digits fit in u32")
                 * 10u32.pow(9 - fraction.len() as u32)
         }
     };
@@ -356,11 +356,20 @@ mod tests {
 
     fn only_diagnostic(mut entries: Vec<Entry>) -> Diagnostic {
         assert_eq!(entries.len(), 1);
-        let mut diagnostic = None;
-        if let Some(Entry::Diagnostic(value)) = entries.pop() {
-            diagnostic = Some(value);
-        }
-        diagnostic.expect("expected a diagnostic")
+        let Entry::Diagnostic(diagnostic) = entries.pop().unwrap() else {
+            panic!("expected a diagnostic");
+        };
+        diagnostic
+    }
+
+    #[test]
+    #[should_panic(expected = "expected a diagnostic")]
+    fn only_diagnostic_rejects_raw_entries() {
+        only_diagnostic(vec![Entry::Raw(RawKeyValue {
+            key: "raw".into(),
+            value: "not a diagnostic".into(),
+            error: None,
+        })]);
     }
 
     fn store(dir: &TempDir) -> KvpPoolStore {

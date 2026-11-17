@@ -595,6 +595,15 @@ mod tests {
                 .on_record(&Id::from_u64(u64::MAX), values, ctx.clone());
             self.kvp.on_record(id, values, ctx);
         }
+
+        fn on_event(
+            &self,
+            event: &Event<'_>,
+            ctx: Context<'_, tracing_subscriber::Registry>,
+        ) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.kvp.on_event(event, ctx);
+        }
     }
 
     #[test]
@@ -612,9 +621,15 @@ mod tests {
                 updated = tracing::field::Empty
             );
             span.record("updated", true);
+            assert!(!store.path().exists());
+            span.in_scope(|| tracing::error!("error in an unobserved span"));
         });
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(!store.path().exists());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(matches!(
+            entries(&store).as_slice(),
+            [Entry::Diagnostic(Diagnostic::Event(event))]
+                if event.key.name == "unobserved" && event.result.is_none()
+        ));
     }
 
     #[test]

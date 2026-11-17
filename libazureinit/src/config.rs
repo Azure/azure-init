@@ -489,35 +489,11 @@ impl Config {
 mod tests {
     use super::*;
     use anyhow::Error;
+    use rstest::rstest;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
     use tracing;
-
-    #[derive(Debug)]
-    struct MockCli {
-        config: Option<std::path::PathBuf>,
-    }
-
-    impl MockCli {
-        fn parse_from(args: Vec<&str>) -> Self {
-            let mut config = None;
-
-            let mut args_iter = args.into_iter();
-            while let Some(arg) = args_iter.next() {
-                match arg {
-                    "--config" => {
-                        if let Some(path) = args_iter.next() {
-                            config = Some(PathBuf::from(path));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            Self { config }
-        }
-    }
 
     #[test]
     #[tracing_test::traced_test]
@@ -999,16 +975,6 @@ mod tests {
         )
         .unwrap();
 
-        let args = vec![
-            "azure-init",
-            "--config",
-            override_file_path.to_str().unwrap(),
-        ];
-
-        let opts = MockCli::parse_from(args);
-
-        assert_eq!(opts.config, Some(override_file_path.clone()));
-
         let config = Config::load_from(
             base_path,
             drop_in_path,
@@ -1057,25 +1023,57 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_directory_config_via_cli() -> Result<(), Error> {
+    #[rstest]
+    #[case::empty(false)]
+    #[case::populated(true)]
+    fn test_directory_config_via_cli(
+        #[case] populated: bool,
+    ) -> Result<(), Error> {
         let dir = tempdir()?;
-        let drop_in_path: PathBuf = dir.path().join("drop_in_path");
-        let base_path = dir.path().join("base_path");
+        let base_path = dir.path().join("base.toml");
+        let drop_in_path = dir.path().join("drop-in");
+        let cli_path = dir.path().join("cli");
+        fs::create_dir(&drop_in_path)?;
+        fs::create_dir(&cli_path)?;
+        fs::write(
+            &base_path,
+            "[ssh]\nauthorized_keys_path = '.ssh/base'\n\
+             [telemetry]\nkvp_filter = 'base-filter'\n",
+        )?;
+        fs::write(
+            drop_in_path.join("10-override.toml"),
+            "[ssh]\nauthorized_keys_path = '.ssh/drop-in'\n\
+             query_sshd_config = false\n",
+        )?;
+        if populated {
+            // Reverse creation order so directory enumeration cannot determine precedence.
+            fs::write(
+                cli_path.join("20-final.toml"),
+                "[ssh]\nauthorized_keys_path = '.ssh/cli-final'\n\
+                 query_sshd_config = true\n",
+            )?;
+            fs::write(
+                cli_path.join("10-first.toml"),
+                "[ssh]\nauthorized_keys_path = '.ssh/cli-first'\n\
+                 query_sshd_config = false\n\
+                 [telemetry]\nkvp_diagnostics = false\n",
+            )?;
+            fs::write(cli_path.join("ignored.txt"), "not valid TOML")?;
+        }
 
-        let args = vec!["azure-init", "--config", dir.path().to_str().unwrap()];
-
-        let opts = MockCli::parse_from(args);
-
-        assert_eq!(opts.config, Some(dir.path().to_path_buf()));
-
-        let config = Config::load_from(base_path, drop_in_path, None)?;
-
-        assert!(config.ssh.authorized_keys_path.is_relative());
+        let config =
+            Config::load_from(base_path, drop_in_path, Some(cli_path))?;
         assert_eq!(
-            config.ssh.authorized_keys_path.to_str().unwrap(),
-            ".ssh/authorized_keys"
+            config.ssh.authorized_keys_path,
+            PathBuf::from(if populated {
+                ".ssh/cli-final"
+            } else {
+                ".ssh/drop-in"
+            })
         );
+        assert_eq!(config.ssh.query_sshd_config, populated);
+        assert_eq!(config.telemetry.kvp_diagnostics, !populated);
+        assert_eq!(config.telemetry.kvp_filter.as_deref(), Some("base-filter"));
 
         Ok(())
     }
