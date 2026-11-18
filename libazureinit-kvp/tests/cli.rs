@@ -6,7 +6,7 @@ use std::io::Write;
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use libazureinit_kvp::{
     write_report, DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome,
     PoolMode, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
@@ -329,7 +329,7 @@ fn report_in_progress_resets_failure_context() {
     write_report(&store, &previous).unwrap();
     store.append("keep", "unchanged").unwrap();
 
-    let before = Utc::now();
+    let before = Timestamp::now();
     assert_success(kvp(&with_dir(
         &dir,
         &[
@@ -340,13 +340,11 @@ fn report_in_progress_resets_failure_context() {
             "stage=starting,stage=prepared",
         ],
     )));
-    let after = Utc::now();
+    let after = Timestamp::now();
     let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
     assert_eq!(entries.as_array().unwrap().len(), 2);
     let timestamp = entries[0]["timestamp"].as_str().unwrap();
-    let captured = DateTime::parse_from_rfc3339(timestamp)
-        .unwrap()
-        .with_timezone(&Utc);
+    let captured: Timestamp = timestamp.parse().unwrap();
     assert!((before..=after).contains(&captured));
     assert_eq!(
         entries[0],
@@ -683,6 +681,108 @@ fn parsed_dump_preserves_reader_pool_order() {
         .map(|(key, value)| json!({"key": key, "value": value}))
         .collect();
     assert_eq!(physical, Value::Array(expected_physical));
+    assert_eq!(fs::read(store.path()).unwrap(), before);
+}
+
+fn records_with_timestamp(timestamp: &str) -> [(String, String); 3] {
+    let event_id = "e5f01809-a7a3-4279-aa64-1f18e21eda6e";
+    [
+        (
+            format!("DIAG|agent|{VM_ID}|event|test|{event_id}|{timestamp}|none|||0"),
+            "message".into(),
+        ),
+        (
+            PROVISIONING_REPORT_KEY.into(),
+            format!("result=success|agent=agent|vm_id={VM_ID}|pps_type=None|timestamp={timestamp}"),
+        ),
+        (
+            format!("CLOUD_INIT|1785187982|event|test|{VM_ID}|{event_id}"),
+            json!({
+                "name": "test", "type": "event", "ts": timestamp,
+                "msg": "message",
+            })
+            .to_string(),
+        ),
+    ]
+}
+
+#[rstest]
+#[case::leap_second("2016-12-31T23:59:60Z")]
+#[case::fractional_leap_second("2016-12-31t23:59:60.123456789999+00:00")]
+#[case::timezone_annotation("2026-08-31T12:34:56Z[UTC]")]
+#[case::short_offset("2026-08-31T12:34:56+02")]
+#[case::invalid_date("2026-02-29T12:34:56Z")]
+#[case::out_of_range("9999-12-31T23:59:59Z")]
+fn invalid_timestamps_remain_raw_in_all_sources(#[case] timestamp: &str) {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    let records = records_with_timestamp(timestamp);
+    store.append_multiple(records.clone()).unwrap();
+    let before = fs::read(store.path()).unwrap();
+
+    let expected: Vec<_> = records
+        .iter()
+        .map(|(key, value)| {
+            json!({
+                "type": "raw", "key": key, "value": value,
+                "error": "malformed",
+            })
+        })
+        .collect();
+    assert_eq!(
+        assert_json(kvp(&with_dir(&dir, &["dump", "--parse"]))),
+        json!(expected)
+    );
+    let text =
+        assert_success(kvp(&with_dir(&dir, &["dump", "--parse", "--text"])));
+    let expected_text: String = records
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "raw key={key} value={value} error=malformed diagnostic or provisioning report\n"
+            )
+        })
+        .collect();
+    assert_eq!(text, expected_text);
+    assert_eq!(fs::read(store.path()).unwrap(), before);
+}
+
+#[rstest]
+#[case::subnanoseconds_with_offset(
+    "2026-08-31t14:34:56.123456789999+02:00",
+    "2026-08-31T12:34:56.123456789Z"
+)]
+#[case::grouped_precision_with_space(
+    "2026-08-31 12:34:56.3-00:00",
+    "2026-08-31T12:34:56.300Z"
+)]
+#[case::before_epoch(
+    "1969-12-31T23:59:59.1234Z",
+    "1969-12-31T23:59:59.123400Z"
+)]
+fn parsed_dump_preserves_timestamp_contracts_in_all_sources(
+    #[case] timestamp: &str,
+    #[case] normalized: &str,
+) {
+    let dir = TempDir::new().unwrap();
+    let store = store_at(&dir);
+    store
+        .append_multiple(records_with_timestamp(timestamp))
+        .unwrap();
+    let before = fs::read(store.path()).unwrap();
+    let parsed = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
+    assert_eq!(parsed.as_array().unwrap().len(), 3);
+    assert_eq!(parsed[0]["timestamp"], normalized);
+    assert_eq!(parsed[1]["timestamp"], timestamp);
+    assert_eq!(parsed[2]["timestamp"], normalized);
+
+    let text =
+        assert_success(kvp(&with_dir(&dir, &["dump", "--parse", "--text"])));
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains(&format!("timestamp={normalized} ")));
+    assert!(lines[1].contains(&format!("timestamp={timestamp}")));
+    assert!(lines[2].contains(&format!("timestamp={normalized} ")));
     assert_eq!(fs::read(store.path()).unwrap(), before);
 }
 

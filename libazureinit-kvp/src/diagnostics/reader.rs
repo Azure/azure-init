@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::cloud_init;
@@ -16,7 +15,8 @@ use super::diagnostic::{
 use super::encoding::decode_payload;
 use super::parse_unsigned;
 use crate::{
-    KvpError, KvpPoolStore, ProvisioningReport, PROVISIONING_REPORT_KEY,
+    timestamp, KvpError, KvpPoolStore, ProvisioningReport,
+    PROVISIONING_REPORT_KEY,
 };
 
 /// Reads diagnostics and provisioning reports from a KVP pool.
@@ -186,9 +186,7 @@ fn decode_diag_group(
         return Err(DecodeError::Malformed);
     }
     Uuid::parse_str(vm_id).map_err(|_| DecodeError::Malformed)?;
-    let parsed_timestamp = DateTime::parse_from_rfc3339(timestamp)
-        .map_err(|_| DecodeError::Malformed)?
-        .with_timezone(&Utc);
+    let parsed_timestamp = timestamp::parse(timestamp)?;
     let result = match result {
         "" => None,
         value if value == Outcome::Ok.as_str() => Some(Outcome::Ok),
@@ -312,7 +310,6 @@ mod tests {
     use std::sync::Arc;
 
     use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use chrono::SecondsFormat;
     use rstest::rstest;
     use tempfile::TempDir;
 
@@ -651,13 +648,7 @@ mod tests {
         assert_eq!(diagnostic.key().name, "test");
         assert_eq!(diagnostic.key().event_id, event_id);
         assert_eq!(diagnostic.key().encoding, None);
-        assert_eq!(
-            diagnostic
-                .key()
-                .timestamp
-                .to_rfc3339_opts(SecondsFormat::Millis, true),
-            TIMESTAMP
-        );
+        assert_eq!(format!("{:.3}", diagnostic.key().timestamp), TIMESTAMP);
         assert_eq!(
             diagnostic.payload(),
             &DiagnosticPayload::Text(payload.into())
@@ -830,10 +821,7 @@ mod tests {
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
         assert_eq!(
-            diagnostic
-                .key()
-                .timestamp
-                .to_rfc3339_opts(SecondsFormat::Nanos, true),
+            format!("{:.9}", diagnostic.key().timestamp),
             format!("2026-08-31T12:34:56.{expected_nanos:09}Z")
         );
     }

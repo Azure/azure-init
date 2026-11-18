@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, Utc};
 use serde_json::{Number, Value};
 use uuid::Uuid;
 
@@ -13,6 +12,7 @@ use super::diagnostic::{
     DiagnosticPayload, DiagnosticStart, Encoding, Outcome,
 };
 use super::encoding::decompress;
+use crate::timestamp;
 
 pub(super) const PREFIX: &str = "CLOUD_INIT";
 
@@ -146,9 +146,7 @@ fn diagnostic(
         .get("ts")
         .and_then(Value::as_str)
         .ok_or(DecodeError::Malformed)?;
-    let timestamp = DateTime::parse_from_rfc3339(timestamp)
-        .map_err(|_| DecodeError::Malformed)?
-        .with_timezone(&Utc);
+    let timestamp = timestamp::parse(timestamp)?;
     let (payload, encoding) =
         decode_message(message, source.kind == "compressed")?;
     let key = DiagnosticKey {

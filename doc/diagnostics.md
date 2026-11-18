@@ -255,6 +255,9 @@ with up to nine fractional digits remain exact; other forms round to the nearest
 nanosecond. Out-of-range values fail decoding; large durations may lose precision
 in JSON.
 
+Leap-second (`:60`) and out-of-range timestamps are preserved as raw records
+with a `malformed` error.
+
 Cloud-init durations round to microseconds; source encoding labels are preserved.
 
 ### Writer Choices

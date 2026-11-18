@@ -5,11 +5,11 @@ use std::fmt;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
-use crate::ProvisioningReport;
+use crate::{timestamp, ProvisioningReport};
 
 /// Prefix used for diagnostics emitted by
 /// [`DiagnosticWriter`](crate::DiagnosticWriter).
@@ -204,9 +204,9 @@ pub struct DiagnosticKey {
     /// UTF-8 identifier, typically UUID, shared by an operation's start and finish;
     /// unique for a standalone event.
     pub event_id: String,
-    /// When this diagnostic was emitted, in UTC.
+    /// When this diagnostic was emitted, in UTC, as a [`jiff::Timestamp`].
     #[serde(serialize_with = "serialize_timestamp")]
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// Stored payload encoding; `None` means UTF-8-encoded plain text.
     #[serde(serialize_with = "serialize_encoding")]
     pub encoding: Option<Encoding>,
@@ -330,14 +330,15 @@ pub enum Entry {
 }
 
 fn serialize_timestamp<S>(
-    timestamp: &DateTime<Utc>,
+    timestamp: &Timestamp,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    serializer
-        .serialize_str(&timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true))
+    serializer.serialize_str(
+        &timestamp::printer(*timestamp).timestamp_to_string(timestamp),
+    )
 }
 
 fn serialize_encoding<S>(
@@ -394,9 +395,7 @@ mod tests {
             vm_id: Some(VM_ID.into()),
             name: "provision:run".into(),
             event_id: EVENT_ID.into(),
-            timestamp: DateTime::parse_from_rfc3339(TIMESTAMP)
-                .unwrap()
-                .with_timezone(&Utc),
+            timestamp: TIMESTAMP.parse().unwrap(),
             encoding: None,
         }
     }
@@ -626,9 +625,7 @@ mod tests {
         #[case] expected: &str,
     ) {
         let key = DiagnosticKey {
-            timestamp: DateTime::parse_from_rfc3339(timestamp)
-                .unwrap()
-                .with_timezone(&Utc),
+            timestamp: timestamp.parse().unwrap(),
             ..key()
         };
         assert_eq!(serde_json::to_value(key).unwrap()["timestamp"], expected);

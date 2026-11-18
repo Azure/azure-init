@@ -373,9 +373,9 @@ mod tests {
              Entry::Diagnostic(Diagnostic::Finish(finish))]
                 if [&start.key, &finish.key].iter().all(|key| {
                     let timestamp =
-                        u128::try_from(key.timestamp.timestamp_millis()).unwrap();
+                        u128::try_from(key.timestamp.as_millisecond()).unwrap();
                     (before..=after).contains(&timestamp)
-                        && key.timestamp.timestamp_subsec_nanos() % 1_000_000 == 0
+                        && key.timestamp.subsec_nanosecond() % 1_000_000 == 0
                 })
                     && start.key.event_id == finish.key.event_id
                     && finish.duration >= work
