@@ -6,7 +6,6 @@ use std::io::Write;
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use jiff::Timestamp;
 use libazureinit_kvp::{
     write_report, DiagnosticWriter, Encoding, KvpPool, KvpPoolStore, Outcome,
     PoolMode, ProvisioningReport, ReportPpsType, PROVISIONING_REPORT_KEY,
@@ -14,6 +13,7 @@ use libazureinit_kvp::{
 use rstest::rstest;
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use time::{format_description::well_known::Rfc3339, UtcDateTime};
 
 const VM_ID: &str = "0e5e179d-5341-478b-8456-fbb90621bdf8";
 
@@ -329,7 +329,7 @@ fn report_in_progress_resets_failure_context() {
     write_report(&store, &previous).unwrap();
     store.append("keep", "unchanged").unwrap();
 
-    let before = Timestamp::now();
+    let before = UtcDateTime::now();
     assert_success(kvp(&with_dir(
         &dir,
         &[
@@ -340,11 +340,11 @@ fn report_in_progress_resets_failure_context() {
             "stage=starting,stage=prepared",
         ],
     )));
-    let after = Timestamp::now();
+    let after = UtcDateTime::now();
     let entries = assert_json(kvp(&with_dir(&dir, &["dump", "--parse"])));
     assert_eq!(entries.as_array().unwrap().len(), 2);
     let timestamp = entries[0]["timestamp"].as_str().unwrap();
-    let captured: Timestamp = timestamp.parse().unwrap();
+    let captured = UtcDateTime::parse(timestamp, &Rfc3339).unwrap();
     assert!((before..=after).contains(&captured));
     assert_eq!(
         entries[0],
@@ -712,7 +712,7 @@ fn records_with_timestamp(timestamp: &str) -> [(String, String); 3] {
 #[case::timezone_annotation("2026-08-31T12:34:56Z[UTC]")]
 #[case::short_offset("2026-08-31T12:34:56+02")]
 #[case::invalid_date("2026-02-29T12:34:56Z")]
-#[case::out_of_range("9999-12-31T23:59:59Z")]
+#[case::out_of_range("9999-12-31T23:59:59-00:01")]
 fn invalid_timestamps_remain_raw_in_all_sources(#[case] timestamp: &str) {
     let dir = TempDir::new().unwrap();
     let store = store_at(&dir);
@@ -760,6 +760,7 @@ fn invalid_timestamps_remain_raw_in_all_sources(#[case] timestamp: &str) {
     "1969-12-31T23:59:59.1234Z",
     "1969-12-31T23:59:59.123400Z"
 )]
+#[case::maximum_year("9999-12-31T23:59:59Z", "9999-12-31T23:59:59Z")]
 fn parsed_dump_preserves_timestamp_contracts_in_all_sources(
     #[case] timestamp: &str,
     #[case] normalized: &str,

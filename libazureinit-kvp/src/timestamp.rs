@@ -1,86 +1,75 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use jiff::{fmt::temporal::DateTimePrinter, Timestamp};
+use time::format_description::{well_known::Rfc3339, BorrowedFormatItem};
+use time::macros::format_description;
+use time::{OffsetDateTime, UtcDateTime};
 
-use crate::DecodeError;
+use crate::{DecodeError, TimestampPrecision};
 
-pub(crate) fn parse(value: &str) -> Result<Timestamp, DecodeError> {
-    let (datetime, suffix) =
-        value.split_at_checked(19).ok_or(DecodeError::Malformed)?;
-    let bytes = datetime.as_bytes();
-    // Restrict Jiff's Temporal syntax to the existing RFC 3339 contract and
-    // reject leap seconds instead of allowing Jiff to normalize them to :59.
-    if bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || !matches!(bytes[10], b'T' | b't' | b' ')
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-        || &bytes[17..19] == b"60"
+const DATE_TIME: &[BorrowedFormatItem<'static>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
+
+pub(crate) fn parse(value: &str) -> Result<UtcDateTime, DecodeError> {
+    let bytes = value.as_bytes();
+    // Time accepts any date/time separator and normalizes leap seconds.
+    // Retain the existing separators and explicitly reject leap seconds.
+    if !matches!(bytes.get(10), Some(b'T' | b't' | b' '))
+        || bytes.get(17..19) == Some(b"60")
     {
         return Err(DecodeError::Malformed);
     }
 
-    let (fraction, offset) = if let Some(digits) = suffix.strip_prefix('.') {
-        let count = digits.bytes().take_while(u8::is_ascii_digit).count();
-        if count == 0 {
-            return Err(DecodeError::Malformed);
-        }
-        suffix.split_at(count + 1)
-    } else {
-        ("", suffix)
-    };
-    if !matches!(
-        offset.as_bytes(),
-        [b'Z' | b'z']
-            | [
-                b'+' | b'-',
-                b'0'..=b'1',
-                b'0'..=b'9',
-                b':',
-                b'0'..=b'5',
-                b'0'..=b'9'
-            ]
-            | [
-                b'+' | b'-',
-                b'2',
-                b'0'..=b'3',
-                b':',
-                b'0'..=b'5',
-                b'0'..=b'9'
-            ]
-    ) {
-        return Err(DecodeError::Malformed);
-    }
-
-    // The existing reader discards digits beyond nanoseconds; Jiff rejects
-    // them unless they are removed before parsing.
-    let parsed = if fraction.len() > 10 {
-        format!("{datetime}{}{offset}", &fraction[..10]).parse()
-    } else {
-        value.parse()
-    };
-    parsed.map_err(|_| DecodeError::Malformed)
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|_| DecodeError::Malformed)?
+        .checked_to_utc()
+        .ok_or(DecodeError::Malformed)
 }
 
-pub(crate) fn printer(timestamp: Timestamp) -> DateTimePrinter {
-    let nanos = timestamp.subsec_nanosecond();
-    let precision = if nanos == 0 {
-        0
-    } else if nanos % 1_000_000 == 0 {
-        3
-    } else if nanos % 1_000 == 0 {
-        6
-    } else {
-        9
+pub(crate) fn format(
+    timestamp: UtcDateTime,
+    precision: TimestampPrecision,
+    suffix: &str,
+) -> String {
+    let fraction: &[BorrowedFormatItem<'_>] = match precision {
+        TimestampPrecision::Seconds => &[],
+        TimestampPrecision::Millis => {
+            format_description!(".[subsecond digits:3]")
+        }
+        TimestampPrecision::Micros => {
+            format_description!(".[subsecond digits:6]")
+        }
+        TimestampPrecision::Nanos => {
+            format_description!(".[subsecond digits:9]")
+        }
     };
-    DateTimePrinter::new().precision(Some(precision))
+    let description = [
+        BorrowedFormatItem::Compound(DATE_TIME),
+        BorrowedFormatItem::Compound(fraction),
+        BorrowedFormatItem::StringLiteral(suffix),
+    ];
+    timestamp
+        .format(&description[..])
+        .expect("UTC timestamps provide every component in the static format")
+}
+
+pub(crate) fn format_auto(timestamp: UtcDateTime, suffix: &str) -> String {
+    let nanos = timestamp.nanosecond();
+    let precision = if nanos == 0 {
+        TimestampPrecision::Seconds
+    } else if nanos.is_multiple_of(1_000_000) {
+        TimestampPrecision::Millis
+    } else if nanos.is_multiple_of(1_000) {
+        TimestampPrecision::Micros
+    } else {
+        TimestampPrecision::Nanos
+    };
+    format(timestamp, precision, suffix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiff::tz::Offset;
     use rstest::rstest;
 
     #[rstest]
@@ -111,13 +100,14 @@ mod tests {
         "1969-12-31T23:59:59.123456789Z"
     )]
     #[case("0000-01-01T00:00:00Z", "0000-01-01T00:00:00Z")]
+    #[case("9999-12-31T23:59:59Z", "9999-12-31T23:59:59Z")]
     fn parses_existing_rfc3339_forms(
         #[case] input: &str,
         #[case] expected: &str,
     ) {
         assert_eq!(
             parse(input).unwrap(),
-            expected.parse::<Timestamp>().unwrap()
+            UtcDateTime::parse(expected, &Rfc3339).unwrap()
         );
     }
 
@@ -157,7 +147,7 @@ mod tests {
     #[case("2026-08-31T12:34:56Z\0")]
     #[case("2026-08-31T12:34:5\u{00e9}Z")]
     #[case("2026-08-31T12:34:56.\u{00e9}Z")]
-    #[case("9999-12-31T23:59:59Z")]
+    #[case("9999-12-31T23:59:59-00:01")]
     fn rejects_malformed_unsupported_or_out_of_range_timestamps(
         #[case] input: &str,
     ) {
@@ -181,14 +171,22 @@ mod tests {
         #[case] expected: &str,
     ) {
         let timestamp = parse(input).unwrap();
-        let printer = printer(timestamp);
+        assert_eq!(format_auto(timestamp, "Z"), format!("{expected}Z"));
         assert_eq!(
-            printer.timestamp_to_string(&timestamp),
-            format!("{expected}Z")
-        );
-        assert_eq!(
-            printer.timestamp_with_offset_to_string(&timestamp, Offset::UTC),
+            format_auto(timestamp, "+00:00"),
             format!("{expected}+00:00")
         );
+    }
+
+    #[rstest]
+    #[case(TimestampPrecision::Seconds, "1970-01-01T00:00:00Z")]
+    #[case(TimestampPrecision::Millis, "1970-01-01T00:00:00.000Z")]
+    #[case(TimestampPrecision::Micros, "1970-01-01T00:00:00.000000Z")]
+    #[case(TimestampPrecision::Nanos, "1970-01-01T00:00:00.000000000Z")]
+    fn fixed_precision_preserves_zero_padding(
+        #[case] precision: TimestampPrecision,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(format(UtcDateTime::UNIX_EPOCH, precision, "Z"), expected);
     }
 }

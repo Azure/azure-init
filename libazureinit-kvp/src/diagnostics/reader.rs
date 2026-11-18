@@ -315,7 +315,9 @@ mod tests {
 
     use super::super::diagnostic::Kind;
     use crate::store::{Handle, OsSysOps, StatInfo, SysOps};
-    use crate::{write_report, KvpPool, PoolMode, ReportPpsType};
+    use crate::{
+        write_report, KvpPool, PoolMode, ReportPpsType, TimestampPrecision,
+    };
 
     const AGENT: &str = "azure-init/0.1.1";
     const VM_ID: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
@@ -648,7 +650,14 @@ mod tests {
         assert_eq!(diagnostic.key().name, "test");
         assert_eq!(diagnostic.key().event_id, event_id);
         assert_eq!(diagnostic.key().encoding, None);
-        assert_eq!(format!("{:.3}", diagnostic.key().timestamp), TIMESTAMP);
+        assert_eq!(
+            timestamp::format(
+                diagnostic.key().timestamp,
+                TimestampPrecision::Millis,
+                "Z"
+            ),
+            TIMESTAMP
+        );
         assert_eq!(
             diagnostic.payload(),
             &DiagnosticPayload::Text(payload.into())
@@ -821,7 +830,11 @@ mod tests {
         let diagnostic =
             only_diagnostic(decode_entries(vec![(key, "value".into())]));
         assert_eq!(
-            format!("{:.9}", diagnostic.key().timestamp),
+            timestamp::format(
+                diagnostic.key().timestamp,
+                TimestampPrecision::Nanos,
+                "Z"
+            ),
             format!("2026-08-31T12:34:56.{expected_nanos:09}Z")
         );
     }

@@ -5,7 +5,7 @@
 
 use std::str::FromStr;
 
-use jiff::{tz::Offset, Timestamp};
+use time::UtcDateTime;
 
 use crate::{timestamp, DecodeError, KvpError, KvpPoolStore};
 
@@ -13,8 +13,7 @@ use crate::{timestamp, DecodeError, KvpError, KvpPoolStore};
 pub const PROVISIONING_REPORT_KEY: &str = "PROVISIONING_REPORT";
 
 fn now_rfc3339() -> String {
-    let now = Timestamp::now();
-    timestamp::printer(now).timestamp_with_offset_to_string(&now, Offset::UTC)
+    timestamp::format_auto(UtcDateTime::now(), "+00:00")
 }
 
 /// State of a provisioning attempt.
@@ -651,10 +650,10 @@ mod tests {
 
     #[test]
     fn default_timestamp_is_current_utc_with_a_numeric_offset() {
-        let before = Timestamp::now();
+        let before = UtcDateTime::now();
         let report =
             ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None);
-        let after = Timestamp::now();
+        let after = UtcDateTime::now();
         assert!(report.timestamp.ends_with("+00:00"));
         let timestamp = timestamp::parse(&report.timestamp).unwrap();
         assert!((before..=after).contains(&timestamp));

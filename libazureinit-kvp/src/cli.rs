@@ -592,8 +592,7 @@ fn diagnostic_text(diagnostic: &Diagnostic) -> String {
         let _ = write!(line, " vm_id={vm_id}");
     }
     let _ = write!(line, " name={} event_id={}", key.name, key.event_id);
-    let timestamp =
-        timestamp::printer(key.timestamp).timestamp_to_string(&key.timestamp);
+    let timestamp = timestamp::format_auto(key.timestamp, "Z");
     let encoding = key
         .encoding
         .as_ref()
