@@ -88,6 +88,7 @@ mod diagnostics;
 mod error;
 mod report;
 mod store;
+mod timestamp;
 mod vm_id;
 
 pub use cli::run;

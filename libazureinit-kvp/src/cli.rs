@@ -8,12 +8,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::SecondsFormat;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use crate::{
-    write_report, Diagnostic, DiagnosticPayload, DiagnosticReader,
+    timestamp, write_report, Diagnostic, DiagnosticPayload, DiagnosticReader,
     DiagnosticWriter, DurationPrecision, Entry, Kind, KvpError, KvpPool,
     KvpPoolStore, PoolMode, ProvisioningReport, ReportPpsType,
     PROVISIONING_REPORT_KEY,
@@ -593,7 +592,7 @@ fn diagnostic_text(diagnostic: &Diagnostic) -> String {
         let _ = write!(line, " vm_id={vm_id}");
     }
     let _ = write!(line, " name={} event_id={}", key.name, key.event_id);
-    let timestamp = key.timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+    let timestamp = timestamp::format_auto(key.timestamp, "Z");
     let encoding = key
         .encoding
         .as_ref()
