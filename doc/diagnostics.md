@@ -249,10 +249,12 @@ there is no decoded-size cap.
 Parsed JSON represents decoded binary payloads as base64 objects. Those bytes
 are already decompressed; do not send them to a decompressor again.
 
-Timestamps normalize to UTC, discarding digits beyond nanoseconds. Durations
+The reader normalizes diagnostic timestamps to UTC and discards digits beyond
+nanoseconds. If a timestamp contains a leap second (`:60`) or is out of range,
+the reader preserves the original record with a `malformed` error. Durations
 are limited to unsigned 64-bit whole seconds plus nanoseconds. Unsigned decimals
 with up to nine fractional digits remain exact; other forms round to the nearest
-nanosecond. Out-of-range values fail decoding; large durations may lose precision
+nanosecond. Out-of-range durations fail decoding; large durations may lose precision
 in JSON.
 
 Cloud-init durations round to microseconds; source encoding labels are preserved.
