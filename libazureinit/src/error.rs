@@ -188,7 +188,7 @@ mod tests {
         let encoded = err.as_provisioning_report(vm_id).encode();
         assert!(encoded.contains("reason=failed to load sshd config"));
         assert!(encoded.contains("details=bad config"));
-        assert!(encoded.contains(&format!("vm_id={}", vm_id)));
+        assert!(encoded.contains(&format!("vm_id={vm_id}")));
         assert!(encoded.contains("result=error|"));
         assert!(encoded.contains(
             "documentation_url=https://aka.ms/linuxprovisioningerror"
@@ -208,7 +208,7 @@ mod tests {
         let encoded = err.as_provisioning_report(vm_id).encode();
         assert!(encoded.contains("endpoint=http://example.com"));
         assert!(encoded.contains("status=404"));
-        assert!(encoded.contains(&format!("vm_id={}", vm_id)));
+        assert!(encoded.contains(&format!("vm_id={vm_id}")));
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         assert!(encoded.contains("reason=unhandled error"));
         assert!(encoded.contains("error=unhandled error"));
         assert!(encoded.contains("test_unhandled_exception"));
-        assert!(encoded.contains(&format!("vm_id={}", vm_id)));
+        assert!(encoded.contains(&format!("vm_id={vm_id}")));
     }
 
     #[test]

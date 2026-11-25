@@ -316,7 +316,7 @@ mod tests {
         )
         .unwrap();
 
-        let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
+        let file_path = test_dir.path().join(format!("{vm_id}.provisioned"));
         let exists = file_path.exists();
         assert!(!exists, "File should not exist before provisioning");
 
@@ -339,7 +339,7 @@ mod tests {
         )
         .unwrap();
 
-        let file_path = test_dir.path().join(format!("{}.provisioned", vm_id));
+        let file_path = test_dir.path().join(format!("{vm_id}.provisioned"));
         fs::File::create(&file_path).unwrap();
 
         let complete = is_provisioning_complete(Some(&test_config), &vm_id);

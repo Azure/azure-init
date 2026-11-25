@@ -257,11 +257,11 @@ mod tests {
 
         assert_eq!(
             "User { name: \"azureuser\", groups: [], ssh_keys: [], password: true }",
-            format!("{:?}", user_with_password)
+            format!("{user_with_password:?}")
         );
         assert_eq!(
             "User { name: \"azureuser\", groups: [], ssh_keys: [], password: false }",
-            format!("{:?}", user_without_password)
+            format!("{user_without_password:?}")
         );
     }
 

@@ -53,7 +53,7 @@ For step-by-step instructions on installing, configuring, and using azure-init, 
 
 ### Prerequisites
 
-- Rust programming environment
+- Rust (see [Cargo.toml](Cargo.toml) for the minimum supported version)
 - Access to an Azure subscription (for e2e testing)
 
 ### Installing Rust

@@ -1155,7 +1155,7 @@ mod tests {
     #[test]
     fn test_config_display() {
         let config = Config::default();
-        let output = format!("{}", config);
+        let output = format!("{config}");
         assert!(output.contains("[ssh]"));
         assert!(output.contains("authorized_keys_path"));
         assert!(output.contains("[imds]"));
