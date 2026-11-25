@@ -9,7 +9,6 @@ use std::thread;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, Utc};
 use flate2::read::ZlibDecoder;
 use libazureinit_kvp::{
     report_failure, report_in_progress, report_success, write_report,
@@ -20,6 +19,7 @@ use libazureinit_kvp::{
 };
 use rstest::rstest;
 use tempfile::TempDir;
+use time::{format_description::well_known::Rfc3339, UtcDateTime};
 
 #[path = "fixtures/cloud_init.rs"]
 mod cloud_init_fixtures;
@@ -234,9 +234,9 @@ fn report_helpers_publish_typed_states(
         write_report(&store, &previous).unwrap();
     }
     store.append("after", "keep after").unwrap();
-    let before = Utc::now();
+    let before = UtcDateTime::now();
     publish(&store, agent, vm_id).unwrap();
-    let after = Utc::now();
+    let after = UtcDateTime::now();
 
     let entries = DiagnosticReader::new(store.clone()).entries().unwrap();
     assert_eq!(entries.len(), 3);
@@ -246,9 +246,7 @@ fn report_helpers_publish_typed_states(
     };
     let value = serde_json::to_value(report).unwrap();
     let timestamp = value["timestamp"].as_str().unwrap();
-    let captured = DateTime::parse_from_rfc3339(timestamp)
-        .unwrap()
-        .with_timezone(&Utc);
+    let captured = UtcDateTime::parse(timestamp, &Rfc3339).unwrap();
     assert!((before..=after).contains(&captured));
     let mut expected = serde_json::json!({
         "result": result,
