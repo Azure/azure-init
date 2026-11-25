@@ -347,9 +347,10 @@ mod tests {
         get_sshd_config_path, provision_ssh, resolve_sshd_config_path,
         run_sshd_command, update_sshd_config,
     };
+    use rstest::rstest;
     use std::{
-        fs::{File, Permissions},
-        io::{self, Read, Write},
+        fs::Permissions,
+        io::{self, Read},
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         os::unix::process::ExitStatusExt,
         process::{ExitStatus, Output},
@@ -425,36 +426,33 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_extract_authorized_keys_default_path() {
-        let result = extract_authorized_keys_file_path(
-            b"authorizedkeysfile .ssh/authorized_keys",
+    #[rstest]
+    #[case::default(
+        "authorizedkeysfile .ssh/authorized_keys",
+        Some(".ssh/authorized_keys")
+    )]
+    #[case::other(
+        "authorizedkeysfile .ssh/other_authorized_keys",
+        Some(".ssh/other_authorized_keys")
+    )]
+    #[case::absolute(
+        "authorizedkeysfile /custom/path/to/keys",
+        Some("/custom/path/to/keys")
+    )]
+    #[case::missing_setting("# No authorizedkeysfile line here", None)]
+    #[case::missing_path("authorizedkeysfile", None)]
+    #[case::later_path(
+        "authorizedkeysfile\nauthorizedkeysfile .ssh/later_keys",
+        Some(".ssh/later_keys")
+    )]
+    fn test_extract_authorized_keys(
+        #[case] output: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            extract_authorized_keys_file_path(output.as_bytes()).as_deref(),
+            expected
         );
-        assert_eq!(result, Some(".ssh/authorized_keys".to_string()));
-    }
-
-    #[test]
-    fn test_extract_authorized_keys_other_path() {
-        let result = extract_authorized_keys_file_path(
-            b"authorizedkeysfile .ssh/other_authorized_keys",
-        );
-        assert_eq!(result, Some(".ssh/other_authorized_keys".to_string()));
-    }
-
-    #[test]
-    fn test_extract_authorized_keys_custom_absolute_path() {
-        let result = extract_authorized_keys_file_path(
-            b"authorizedkeysfile /custom/path/to/keys",
-        );
-        assert_eq!(result, Some("/custom/path/to/keys".to_string()));
-    }
-
-    #[test]
-    fn test_extract_authorized_keys_no_match() {
-        let result = extract_authorized_keys_file_path(
-            b"# No authorizedkeysfile line here",
-        );
-        assert_eq!(result, None);
     }
 
     #[test]
@@ -586,93 +584,63 @@ mod tests {
         assert_eq!("not-a-real-key xyz987\n", buf);
     }
 
-    #[test]
-    fn test_update_sshd_config_create_new() -> io::Result<()> {
-        let temp_dir = TempDir::new().unwrap();
+    #[rstest]
+    fn test_update_sshd_config_create_new(
+        #[values(false, true)] disable_password_auth: bool,
+    ) -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
         let sshd_config_path = temp_dir.path().join("sshd_config");
-        let disable_password_auth = false;
-        let ret: Result<(), io::Error> = update_sshd_config(
+        update_sshd_config(
             sshd_config_path.to_str().unwrap(),
             disable_password_auth,
+        )?;
+        let setting = if disable_password_auth { "no" } else { "yes" };
+        assert_eq!(
+            std::fs::read_to_string(&sshd_config_path)?,
+            format!("PasswordAuthentication {setting}\n")
         );
-        assert!(ret.is_ok());
-
-        let mut updated_content = String::new();
-        let mut file = File::open(&sshd_config_path).unwrap();
-        file.read_to_string(&mut updated_content).unwrap();
-        assert!(updated_content.contains("PasswordAuthentication yes"));
+        assert_eq!(
+            std::fs::metadata(sshd_config_path)?.permissions().mode() & 0o777,
+            0o600
+        );
         Ok(())
     }
 
-    #[test]
-    fn test_update_sshd_config_change() -> io::Result<()> {
+    #[rstest]
+    #[case::disabled("PasswordAuthentication no\n", "modified")]
+    #[case::enabled("PasswordAuthentication yes\n", "modified")]
+    #[case::commented("# PasswordAuthentication yes\n", "modified")]
+    #[case::absent("", "added")]
+    fn test_update_sshd_config_existing(
+        #[case] original_setting: &str,
+        #[case] annotation: &str,
+        #[values(false, true)] disable_password_auth: bool,
+    ) -> io::Result<()> {
         let temp_dir = TempDir::new()?;
         let sshd_config_path = temp_dir.path().join("sshd_config");
-        {
-            let mut file = File::create(&sshd_config_path)?;
-            writeln!(file, "PasswordAuthentication no")?;
-        }
-
-        let disable_password_auth = false;
-        let ret: Result<(), io::Error> = update_sshd_config(
+        std::fs::write(
+            &sshd_config_path,
+            format!("Port 2222\n{original_setting}"),
+        )?;
+        std::fs::set_permissions(
+            &sshd_config_path,
+            Permissions::from_mode(0o640),
+        )?;
+        update_sshd_config(
             sshd_config_path.to_str().unwrap(),
             disable_password_auth,
+        )?;
+        let setting = if disable_password_auth { "no" } else { "yes" };
+        assert_eq!(
+            std::fs::read_to_string(&sshd_config_path)?,
+            format!(
+                "Port 2222\nPasswordAuthentication {setting} # {annotation} by azure-init\n"
+            )
         );
-        assert!(ret.is_ok());
-        let mut updated_content = String::new();
-        {
-            let mut file = File::open(&sshd_config_path)?;
-            file.read_to_string(&mut updated_content)?;
-        }
-        assert!(updated_content.contains("PasswordAuthentication yes"));
-        assert!(!updated_content.contains("PasswordAuthentication no"));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_update_sshd_config_no_change() -> io::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let sshd_config_path = temp_dir.path().join("sshd_config");
-        {
-            let mut file = File::create(&sshd_config_path)?;
-            writeln!(file, "PasswordAuthentication yes")?;
-        }
-
-        let disable_password_auth = false;
-        let ret: Result<(), io::Error> = update_sshd_config(
-            sshd_config_path.to_str().unwrap(),
-            disable_password_auth,
+        assert_eq!(
+            std::fs::metadata(sshd_config_path)?.permissions().mode() & 0o777,
+            0o640
         );
-        assert!(ret.is_ok());
-        let mut updated_content = String::new();
-        {
-            let mut file = File::open(&sshd_config_path)?;
-            file.read_to_string(&mut updated_content)?;
-        }
-        assert!(updated_content.contains("PasswordAuthentication yes"));
-        assert!(!updated_content.contains("PasswordAuthentication no"));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_update_sshd_config_disables_password_auth() -> io::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let sshd_config_path = temp_dir.path().join("sshd_config");
-
-        let disable_password_auth = true;
-        let result = update_sshd_config(
-            sshd_config_path.to_str().unwrap(),
-            disable_password_auth,
-        );
-        assert!(result.is_ok());
-
-        let mut contents = String::new();
-        File::open(&sshd_config_path)?.read_to_string(&mut contents)?;
-        assert!(contents.contains("PasswordAuthentication no"));
-        assert!(!contents.contains("PasswordAuthentication yes"));
-
         Ok(())
     }
 

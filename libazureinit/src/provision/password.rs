@@ -111,11 +111,13 @@ pub fn set_user_password(username: &str, password: &str) -> Result<(), Error> {
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.as_bytes())?;
-        // Close stdin to signal EOF to chpasswd
-        drop(stdin);
-    }
+    let mut stdin = child
+        .stdin
+        .take()
+        .expect("piped stdin is present after a successful spawn");
+    stdin.write_all(input.as_bytes())?;
+    // Close stdin to signal EOF to chpasswd
+    drop(stdin);
 
     input.zeroize();
 
