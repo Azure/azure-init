@@ -5,15 +5,15 @@
 
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
+use time::UtcDateTime;
 
-use crate::{DecodeError, KvpError, KvpPoolStore};
+use crate::{timestamp, DecodeError, KvpError, KvpPoolStore};
 
 /// Key used by [`write_report`] to store the provisioning result.
 pub const PROVISIONING_REPORT_KEY: &str = "PROVISIONING_REPORT";
 
 fn now_rfc3339() -> String {
-    Utc::now().to_rfc3339()
+    timestamp::format_auto(UtcDateTime::now(), "+00:00")
 }
 
 /// State of a provisioning attempt.
@@ -271,8 +271,7 @@ impl FromStr for ProvisioningReport {
             take_field(&mut fields, "vm_id")?.ok_or(DecodeError::Malformed)?;
         let timestamp = take_field(&mut fields, "timestamp")?
             .ok_or(DecodeError::Malformed)?;
-        DateTime::parse_from_rfc3339(&timestamp)
-            .map_err(|_| DecodeError::Malformed)?;
+        timestamp::parse(&timestamp)?;
         let pps_type = ReportPpsType::from_wire(
             &take_field(&mut fields, "pps_type")?
                 .ok_or(DecodeError::Malformed)?,
@@ -650,10 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn default_timestamp_is_populated() {
+    fn default_timestamp_is_current_utc_with_a_numeric_offset() {
+        let before = UtcDateTime::now();
         let report =
             ProvisioningReport::success(AGENT, VM_ID, ReportPpsType::None);
-        assert!(!report.timestamp.is_empty());
+        let after = UtcDateTime::now();
+        assert!(report.timestamp.ends_with("+00:00"));
+        let timestamp = timestamp::parse(&report.timestamp).unwrap();
+        assert!((before..=after).contains(&timestamp));
     }
 
     #[test]

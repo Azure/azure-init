@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use time::UtcDateTime;
 use uuid::Uuid;
 
 use super::diagnostic::{
@@ -13,7 +13,7 @@ use super::diagnostic::{
 };
 use super::encoding::encode_payload;
 use super::MAX_CHUNK_BYTES;
-use crate::{KvpError, KvpPoolStore};
+use crate::{timestamp, KvpError, KvpPoolStore};
 
 const MAX_AGENT_BYTES: usize = 32;
 const DEFAULT_MAX_NAME_BYTES: usize = 64;
@@ -34,17 +34,6 @@ pub enum TimestampPrecision {
     Micros,
     /// Nanosecond precision (nine fractional digits).
     Nanos,
-}
-
-impl TimestampPrecision {
-    fn seconds_format(self) -> SecondsFormat {
-        match self {
-            Self::Seconds => SecondsFormat::Secs,
-            Self::Millis => SecondsFormat::Millis,
-            Self::Micros => SecondsFormat::Micros,
-            Self::Nanos => SecondsFormat::Nanos,
-        }
-    }
 }
 
 /// Fractional-second precision for emitted durations.
@@ -192,7 +181,7 @@ impl DiagnosticWriter {
         payload: impl Into<DiagnosticPayload>,
         encoding: Option<Encoding>,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
+        let timestamp = UtcDateTime::now();
         self.emit(Diagnostic::Start(DiagnosticStart {
             key: self.key_at(event_id, name, encoding, timestamp),
             payload: payload.into(),
@@ -212,7 +201,7 @@ impl DiagnosticWriter {
         result: Outcome,
         duration: Duration,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
+        let timestamp = UtcDateTime::now();
         self.emit(Diagnostic::Finish(DiagnosticFinish {
             key: self.key_at(event_id, name, encoding, timestamp),
             payload: payload.into(),
@@ -232,7 +221,7 @@ impl DiagnosticWriter {
         result: Option<Outcome>,
         duration: Option<Duration>,
     ) -> Result<(), KvpError> {
-        let timestamp = Utc::now();
+        let timestamp = UtcDateTime::now();
         self.emit(Diagnostic::Event(DiagnosticEvent {
             key: self.key_at(
                 &Uuid::new_v4().to_string(),
@@ -252,7 +241,7 @@ impl DiagnosticWriter {
         event_id: &str,
         name: &str,
         encoding: Option<Encoding>,
-        timestamp: DateTime<Utc>,
+        timestamp: UtcDateTime,
     ) -> DiagnosticKey {
         DiagnosticKey {
             agent: self.agent.clone(),
@@ -306,9 +295,7 @@ fn prepare_records(
     let duration = duration.map_or_else(String::new, |duration| {
         duration_precision.format(duration)
     });
-    let timestamp = key
-        .timestamp
-        .to_rfc3339_opts(timestamp_precision.seconds_format(), true);
+    let timestamp = timestamp::format(key.timestamp, timestamp_precision, "Z");
     validate_field("timestamp", &timestamp, MAX_TIMESTAMP_BYTES)?;
 
     let value = encode_payload(payload, key.encoding.as_ref())?;
@@ -394,7 +381,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use chrono::DateTime;
     use rstest::rstest;
     use tempfile::TempDir;
 
@@ -417,9 +403,7 @@ mod tests {
             vm_id: Some(VM_ID.into()),
             name: "provision:run".into(),
             event_id: EVENT_ID.into(),
-            timestamp: DateTime::parse_from_rfc3339(TIMESTAMP)
-                .unwrap()
-                .with_timezone(&Utc),
+            timestamp: timestamp::parse(TIMESTAMP).unwrap(),
             encoding: None,
         }
     }
@@ -538,9 +522,7 @@ mod tests {
     ) {
         let dir = TempDir::new().unwrap();
         let (writer, ops) = observed_writer(&dir);
-        let timestamp = DateTime::parse_from_rfc3339(TIMESTAMP)
-            .unwrap()
-            .with_timezone(&Utc);
+        let timestamp = timestamp::parse(TIMESTAMP).unwrap();
 
         assert_eq!(
             writer.key_at(EVENT_ID, "test", encoding.clone(), timestamp),
@@ -848,18 +830,23 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pool = store(&dir, PoolMode::Safe);
         let writer = DiagnosticWriter::new(pool.clone(), AGENT, VM_ID).unwrap();
-        let before = Utc::now().timestamp_millis();
+        let before = UtcDateTime::now()
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000);
         writer
             .emit_event("test", "message", None, None, None)
             .unwrap();
-        let after = Utc::now().timestamp_millis();
+        let after = UtcDateTime::now()
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000);
         let records = pool.dump().unwrap();
         assert_eq!(records.len(), 1);
         let timestamp = records[0].0.split('|').nth(6).unwrap();
         assert_eq!(timestamp.len(), 24);
         assert!(timestamp.ends_with('Z'));
-        let parsed = DateTime::parse_from_rfc3339(timestamp).unwrap();
-        assert!((before..=after).contains(&parsed.timestamp_millis()));
+        let parsed = timestamp::parse(timestamp).unwrap();
+        assert!((before..=after)
+            .contains(&parsed.unix_timestamp_nanos().div_euclid(1_000_000)));
     }
 
     #[rstest]
@@ -881,6 +868,34 @@ mod tests {
         let timestamp = records[0].0.split('|').nth(6).unwrap();
         assert_eq!(timestamp.len(), expected_len);
         assert!(timestamp.ends_with('Z'));
+    }
+
+    #[rstest]
+    #[case(TimestampPrecision::Seconds, "")]
+    #[case(TimestampPrecision::Millis, ".789")]
+    #[case(TimestampPrecision::Micros, ".789123")]
+    #[case(TimestampPrecision::Nanos, ".789123999")]
+    fn timestamp_precision_truncates_without_rounding(
+        #[case] precision: TimestampPrecision,
+        #[case] fraction: &str,
+        #[values("2026-08-31T12:34:56", "1969-12-31T23:59:59")] datetime: &str,
+    ) {
+        let key = DiagnosticKey {
+            timestamp: timestamp::parse(&format!("{datetime}.789123999Z"))
+                .unwrap(),
+            ..key()
+        };
+        let records = prepare_records(
+            event(key, "message".into()),
+            precision,
+            DurationPrecision::default(),
+            DEFAULT_MAX_NAME_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            records[0].0.split('|').nth(6).unwrap(),
+            format!("{datetime}{fraction}Z")
+        );
     }
 
     #[rstest]
@@ -1222,8 +1237,7 @@ mod tests {
     #[test]
     fn writer_rejects_expanded_timestamp_years() {
         let mut expanded_year = key();
-        expanded_year.timestamp =
-            DateTime::from_timestamp(253_402_300_800, 0).unwrap();
+        expanded_year.timestamp = UtcDateTime::MIN;
         assert!(matches!(
             prepare_records(
                 event(expanded_year, "bad".into()),
