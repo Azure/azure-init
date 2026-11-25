@@ -406,8 +406,7 @@ async fn main() -> ExitCode {
 
             if let Err(report_error) = report_result {
                 eprintln!(
-                    "Failed to send provisioning failure report: {:?}",
-                    report_error
+                    "Failed to send provisioning failure report: {report_error:?}"
                 );
             }
 

@@ -239,7 +239,7 @@ mod tests {
     async fn test_report_all_retryable(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let mock_url = format!("http://{}", addr);
+        let mock_url = format!("http://{addr}");
         let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
         let server =
@@ -271,7 +271,7 @@ mod tests {
         for status in [StatusCode::OK, StatusCode::CREATED] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let mock_url = format!("http://{}", addr);
+            let mock_url = format!("http://{addr}");
             let payload = get_http_response_payload(&status, "");
             let cancel = CancellationToken::new();
             let server =
@@ -299,7 +299,7 @@ mod tests {
     async fn test_report_non_retryable_codes(#[case] status: StatusCode) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let mock_url = format!("http://{}", addr);
+        let mock_url = format!("http://{addr}");
         let payload = get_http_response_payload(&status, "");
         let cancel = CancellationToken::new();
         let server =
@@ -330,7 +330,7 @@ mod tests {
         for status in [StatusCode::OK, StatusCode::CREATED] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let mock_url = format!("http://{}", addr);
+            let mock_url = format!("http://{addr}");
             let payload = get_http_response_payload(&status, "");
             let cancel = CancellationToken::new();
             let server =
